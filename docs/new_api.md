@@ -43,7 +43,6 @@ def g(x, n_windows, l, sigma_t):
 However this makes the code very hard to maintain! what if we change a name of an input? We have to also change the comments. (let's be honest... no one does that.) So I decided to write this function in this way:
 
 ```python
-@njit
 def gaussian_window(x: Tensor,
                     n_windows: int,
                     l: int,
