@@ -5,10 +5,10 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-from .MultiChSS_SpectrumCalculator import SpectrumCalculator
-from .MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from .MultiChSS_CrossConfig import CrossConfig
-from .MultiChSS_PlotConfig import PlotConfig
+from multichss.MultiChSS_SpectrumCalculator import SpectrumCalculator
+from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
+from multichss.MultiChSS_CrossConfig import CrossConfig
+from multichss.MultiChSS_PlotConfig import PlotConfig
 
 import pandas as pd
 import numpy as np
