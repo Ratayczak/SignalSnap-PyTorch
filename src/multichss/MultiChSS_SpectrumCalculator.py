@@ -15,6 +15,8 @@ from numba import njit
 from scipy.fft import rfftfreq
 import pandas as pd
 from tabulate import tabulate
+from torch import Tensor
+from typing import Tuple
 
 
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
@@ -33,95 +35,75 @@ def to_hdf(dt, data, path, group_name, dataset_name):
         d = grp.create_dataset(dataset_name, data=data)
         d.attrs['dt'] = dt
 
-def unit_conversion(f_unit):
-    if f_unit == 'Hz':
-        t_unit = 's'
-    elif f_unit == 'kHz':
-        t_unit = 'ms'
-    elif f_unit == 'MHz':
-        t_unit = 'us'
-    elif f_unit == 'GHz':
-        t_unit = 'ns'
-    elif f_unit == 'THz':
-        t_unit = 'ps'
-    else:
+def unit_conversion(f_unit: str) -> str:
+
+    mapping = {
+        'Hz':  's',
+        'kHz': 'ms',
+        'MHz': 'us',
+        'GHz': 'ns',
+        'THz': 'ps',
+    }
+
+    try:
+        return mapping[f_unit]
+    except KeyError:
         raise ValueError(f'Unknown frequency unit: {f_unit}')
-    return t_unit
 
-@njit
-def g(x, n_windows, l, sigma_t):
+def gaussian_window(x: Tensor,
+                    n_windows: int,
+                    l: int,
+                    sigma_t: float
+) -> Tensor:
+    """
+    Approx. confined Gaussian window (see DOI:10.1016/j.sigpro.2014.03.033)
+    """
+
+    center = n_windows * 0.5
+    denom  = 2.0 * l * sigma_t
+
+    t = (x - center) / denom
+    return torch.exp(-t * t)
+
+def calc_window(x: Tensor, 
+                n_windows: int, 
+                l: int, 
+                sigma_t: float
+) -> Tensor:
     """
     Helper function to calculate the approx. confined gaussian window
     as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
-
-    Parameters
-    ----------
-    x : array
-        points at which to calculate the function
-    n_windows : int
-        length of window in points
-    l : int
-        n_windows + 1
-    sigma_t : float
-        parameter of the approx. confined gaussian window (is 0.14)
     """
-    ge_e = x - n_windows/2
-    ge_d = 2 * l * sigma_t
+    
+    h: Tensor = x.new_tensor(-0.5)
 
-    sqrt_ge = ge_e / ge_d
-    ge = - sqrt_ge*sqrt_ge
-    gaus = np.exp(ge)
+    term_x = gaussian_window(x, n_windows, l, sigma_t)
+    term_h = gaussian_window(h, n_windows, l, sigma_t)
+    term_x_p_l = gaussian_window(x + l, n_windows, l, sigma_t)
+    term_x_m_l = gaussian_window(x - l, n_windows, l, sigma_t)
+    term_h_p_l = gaussian_window(h + l, n_windows, l, sigma_t)
+    term_h_m_l = gaussian_window(h - l, n_windows, l, sigma_t)
 
-    return gaus
+    denom = term_h_p_l + term_h_m_l
+    win = term_x - (term_h * (term_x_p_l + term_x_m_l)) / denom
 
-@njit
-def calc_window(x, n_windows, l, sigma_t):
-    """
-    Helper function to calculate the approx. confined gaussian window
-    as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
-
-    Parameters
-    ----------
-    x : array
-        points at which to calculate the function
-    n_windows : int
-        length of window in points
-    l : int
-        n_windows + 1
-    sigma_t : float
-        parameter of the approx. confined gaussian window (is 0.14)
-    """
-    term_x = g(x, n_windows, l, sigma_t)
-    term_h = g(-0.5, n_windows, l, sigma_t)
-    term_x_p_l = g(x + l, n_windows, l, sigma_t)
-    term_x_m_l = g(x - l, n_windows, l, sigma_t)
-    term_h_p_l = g(-0.5 + l, n_windows, l, sigma_t)
-    term_h_m_l = g(-0.5 - l, n_windows, l, sigma_t)
-
-    win = term_x - (term_h * (term_x_p_l + term_x_m_l)) / (term_h_p_l +
-                                                           term_h_m_l)
     return win
 
-@njit
-def cg_window(n_windows, fs):
+def cg_window(n_windows: int, fs: float) -> Tuple[Tensor, float]:
     """
     Helper function to calculate the approx. confined gaussian window
     as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
-    
-    Parameters
-    ----------
-    N_window : int
-        length of window in points
-    fs : float
-        sampling rate of the signal
     """
-    x = np.linspace(0, n_windows, n_windows)
+
+    x = torch.linspace(0, n_windows, n_windows)
     l = n_windows + 1
     sigma_t = 0.14
 
     window = calc_window(x, n_windows, l, sigma_t)
-    norm = np.sum(window*window) / fs
-    window_full = window / np.sqrt(norm)
+    norm_t = (window * window).sum() / fs
+    
+    window_full = window / torch.sqrt(norm_t)
+    norm = float(norm_t.item())
 
     return window_full, norm
 
