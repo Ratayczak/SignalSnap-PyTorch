@@ -10,14 +10,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 from tqdm.auto import tqdm
-
 import torch
 from numba import njit
 from scipy.fft import rfftfreq
-from .MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from .MultiChSS_CrossConfig import CrossConfig
 import pandas as pd
 from tabulate import tabulate
+
+
+from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
+from multichss.MultiChSS_CrossConfig import CrossConfig
+from multichss.MultiChSS_PlotConfig import PlotConfig
 
 def load_spec(path):
     f = open(path, mode='rb')
@@ -46,9 +48,6 @@ def unit_conversion(f_unit):
         raise ValueError(f'Unknown frequency unit: {f_unit}')
     return t_unit
 
-# ------------------------------------------------------------------
-#  Helper functions related to confinded Gaussian window 
-# ------------------------------------------------------------------
 @njit
 def g(x, n_windows, l, sigma_t):
     """
@@ -191,56 +190,51 @@ class SpectrumCalculator:
 
     def _init_dicts(self):
         """
-        Helper to initialize bookkeeping dictionaries for both selected and cross datasets
-        TODO: refactor 
+        Initialize all bookkeeping dictionaries for selected and cross datasets.
         """
-        self.n_chunks = {i: 0 for i in self.selected}
-        self.n_chunks.update({(k1, k2): 0 for k1, k2 in self.cross2_selected})
-        self.n_chunks.update({(k1, k2, k3): 0 for k1, k2, k3 in self.cross3_selected})
-        self.n_chunks.update({(k1, k2, k3, k4): 0 for k1, k2, k3, k4 in self.cross4_selected})
 
-        self.m = {1: None, 2: None, 3: None, 4: None}
-        self.m_var = {1: None, 2: None, 3: None, 4: None}
+        # Map each group of keys to the orders they support
+        order_map = {
+            tuple(self.selected): [1, 2, 3, 4],
+            tuple(self.cross2_selected): [2],
+            tuple(self.cross3_selected): [3],
+            tuple(self.cross4_selected): [4]
+        }
 
-        # For frequency, spectra, error, etc.
-        keys = self.selected + self.cross2_selected + self.cross3_selected + self.cross4_selected
-        self.freq = {key: {2: None, 3: None, 4: None} for key in keys}
-        self.f_lists = {key: {2: None, 3: None, 4: None} for key in keys}
+        self.n_chunks = {}
+        for keys in order_map:
+            for key in keys:
+                self.n_chunks[key] = 0
 
-        self.s = {key: {1: None, 2: None, 3: None, 4: None} for key in self.selected}
-        self.s.update({key: {2: None} for key in self.cross2_selected})
-        self.s.update({key: {3: None} for key in self.cross3_selected})
-        self.s.update({key: {4: None} for key in self.cross4_selected})
+        self.m = {o: None for o in [1, 2, 3, 4]}
+        self.m_var = {o: None for o in [1, 2, 3, 4]}
 
-        self.s_gpu = {key: {1: None, 2: None, 3: None, 4: None} for key in self.selected}
-        self.s_gpu.update({key: {2: None} for key in self.cross2_selected})
-        self.s_gpu.update({key: {3: None} for key in self.cross3_selected})
-        self.s_gpu.update({key: {4: None} for key in self.cross4_selected})
+        self.freq = {}
+        self.f_lists = {}
+        for keys, orders in order_map.items():
+            for key in keys:
+                self.freq[key] = {o: None for o in orders}
+                self.f_lists[key] = {o: None for o in orders}
 
-        self.s_err = {key: {1: None, 2: None, 3: None, 4: None} for key in self.selected}
-        self.s_err.update({key: {2: None} for key in self.cross2_selected})
-        self.s_err.update({key: {3: None} for key in self.cross3_selected})
-        self.s_err.update({key: {4: None} for key in self.cross4_selected})
+        self.s = {}
+        self.s_gpu = {}
+        self.s_err = {}
+        self.s_err_gpu = {}
+        self.s_errs = {}
+        self.err_counter = {}
+        self.n_error_estimates = {}
 
-        self.s_err_gpu = {key: {1: None, 2: None, 3: None, 4: None} for key in self.selected}
-        self.s_err_gpu.update({key: {2: None} for key in self.cross2_selected})
-        self.s_err_gpu.update({key: {3: None} for key in self.cross3_selected})
-        self.s_err_gpu.update({key: {4: None} for key in self.cross4_selected})
+        for keys, orders in order_map.items():
+            for key in keys:
+                self.s[key] = {o: None for o in orders}
+                self.s_gpu[key] = {o: None for o in orders}
+                self.s_err[key] = {o: None for o in orders}
+                self.s_err_gpu[key] = {o: None for o in orders}
 
-        self.s_errs = {key: {1: None, 2: [], 3: [], 4: []} for key in self.selected}
-        self.s_errs.update({key: {2: []} for key in self.cross2_selected})
-        self.s_errs.update({key: {3: []} for key in self.cross3_selected})
-        self.s_errs.update({key: {4: []} for key in self.cross4_selected})
+                self.s_errs[key] = {o: [] for o in orders}
+                self.err_counter[key] = {o: 0 for o in orders}
+                self.n_error_estimates[key] = {o: 0 for o in orders}
 
-        self.err_counter = {key: {1: 0, 2: 0, 3: 0, 4: 0} for key in self.selected}
-        self.err_counter.update({key: {2: 0} for key in self.cross2_selected})
-        self.err_counter.update({key: {3: 0} for key in self.cross3_selected})
-        self.err_counter.update({key: {4: 0} for key in self.cross4_selected})
-
-        self.n_error_estimates = {key: {1: 0, 2: 0, 3: 0, 4: 0} for key in self.selected}
-        self.n_error_estimates.update({key: {2: 0} for key in self.cross2_selected})
-        self.n_error_estimates.update({key: {3: 0} for key in self.cross3_selected})
-        self.n_error_estimates.update({key: {4: 0} for key in self.cross4_selected})
 
     def validate_shapes(self):
         """
@@ -289,9 +283,6 @@ class SpectrumCalculator:
         plt.tight_layout()
         plt.show()
 
-    # ------------------------------------------------------------------
-    #  Calculating unbiased cumulants c1, c2, c3, c4
-    # ------------------------------------------------------------------
     def c1(self, a_w):
         """
         first order cumulant is the mean value
