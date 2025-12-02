@@ -16,7 +16,7 @@ from scipy.fft import rfftfreq
 import pandas as pd
 from tabulate import tabulate
 from torch import Tensor
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
