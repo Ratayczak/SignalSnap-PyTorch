@@ -23,7 +23,7 @@ def test_c1_returns_correct_mean():
 
     sconfig = SpectrumConfig(
         dt=0.01, f_min=0, f_max=2, s3_calc='1/4',
-        f_unit='Hz', backend='mps', order_in=[1],
+        f_unit='Hz', backend='cpu', order_in=[1],
         spectrum_size=100, show_first_frame=False
     )
 
