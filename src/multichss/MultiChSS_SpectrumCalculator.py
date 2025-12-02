@@ -16,7 +16,7 @@ from scipy.fft import rfftfreq
 import pandas as pd
 from tabulate import tabulate
 from torch import Tensor
-from typing import Tuple
+from typing import Dict, Optional
 
 
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
@@ -265,26 +265,26 @@ class SpectrumCalculator:
         plt.tight_layout()
         plt.show()
 
-    def c1(self, a_w):
+    def c1(self, a_w: Tensor) -> Tensor:
         """
-        first order cumulant is the mean value
-        C_1 = < a_w >
-        here, <...> denotes the mean
+        First order cumulant
         """
         s1 = torch.mean(a_w, dim=0)
         if self.use_full_fft:
             dc_index = s1.shape[0] // 2
-            return s1[dc_index]
+            result = s1[dc_index]
         else:
-            return s1[0]
+            result = s1[0]
 
-    def c2(self, a_w1, a_w2):
+        return result
+            
+
+    def c2(self, 
+           a_w1: Tensor, 
+           a_w2: Tensor
+    ) -> Tensor:
         """
         second order cumulant is the covariance
-        C_2 = m / (m - 1) . (<a_w1 . a_w2*> - <a_w1> <a_w2*>)
-        the * indicated the complex conjugate and <...> denotes the mean.
-        m / (m - 1) is the unbiased estimator for covariance
-        for more info see arXiv:1904.12154
         """
         a_w2_star = torch.conj(a_w2)
         term_1 = torch.mean(a_w1 * a_w2_star, dim=0)
