@@ -468,13 +468,33 @@ class SpectrumCalculator:
             dim = 1 if order in [1, 2] else 2
             self.n_error_estimates[dataset_idx][order] += 1
             factor = self.sconfig.m_var / (self.sconfig.m_var - 1)
-            mean_squared = torch.mean(self.s_errs[dataset_idx][order] ** 2, dim=dim)
-            squared_mean = torch.mean(self.s_errs[dataset_idx][order], dim=dim) ** 2
-            s_err_gpu = factor * (mean_squared - squared_mean) / self.sconfig.m_var
+            
+            # FIX: compute variance-of-mean separately for Re and Im,
+            # and store as complex error: s_err = SEM(Re) + 1j*SEM(Im)
+            x = self.s_errs[dataset_idx][order]
+            xr = x.real
+            xi = x.imag
+
+            # Var(mean(Re)) = (sample-var(Re) / m_var)
+            mean_xr2 = torch.mean(xr ** 2, dim=dim)
+            mean_xr = torch.mean(xr, dim=dim)
+            var_mean_re = factor * (mean_xr2 - mean_xr ** 2) / self.sconfig.m_var
+
+            # Var(mean(Im)) = (sample-var(Im) / m_var)
+            mean_xi2 = torch.mean(xi ** 2, dim=dim)
+            mean_xi = torch.mean(xi, dim=dim)
+            var_mean_im = factor * (mean_xi2 - mean_xi ** 2) / self.sconfig.m_var
+
+            # accumulate Var(mean) estimates across error batches
+            var_mean_re_np = var_mean_re.cpu().numpy()
+            var_mean_im_np = var_mean_im.cpu().numpy()
+
             if self.s_err[dataset_idx][order] is None:
-                self.s_err[dataset_idx][order] = s_err_gpu.cpu().numpy()
+                self.s_err[dataset_idx][order] = var_mean_re_np + 1j * var_mean_im_np
             else:
-                self.s_err[dataset_idx][order] += s_err_gpu.cpu().numpy()
+                self.s_err[dataset_idx][order] += var_mean_re_np + 1j * var_mean_im_np
+            
+
             self.err_counter[dataset_idx][order] = 0
 
     def store_final_spectrum(self, orders, n_chunks, dataset_idx):
@@ -485,8 +505,18 @@ class SpectrumCalculator:
             if self.s_gpu.get(dataset_idx, {}).get(order) is not None:
                 self.s_gpu[dataset_idx][order] /= n_chunks
                 self.s[dataset_idx][order] = self.s_gpu[dataset_idx][order].cpu().resolve_conj().numpy()
-                self.s_err[dataset_idx][order] = (
-                    (1 / self.n_error_estimates[dataset_idx][order]) * np.sqrt(self.s_err[dataset_idx][order])) / 2  # for interlaced calculation
+                n_est = self.n_error_estimates[dataset_idx][order]
+                if n_est and self.s_err[dataset_idx][order] is not None:
+                    # s_err currently stores SUM_over_batches( Var_mean_re + 1j*Var_mean_im )
+                    # Convert to mean over batches, then SEM = sqrt(var_mean)
+                    var_mean = self.s_err[dataset_idx][order] / n_est
+                    var_re = np.maximum(np.real(var_mean), 0.0)
+                    var_im = np.maximum(np.imag(var_mean), 0.0)
+                    sem_re = np.sqrt(var_re) / 2  # interlaced correction
+                    sem_im = np.sqrt(var_im) / 2
+                    self.s_err[dataset_idx][order] = sem_re + 1j * sem_im
+                else:
+                    self.s_err[dataset_idx][order] = None
 
     def fourier_coeffs_to_spectra(self, orders, coeffs_gpu, f_min_idx, f_max_idx, single_window, dataset_idx):
         """
