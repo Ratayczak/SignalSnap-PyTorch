@@ -15,9 +15,9 @@ Right now, you can clone this repository
 ```bash
 git clone https://github.com/ArminGEtemad/SignalSnap-PyTorch.git
 ```
-and install it locally
+and install it locally (including torch for CUDA; change CUDA version (here: 12.6) in url accordingly)
 ```bash
-pip install .
+pip install . --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
 In the future, we add PyPI for a seamless installation of the package.
@@ -116,6 +116,6 @@ For the package multiple libraries are used for the numerics and displaying the 
 * tqdm
 * Numba
 * h5py
-* PyTorch
+* PyTorch (for CUDA)
 * Pandas
 * tabulate
