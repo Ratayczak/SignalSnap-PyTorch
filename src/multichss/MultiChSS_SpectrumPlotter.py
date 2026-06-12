@@ -6,7 +6,7 @@
 # https://opensource.org/licenses/BSD-3-Clause
 
 from multichss.MultiChSS_SpectrumCalculator import SpectrumCalculator
-from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
+from multichss.MultiChSS_SpectrumConfig import SpectrumConfig
 from multichss.MultiChSS_CrossConfig import CrossConfig
 from multichss.MultiChSS_PlotConfig import PlotConfig
 
@@ -94,6 +94,26 @@ class SpectrumPlotter:
 			s_err_data = np.arcsinh(scale * s_err_data) / scale
 
 		return s_data, s_err_data
+
+	def plot_first_frames(self, diconfig_list, selected, window_size):
+        """
+        visualizes the first frame of the selected data.
+        """
+        n_plots = len(selected)
+        fig, axes = plt.subplots(n_plots, 1, figsize=(14, 3 * n_plots))
+        if n_plots == 1:
+            axes = [axes]
+        for i, idx in enumerate(selected):
+            data_config = diconfig_list[idx]
+            first_frame = data_config.data[:window_size]
+            t = np.arange(len(first_frame)) * self.sconfig.dt
+            axes[i].plot(t, first_frame)
+            axes[i].set_xlim([0, t[-1]])
+            axes[i].set_title(f'First frame for data {idx}')
+            axes[i].set_xlabel(f't / ({self.scalc.t_unit})')
+            axes[i].set_ylabel('Amplitude')
+        plt.tight_layout()
+        plt.show()
 
 	def display_s1(self, order, keys, source):
 	    """
@@ -457,6 +477,9 @@ class SpectrumPlotter:
 	    generate_s2_plots = False
 	    generate_s3_plots = False
 	    generate_s4_plots = False
+
+		if self.sconfig.show_first_frame:
+        	self.plot_first_frames(self.scalc.diconfig_list, self.scalc.selected, self.scalcwindow_points)
 
 	    # For the 'selected' datasets, only process orders that are in display_orders.
 	    for source, selected_keys in [

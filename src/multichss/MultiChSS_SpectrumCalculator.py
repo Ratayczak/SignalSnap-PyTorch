@@ -6,20 +6,14 @@
 # https://opensource.org/licenses/BSD-3-Clause
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 from tqdm.auto import tqdm
 import torch
 from numba import njit
-from scipy.fft import rfftfreq
-import pandas as pd
-from tabulate import tabulate
-
 
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
 from multichss.MultiChSS_CrossConfig import CrossConfig
-from multichss.MultiChSS_PlotConfig import PlotConfig
 
 def load_spec(path):
     f = open(path, mode='rb')
@@ -173,6 +167,11 @@ class SpectrumCalculator:
         self.t_unit = unit_conversion(sconfig.f_unit)
         self.fs = 1 / self.sconfig.dt
 
+        self.f_max_allowed = 1 / (2 * self.sconfig.dt)
+        window_len_factor = self.f_max_allowed / (self.sconfig.f_max - self.sconfig.f_min)
+        self.t_window = (self.sconfig.spectrum_size - 1) * (2 * self.sconfig.dt * window_len_factor)
+        self.window_points = int(np.round(self.t_window / self.sconfig.dt))
+        
         # Initialize various dictionaries in one go
         self._init_dicts()
         
@@ -262,26 +261,6 @@ class SpectrumCalculator:
                         data_config.dt = main_data.attrs.get('dt', None)
                     data_config.data = main_data[()]
                     print(f"Data loaded from {data_config.path}")
-
-    def plot_first_frames(self, selected, window_size):
-        """
-        visualizes the first frame of the selected data.
-        """
-        n_plots = len(selected)
-        fig, axes = plt.subplots(n_plots, 1, figsize=(14, 3 * n_plots))
-        if n_plots == 1:
-            axes = [axes]
-        for i, idx in enumerate(selected):
-            data_config = self.diconfig_list[idx]
-            first_frame = data_config.data[:window_size]
-            t = np.arange(len(first_frame)) * self.sconfig.dt
-            axes[i].plot(t, first_frame)
-            axes[i].set_xlim([0, t[-1]])
-            axes[i].set_title(f'First frame for data {idx}')
-            axes[i].set_xlabel(f't / ({self.t_unit})')
-            axes[i].set_ylabel('Amplitude')
-        plt.tight_layout()
-        plt.show()
 
     def c1(self, a_w):
         """
@@ -718,21 +697,16 @@ class SpectrumCalculator:
         """
         calculating the needed parameters to calculate spectra
         """
-        f_max_allowed = 1 / (2 * self.sconfig.dt)
         if self.sconfig.f_max is None:
             # even if a maximum frequency is not given, the program does not crash
             # using Nyquist frequency which is half the sampling rate of a 
             # discrete system
-            self.sconfig.f_max = f_max_allowed
-
-        window_len_factor = f_max_allowed / (self.sconfig.f_max - self.sconfig.f_min)
-        self.t_window = (self.sconfig.spectrum_size - 1) * (2 * self.sconfig.dt * window_len_factor)
+            self.sconfig.f_max = self.f_max_allowed
 
         n_data_points = self.diconfig_list[self.selected[0]].data.shape[0]
-        window_points = int(np.round(self.t_window / self.sconfig.dt))
 
-        if not window_points * self.sconfig.m + window_points // 2 < n_data_points:
-            m = (n_data_points - window_points // 2) // window_points
+        if not self.window_points * self.sconfig.m + self.window_points // 2 < n_data_points:
+            m = (n_data_points - self.window_points // 2) // self.window_points
             if m < max(orders):
                 raise ValueError('Not enough data points')
             print(f'Values have been changed. Old m: {self.sconfig.m}, new m: {m}')
@@ -740,7 +714,7 @@ class SpectrumCalculator:
         else:
             m = self.sconfig.m
 
-        denom_spec = window_points * m + window_points // 2
+        denom_spec = self.window_points * m + self.window_points // 2
         n_spectra = n_data_points // denom_spec
 
         if n_spectra < self.sconfig.m:
@@ -751,15 +725,15 @@ class SpectrumCalculator:
                 print(f'm_var values have been changed. Old: {self.sconfig.m_var}, new: {m_var}')
             self.m_var = m_var
 
-        n_windows = int(np.floor(n_data_points / (m * window_points)))
+        n_windows = int(np.floor(n_data_points / (m * self.window_points)))
         # Create frequency axis using full FFT if needed
         if self.use_full_fft:
             # if negative frequencies are needed
-            freq_all_freq = np.fft.fftfreq(window_points, self.sconfig.dt)
+            freq_all_freq = np.fft.fftfreq(self.window_points, self.sconfig.dt)
             freq_all_freq = np.fft.fftshift(freq_all_freq)
         else:
             # for non-negative frequencies only
-            freq_all_freq = np.fft.rfftfreq(window_points, self.sconfig.dt)
+            freq_all_freq = np.fft.rfftfreq(self.window_points, self.sconfig.dt)
 
         # Determine indices for frequency band
         f_mask = freq_all_freq <= self.sconfig.f_max
@@ -767,7 +741,7 @@ class SpectrumCalculator:
         f_mask = freq_all_freq < self.sconfig.f_min
         f_min_idx = np.sum(f_mask)
 
-        return m, window_points, freq_all_freq, f_max_idx, f_min_idx, n_windows
+        return m, freq_all_freq, f_max_idx, f_min_idx, n_windows
 
     def _to_device(self, array):
         """
@@ -794,7 +768,7 @@ class SpectrumCalculator:
         main funtion that calculates spectra.
         """
         orders = self.reset()
-        m, window_points, freq_all_freq, f_max_idx, f_min_idx, n_windows = self.setup_calc_spec(orders)
+        m, freq_all_freq, f_max_idx, f_min_idx, n_windows = self.setup_calc_spec(orders)
 
         for order in orders:
             self.m[order] = m
@@ -803,12 +777,9 @@ class SpectrumCalculator:
             self.a_w3_init = self.a_w3_gen(f_max_idx, self.sconfig.m).to(self.device)
             self.indi = self.index_generation_to_aw_3(f_max_idx).to(self.device)
 
-        single_window, _ = cg_window(int(window_points), self.fs)
-        window = np.array(m * [single_window]).flatten().reshape((m, window_points, 1))
+        single_window, _ = cg_window(int(self.window_points), self.fs)
+        window = np.array(m * [single_window]).flatten().reshape((m, self.window_points, 1))
         window = self._to_device(window)
-
-        if self.sconfig.show_first_frame:
-            self.plot_first_frames(self.selected, window_points)
 
         # Prepare arrays for auto spectra
         for dataset_idx in self.selected:
@@ -833,15 +804,15 @@ class SpectrumCalculator:
         
 
         for i in tqdm(range(n_windows), leave=False):
-            for window_shift in [0, window_points // 2]:
+            for window_shift in [0, self.window_points // 2]:
                 a_w_all_dict = {}
                 for dataset_idx in self.selected:
                     data_config = self.diconfig_list[dataset_idx]
-                    start = int(i * (window_points * m) + window_shift)
-                    end = int((i + 1) * (window_points * m) + window_shift)
+                    start = int(i * (self.window_points * m) + window_shift)
+                    end = int((i + 1) * (self.window_points * m) + window_shift)
                     chunk = data_config.data[start:end]
-                    if chunk.shape[0] == window_points * m:
-                        chunk_r = chunk.reshape((m, window_points, 1))
+                    if chunk.shape[0] == self.window_points * m:
+                        chunk_r = chunk.reshape((m, self.window_points, 1))
                         chunk_gpu = self._to_device(chunk_r)
                         a_w_all_dict[dataset_idx] = self._compute_fft(window, chunk_gpu)
                     else:
