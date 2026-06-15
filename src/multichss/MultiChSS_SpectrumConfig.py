@@ -5,9 +5,6 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-import numpy as np
-import h5py
-
 class InvalidConfigError(Exception):
     """Raised when configuration is invalid."""
     pass

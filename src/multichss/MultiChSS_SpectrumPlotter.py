@@ -116,7 +116,7 @@ class SpectrumPlotter:
         if self.pconfig.output == "show":
             plt.show()
         elif self.pconfig.output == "save":
-            plt.savefig(self.pconfig.output_path)
+            plt.savefig(self.pconfig.output_folder / "first_frame.png")
         else:
             # Runtime guard clause in case they ignore type hints
             raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
@@ -237,7 +237,7 @@ class SpectrumPlotter:
         if self.pconfig.output == "show":
             plt.show()
         elif self.pconfig.output == "save":
-            plt.savefig(self.pconfig.output_path)
+            plt.savefig(self.pconfig.output_folder / "s2.png")
         else:
             # Runtime guard clause in case they ignore type hints
             raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
@@ -378,7 +378,7 @@ class SpectrumPlotter:
             if self.pconfig.output == "show":
                 plt.show()
             elif self.pconfig.output == "save":
-                plt.savefig(self.pconfig.output_path)
+                plt.savefig(self.pconfig.output_folder / "sN1.png")
             else:
                 # Runtime guard clause in case they ignore type hints
                 raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
@@ -481,7 +481,7 @@ class SpectrumPlotter:
             if self.pconfig.output == "show":
                 plt.show()
             elif self.pconfig.output == "save":
-                plt.savefig(self.pconfig.output_path)
+                plt.savefig(self.pconfig.output_folder / "sN2.png")
             else:
                 # Runtime guard clause in case they ignore type hints
                 raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
@@ -504,7 +504,7 @@ class SpectrumPlotter:
         generate_s4_plots = False
 
         if self.sconfig.show_first_frame:
-            self.plot_first_frames(self.scalc.diconfig_list, self.scalc.selected, self.scalcwindow_points)
+            self.plot_first_frames(self.scalc.diconfig_list, self.scalc.selected, self.scalc.window_points)
 
         # For the 'selected' datasets, only process orders that are in display_orders.
         for source, selected_keys in [

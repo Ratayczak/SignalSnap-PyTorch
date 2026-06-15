@@ -168,6 +168,11 @@ class SpectrumCalculator:
         self.fs = 1 / self.sconfig.dt
 
         self.f_max_allowed = 1 / (2 * self.sconfig.dt)
+        if self.sconfig.f_max is None:
+            # even if a maximum frequency is not given, the program does not crash
+            # using Nyquist frequency which is half the sampling rate of a 
+            # discrete system
+            self.sconfig.f_max = self.f_max_allowed
         window_len_factor = self.f_max_allowed / (self.sconfig.f_max - self.sconfig.f_min)
         self.t_window = (self.sconfig.spectrum_size - 1) * (2 * self.sconfig.dt * window_len_factor)
         self.window_points = int(np.round(self.t_window / self.sconfig.dt))
@@ -697,12 +702,6 @@ class SpectrumCalculator:
         """
         calculating the needed parameters to calculate spectra
         """
-        if self.sconfig.f_max is None:
-            # even if a maximum frequency is not given, the program does not crash
-            # using Nyquist frequency which is half the sampling rate of a 
-            # discrete system
-            self.sconfig.f_max = self.f_max_allowed
-
         n_data_points = self.diconfig_list[self.selected[0]].data.shape[0]
 
         if not self.window_points * self.sconfig.m + self.window_points // 2 < n_data_points:
