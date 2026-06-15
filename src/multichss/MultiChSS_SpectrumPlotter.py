@@ -113,7 +113,13 @@ class SpectrumPlotter:
             axes[i].set_xlabel(f't / ({self.scalc.t_unit})')
             axes[i].set_ylabel('Amplitude')
         plt.tight_layout()
-        plt.show()
+        if self.pconfig.output == "show":
+            plt.show()
+        elif self.pconfig.output == "save":
+            plt.savefig(self.pconfig.output_path)
+        else:
+            # Runtime guard clause in case they ignore type hints
+            raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
 
     def display_s1(self, order, keys, source):
         """
@@ -228,7 +234,13 @@ class SpectrumPlotter:
                 ax.set_xlabel('Frequency')
 
         plt.tight_layout()
-        plt.show()
+        if self.pconfig.output == "show":
+            plt.show()
+        elif self.pconfig.output == "save":
+            plt.savefig(self.pconfig.output_path)
+        else:
+            # Runtime guard clause in case they ignore type hints
+            raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
 
         # Display the scaling information (once)
         s2_table_data = [{
@@ -363,7 +375,13 @@ class SpectrumPlotter:
                         # Overlay with semi-transparent green
                         ax.pcolormesh(X, Y, err_matrix,cmap=cmap_err,vmin=0,vmax=1,shading='auto')
             plt.tight_layout()
-            plt.show()
+            if self.pconfig.output == "show":
+                plt.show()
+            elif self.pconfig.output == "save":
+                plt.savefig(self.pconfig.output_path)
+            else:
+                # Runtime guard clause in case they ignore type hints
+                raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
 
             sN_table_data = [{
                 'Arcsinh Scaled': scaled,
@@ -460,7 +478,13 @@ class SpectrumPlotter:
 
                     configure_axes(fig, ax, cmesh)
             plt.tight_layout()
-            plt.show()
+            if self.pconfig.output == "show":
+                plt.show()
+            elif self.pconfig.output == "save":
+                plt.savefig(self.pconfig.output_path)
+            else:
+                # Runtime guard clause in case they ignore type hints
+                raise ValueError(f"Invalid action '{self.pconfig.output}'. Expected 'show' or 'save'.")
 
             sN_table_data = [{
                 'Arcsinh Scaled': scaled,
