@@ -5,6 +5,10 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from pathlib import Path
+from typing import Literal
+
+
 class InvalidConfigError(Exception):
     pass
 
@@ -17,7 +21,7 @@ class PlotConfig:
 
     def __init__(self, f_min, f_max, display_orders=[1, 2, 3, 4], significance=1,
                  arcsinh_scale=(False, 0.02), plot_format=['re', 'im'],
-                 insignif_transparency=0.8):
+                 insignif_transparency=0.8, output: Literal["show", "save"] = "show", output_folder: str = "."):
 
         self.display_orders = display_orders
         self.plot_lims = (f_min, f_max)
@@ -25,6 +29,8 @@ class PlotConfig:
         self.arcsinh_scale = arcsinh_scale
         self.plot_format = plot_format
         self.insignif_transparency = insignif_transparency
+        self.output = output
+        self.output_folder = Path(output_folder).resolve()
 
         self.validate()
 
