@@ -43,13 +43,10 @@ class PlotConfig(BaseModel):
             raise ValueError("plot_format cannot contain duplicate elements.")
         return v
     
-    @field_validator("output_folder", mode="before")
+    @field_validator("output_folder")
     @classmethod
-    def resolve_output_folder(cls, v: str | Path) -> Path:
-        """
-        Automatically convert strings to Path objects to ensure output_folder is a Path object
-        """
-        return Path(v).resolve()
+    def resolve_output_folder(cls, v: Path) -> Path:
+        return v.resolve()
     
     @model_validator(mode="after")
     def validate_limits(self) -> "PlotConfig":
