@@ -6,10 +6,10 @@
 # https://opensource.org/licenses/BSD-3-Clause
 
 from .MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from .MultiChSS_CrossConfig import CrossConfig
-from .MultiChSS_PlotConfig import PlotConfig
 from .MultiChSS_SpectrumCalculator import SpectrumCalculator
 from .MultiChSS_SpectrumPlotter import SpectrumPlotter
+
+from .config import CrossConfig, PlotConfig
 
 __all__ = [
     "SpectrumConfig",

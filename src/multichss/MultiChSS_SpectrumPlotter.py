@@ -7,9 +7,8 @@
 
 from multichss.MultiChSS_SpectrumCalculator import SpectrumCalculator
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig
-from multichss.MultiChSS_CrossConfig import CrossConfig
-from multichss.MultiChSS_PlotConfig import PlotConfig
-
+from multichss.config import CrossConfig, PlotConfig
+ 
 import pandas as pd
 import numpy as np
 from tabulate import tabulate
@@ -176,7 +175,7 @@ class SpectrumPlotter:
             """
             ax.set_title(title)
             ax.set_ylabel(ylabel)
-            ax.set_xlim(self.pconfig.plot_lims[0], self.pconfig.plot_lims[1])
+            ax.set_xlim(self.pconfig.f_min, self.pconfig.f_max)
             ax.legend()
 
         # Initialize variables for scaling information
@@ -224,7 +223,7 @@ class SpectrumPlotter:
                     ax.text(0.5, 0.5, f"No data for {source}: key {keys}", ha='center', va='center', transform=ax.transAxes)
                     ax.set_title(f'{source}: Dataset {keys}')
                     ax.set_ylabel('S Data')
-                    ax.set_xlim(self.pconfig.plot_lims[0], self.pconfig.plot_lims[1])
+                    ax.set_xlim(self.pconfig.f_min, self.pconfig.f_max)
 
         # Set shared x-axis label
         if num_datasets == 1 and num_columns == 1:
@@ -280,16 +279,16 @@ class SpectrumPlotter:
             ax.set_xlabel(freq_label)
             ax.set_ylabel(freq_label)
             if order == 3:
-                if self.pconfig.plot_lims[0] < 0:
-                    ax.set_ylim(0, self.pconfig.plot_lims[1]/2)
+                if self.pconfig.f_min < 0:
+                    ax.set_ylim(0, self.pconfig.f_max/2)
                 else:
-                    ax.set_ylim(self.pconfig.plot_lims[0]/2, self.pconfig.plot_lims[1]/2)
+                    ax.set_ylim(self.pconfig.f_min/2, self.pconfig.f_max/2)
             else:
-                ax.set_ylim(self.pconfig.plot_lims[0], self.pconfig.plot_lims[1])
+                ax.set_ylim(self.pconfig.f_min, self.pconfig.f_max)
             if order == 3:
-                ax.set_xlim(self.pconfig.plot_lims[0]/2, self.pconfig.plot_lims[1]/2)
+                ax.set_xlim(self.pconfig.f_min/2, self.pconfig.f_max/2)
             else:
-                ax.set_xlim(self.pconfig.plot_lims[0], self.pconfig.plot_lims[1])
+                ax.set_xlim(self.pconfig.f_min, self.pconfig.f_max)
             return cmesh
 
         def configure_axes(fig, ax, cmesh):

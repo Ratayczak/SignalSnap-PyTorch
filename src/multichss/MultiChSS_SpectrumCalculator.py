@@ -19,7 +19,7 @@ from typing import Dict, Optional, Tuple
 
 
 from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from multichss.MultiChSS_CrossConfig import CrossConfig
+from multichss.config import CrossConfig
 
 def load_spec(path):
     f = open(path, mode='rb')
