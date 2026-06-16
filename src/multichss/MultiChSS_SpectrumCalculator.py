@@ -17,9 +17,7 @@ from tabulate import tabulate
 from torch import Tensor
 from typing import Dict, Optional, Tuple
 
-
-from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from multichss.config import CrossConfig
+from multichss.config import CrossConfig, SpectrumConfig, DataConfig
 
 def load_spec(path):
     f = open(path, mode='rb')
@@ -129,7 +127,7 @@ class SpectrumCalculator:
         evaluation
     """
     def __init__(self, sconfig: SpectrumConfig, cconfig: CrossConfig, 
-                 diconfig_list: list[DataImportConfig], selected=None):
+                 diconfig_list: list[DataConfig], selected=None):
         self.sconfig = sconfig
         self.cconfig = cconfig
         self.diconfig_list = diconfig_list
@@ -200,11 +198,9 @@ class SpectrumCalculator:
         self.m_var = {o: None for o in [1, 2, 3, 4]}
 
         self.freq = {}
-        self.f_lists = {}
         for keys, orders in order_map.items():
             for key in keys:
                 self.freq[key] = {o: None for o in orders}
-                self.f_lists[key] = {o: None for o in orders}
 
         self.s = {}
         self.s_gpu = {}
@@ -615,7 +611,7 @@ class SpectrumCalculator:
             print("Example: f_min=0, f_max=5, s3_calc='1/2'")
         return orders_to_process
 
-    def reset_variables(self, orders, f_lists=None):
+    def reset_variables(self, orders):
         """
         TODO: refactor
         """
@@ -633,7 +629,6 @@ class SpectrumCalculator:
 
         for dataset_idx in self.selected:
             for order in orders:
-                self.f_lists[dataset_idx][order] = f_lists
                 self.freq[dataset_idx][order] = None
                 self.s[dataset_idx][order] = None
                 self.s_gpu[dataset_idx][order] = None
@@ -646,7 +641,6 @@ class SpectrumCalculator:
         for cross2_idx in self.cross2_selected:
             for order in orders:
                 if order == 2:
-                    self.f_lists[cross2_idx][order] = f_lists
                     self.freq[cross2_idx][order] = None
                     self.s[cross2_idx][order] = None
                     self.s_gpu[cross2_idx][order] = None
@@ -658,7 +652,6 @@ class SpectrumCalculator:
         for cross3_idx in self.cross3_selected:
             for order in orders:
                 if order == 3:
-                    self.f_lists[cross3_idx][order] = f_lists
                     self.freq[cross3_idx][order] = None
                     self.s[cross3_idx][order] = None
                     self.s_gpu[cross3_idx][order] = None
@@ -670,7 +663,6 @@ class SpectrumCalculator:
         for cross4_idx in self.cross4_selected:
             for order in orders:
                 if order == 4:
-                    self.f_lists[cross4_idx][order] = f_lists
                     self.freq[cross4_idx][order] = None
                     self.s[cross4_idx][order] = None
                     self.s_gpu[cross4_idx][order] = None
@@ -681,7 +673,7 @@ class SpectrumCalculator:
     def reset(self):
         orders = self.process_order()
         self.orders = orders
-        self.reset_variables(orders, f_lists=self.sconfig.f_lists)
+        self.reset_variables(orders)
         return orders
 
     def setup_calc_spec(self, orders):

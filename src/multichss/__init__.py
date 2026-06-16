@@ -5,18 +5,19 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-from .MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
 from .MultiChSS_SpectrumCalculator import SpectrumCalculator
 from .MultiChSS_SpectrumPlotter import SpectrumPlotter
 
-from .config import CrossConfig, PlotConfig
+from .config import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
+from .utils import data_config_dic
 
 __all__ = [
-    "SpectrumConfig",
-    "DataImportConfig",
     "CrossConfig",
+    "DataConfig",
     "PlotConfig",
+    "SpectrumConfig",
     "SpectrumCalculator",
-    "SpectrumPlotter"
+    "SpectrumPlotter",
+    "data_config_dic"
 ]
 
