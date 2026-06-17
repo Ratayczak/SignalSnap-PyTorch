@@ -5,6 +5,8 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+import warnings
+
 from .MultiChSS_SpectrumCalculator import SpectrumCalculator
 from .MultiChSS_SpectrumPlotter import SpectrumPlotter
 
@@ -21,3 +23,12 @@ __all__ = [
     "data_config_dic"
 ]
 
+def __getattr__(name):
+    if name == "DataImportConfig":
+        warnings.warn(
+            "DataImportConfig is deprecated and reworked into DataConfig. Please update your code.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return DataConfig
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
