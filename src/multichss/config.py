@@ -27,11 +27,13 @@ class CrossConfig(BaseModel):
 class DataConfig(BaseModel):
     model_config = SHARED_CONFIG
 
+    dt: Annotated[float, Field(gt=0)]
+
     data: Any | None = None
     path: str | None = None
     group_key: str | None = None
     dataset: str | None = None
-    dt: float | None = None
+    
 
 
 class PlotConfig(BaseModel):
@@ -70,8 +72,6 @@ class PlotConfig(BaseModel):
 
 class SpectrumConfig(BaseModel):
     model_config = SHARED_CONFIG
-
-    dt: Annotated[float, Field(gt=0)]
     
     f_unit: Literal['Hz', 'kHz', 'MHz', 'GHz', 'THz'] = 'Hz'
     f_max: float | None = None
