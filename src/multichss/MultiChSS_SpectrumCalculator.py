@@ -25,12 +25,16 @@ def load_spec(path):
     f.close()
     return obj
 
+
+# done
 def to_hdf(dt, data, path, group_name, dataset_name):
     with h5py.File(path, "w") as f:
         grp = f.create_group(group_name)
         d = grp.create_dataset(dataset_name, data=data)
         d.attrs['dt'] = dt
 
+
+# done
 def unit_conversion(f_unit: str) -> str:
 
     mapping = {
@@ -46,6 +50,7 @@ def unit_conversion(f_unit: str) -> str:
     except KeyError:
         raise ValueError(f'Unknown frequency unit: {f_unit}')
 
+# done
 def gaussian_window(x: Tensor,
                     n_windows: int,
                     l: int,
@@ -61,6 +66,7 @@ def gaussian_window(x: Tensor,
     t = (x - center) / denom
     return torch.exp(-t * t)
 
+# done
 def calc_window(x: Tensor, 
                 n_windows: int, 
                 l: int, 
@@ -85,6 +91,7 @@ def calc_window(x: Tensor,
 
     return win
 
+# done
 def cg_window(n_windows: int, fs: float) -> Tuple[Tensor, float]:
     """
     Helper function to calculate the approx. confined gaussian window
