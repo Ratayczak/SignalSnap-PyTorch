@@ -11,6 +11,7 @@ from .MultiChSS_SpectrumCalculator import SpectrumCalculator
 from .MultiChSS_SpectrumPlotter import SpectrumPlotter
 
 from .configurators import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
+from .planning import RuntimeConfig, build_runtime_config
 from .utils import data_config_dic
 
 __all__ = [
@@ -18,8 +19,10 @@ __all__ = [
     "DataConfig",
     "PlotConfig",
     "SpectrumConfig",
+    "RuntimeConfig",
     "SpectrumCalculator",
     "SpectrumPlotter",
+    "build_runtime_config",
     "data_config_dic"
 ]
 

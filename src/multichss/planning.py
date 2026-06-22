@@ -6,8 +6,74 @@
 # https://opensource.org/licenses/BSD-3-Clause
 
 from dataclasses import dataclass
+import numpy as np
+import torch
+
 from .results import SpectrumResultStore, SpectrumResult
-from .configurators import SpectrumConfig, CrossConfig
+from .configurators import SpectrumConfig, CrossConfig, DataConfig
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    """Resolved calculation settings derived from user configuration.
+
+    ``SpectrumConfig`` and ``DataConfig`` describe what the user asked for.
+    ``RuntimeConfig`` describes what the calculation will actually use after
+    defaults, data-size constraints, frequency axes, and device details have
+    been resolved.
+
+    Parameters
+    ----------
+    selected : tuple[int, ...]
+        Data-channel indices used by the calculation.
+    dt : float
+        Sampling interval shared by all selected data channels.
+    fs : float
+        Sampling frequency.
+    f_max_allowed : float
+        Nyquist frequency.
+    f_min, f_max : float
+        Effective frequency bounds used for index selection.
+    t_window : float
+        Window duration in time units.
+    window_points : int
+        Number of samples per window.
+    m, m_var : int
+        Effective window count per spectrum and error batch size.
+    n_data_points : int
+        Number of samples in each selected data channel.
+    n_windows : int
+        Number of window groups processed by the calculation.
+    freq_all : np.ndarray
+        Full generated frequency axis before selecting ``f_min:f_max``.
+    f_min_idx, f_max_idx : int
+        Slice indices selecting the configured frequency band.
+    use_full_fft : bool
+        Whether negative frequencies require full FFT handling.
+    use_float32 : bool
+        Whether host data should be converted to float32 before device upload.
+    device : torch.device
+        Torch device used for calculation.
+    """
+
+    selected: tuple[int, ...]
+    dt: float
+    fs: float
+    f_max_allowed: float
+    f_min: float
+    f_max: float
+    t_window: float
+    window_points: int
+    m: int
+    m_var: int
+    n_data_points: int
+    n_windows: int
+    freq_all: np.ndarray
+    f_min_idx: int
+    f_max_idx: int
+    use_full_fft: bool
+    use_float32: bool
+    device: torch.device
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +100,155 @@ class SpectrumTask:
 
     order: int
     channels: tuple[int, ...]
+
+
+def normalize_selected(
+    data_config_list: list[DataConfig],
+    selected: list[int] | None = None,
+) -> tuple[int, ...]:
+    """Resolve selected data-channel indices."""
+    if selected is None:
+        return tuple(range(len(data_config_list)))
+
+    if not selected:
+        raise ValueError("At least one data channel must be selected.")
+
+    n_data_configs = len(data_config_list)
+    for channel in selected:
+        if channel < 0 or channel >= n_data_configs:
+            raise IndexError(
+                f"Selected channel {channel} is outside available data "
+                f"channels 0..{n_data_configs - 1}."
+            )
+
+    return tuple(selected)
+
+
+def validate_data_configs(
+    data_config_list: list[DataConfig],
+    selected: tuple[int, ...],
+) -> tuple[int, float]:
+    """Validate selected data and return ``(n_data_points, dt)``."""
+    if not data_config_list:
+        raise ValueError("At least one DataConfig is required.")
+
+    if not selected:
+        raise ValueError("At least one data channel must be selected.")
+
+    first_config = data_config_list[selected[0]]
+    if first_config.data is None:
+        raise ValueError(f"Selected channel {selected[0]} does not contain data.")
+
+    try:
+        n_data_points = first_config.data.shape[0]
+    except AttributeError as exc:
+        raise TypeError("DataConfig.data must provide a shape attribute.") from exc
+
+    dt = first_config.dt
+
+    for channel in selected:
+        data_config = data_config_list[channel]
+        if data_config.data is None:
+            raise ValueError(f"Selected channel {channel} does not contain data.")
+        if data_config.data.shape[0] != n_data_points:
+            raise ValueError("Imported data must have same length!")
+        if data_config.dt != dt:
+            raise ValueError("Selected data channels must use the same dt.")
+
+    return n_data_points, dt
+
+
+def build_runtime_config(
+    spectrum_config: SpectrumConfig,
+    data_config_list: list[DataConfig],
+    selected: list[int] | None = None,
+) -> RuntimeConfig:
+    """Resolve immutable user configuration into calculation runtime values.
+
+    This absorbs the non-mutating parts of the old calculator ``__init__`` and
+    ``setup_calc_spec`` logic: selected-channel normalization, data validation,
+    Nyquist-derived ``f_max`` defaulting, window sizing, effective ``m`` and
+    ``m_var`` values, FFT mode, device precision behavior, and frequency-band
+    indices.
+    """
+    selected_channels = normalize_selected(data_config_list, selected)
+    n_data_points, dt = validate_data_configs(data_config_list, selected_channels)
+
+    device = torch.device(spectrum_config.backend)
+    fs = 1 / dt
+    f_max_allowed = 1 / (2 * dt)
+    f_max = spectrum_config.f_max
+    if f_max is None:
+        f_max = f_max_allowed
+
+    window_len_factor = f_max_allowed / (f_max - spectrum_config.f_min)
+    t_window = (spectrum_config.spectrum_size - 1) * (
+        2 * dt * window_len_factor
+    )
+    window_points = int(np.round(t_window / dt))
+    if window_points <= 0:
+        raise ValueError("Calculated window_points must be greater than zero.")
+
+    orders = (
+        [1, 2, 3, 4]
+        if spectrum_config.order_in == "all"
+        else list(spectrum_config.order_in)
+    )
+    if spectrum_config.f_min < 0 and 3 in orders:
+        orders.remove(3)
+
+    if not window_points * spectrum_config.m + window_points // 2 < n_data_points:
+        m = (n_data_points - window_points // 2) // window_points
+        if m < max(orders):
+            raise ValueError("Not enough data points")
+        print(f"Values have been changed. Old m: {spectrum_config.m}, new m: {m}")
+    else:
+        m = spectrum_config.m
+
+    denom_spec = window_points * m + window_points // 2
+    n_spectra = n_data_points // denom_spec
+    if n_spectra < spectrum_config.m_var:
+        if n_spectra < 2:
+            raise ValueError("Not enough data points.")
+        print(
+            "m_var values have been changed. "
+            f"Old: {spectrum_config.m_var}, new: {n_spectra}"
+        )
+        m_var = n_spectra
+    else:
+        m_var = spectrum_config.m_var
+
+    n_windows = int(np.floor(n_data_points / (m * window_points)))
+    use_full_fft = spectrum_config.f_min < 0
+    if use_full_fft:
+        freq_all = np.fft.fftfreq(window_points, dt)
+        freq_all = np.fft.fftshift(freq_all)
+    else:
+        freq_all = np.fft.rfftfreq(window_points, dt)
+
+    f_max_idx = int(np.sum(freq_all <= f_max))
+    f_min_idx = int(np.sum(freq_all < spectrum_config.f_min))
+
+    return RuntimeConfig(
+        selected=selected_channels,
+        dt=dt,
+        fs=fs,
+        f_max_allowed=f_max_allowed,
+        f_min=spectrum_config.f_min,
+        f_max=f_max,
+        t_window=t_window,
+        window_points=window_points,
+        m=m,
+        m_var=m_var,
+        n_data_points=n_data_points,
+        n_windows=n_windows,
+        freq_all=freq_all,
+        f_min_idx=f_min_idx,
+        f_max_idx=f_max_idx,
+        use_full_fft=use_full_fft,
+        use_float32=spectrum_config.backend == "mps",
+        device=device,
+    )
 
 
 def build_spectrum_tasks(
