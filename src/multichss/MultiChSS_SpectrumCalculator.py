@@ -17,7 +17,7 @@ from tabulate import tabulate
 from torch import Tensor
 from typing import Dict, Optional, Tuple
 
-from multichss.config import CrossConfig, SpectrumConfig, DataConfig
+from multichss.configurators import CrossConfig, SpectrumConfig, DataConfig
 
 def load_spec(path):
     f = open(path, mode='rb')
