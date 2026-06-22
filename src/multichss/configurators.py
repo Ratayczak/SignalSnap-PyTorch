@@ -23,6 +23,20 @@ SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
 class CrossConfig(BaseModel):
+    """Configuration to specify which single- or multi-channel spectra are
+    to be computed at each order.
+
+    Attributes
+    ----------
+        auto_corr:
+            Determines wether single-channel (auto-correlation) spectra 
+            will be calculated.
+
+        cross_corr_X:
+            Specifies which multi-channel (cross-correlation) spectra will
+            be calculated at order X.
+    """
+
     model_config = SHARED_CONFIG
 
     auto_corr: bool = True
@@ -32,14 +46,21 @@ class CrossConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
+    """Configuration for data used in polyspectra calculations.
+
+    Attributes
+    ----------
+        data:
+            The recorded signal data (e.g. a NumPy array).
+        dt:
+            The time interval between two consecutive data points
+            (must be > 0).
+    """
+
     model_config = SHARED_CONFIG
 
+    data: Any
     dt: Annotated[float, Field(gt=0)]
-
-    data: Any | None = None
-    path: str | None = None
-    group_key: str | None = None
-    dataset: str | None = None
 
 
 class PlotConfig(BaseModel):
@@ -90,9 +111,7 @@ class SpectrumConfig(BaseModel):
     f_unit: Literal["Hz", "kHz", "MHz", "GHz", "THz"] = "Hz"
     f_max: float | None = None
     f_min: float = 0.0
-    s3_calc: Literal["1/4", "1/2"] = (
-        "1/4"  # TODO Add '1' here later when ready
-    )
+    s3_calc: Literal["1/4", "1/2"] = "1/4"  # TODO Add '1' here later when ready
     backend: Literal["cpu", "mps", "cuda"] = "mps"
     spectrum_size: Annotated[int, Field(gt=0)] = 100
     order_in: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"

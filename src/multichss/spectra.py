@@ -65,3 +65,6 @@ def _acG_window_func(
     )
 
     return acG_k / torch.max(acG_k)
+
+
+def calculate_spectra():

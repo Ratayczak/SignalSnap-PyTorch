@@ -2,7 +2,7 @@ from typing import Any, Iterable
 
 import h5py
 
-from multichss.config import DataConfig
+from multichss.configurators import DataConfig
 
 
 def data_config_dic(

@@ -10,7 +10,7 @@ import warnings
 from .MultiChSS_SpectrumCalculator import SpectrumCalculator
 from .MultiChSS_SpectrumPlotter import SpectrumPlotter
 
-from .config import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
+from .configurators import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
 from .utils import data_config_dic
 
 __all__ = [

@@ -6,7 +6,7 @@
 # https://opensource.org/licenses/BSD-3-Clause
 
 from multichss.MultiChSS_SpectrumCalculator import SpectrumCalculator
-from multichss.config import CrossConfig, PlotConfig, SpectrumConfig
+from multichss.configurators import CrossConfig, PlotConfig, SpectrumConfig
  
 import pandas as pd
 import numpy as np
