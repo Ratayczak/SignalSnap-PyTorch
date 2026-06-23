@@ -8,6 +8,8 @@
 from dataclasses import dataclass, field
 import numpy as np
 import torch
+from typing import Literal
+from .planning import RuntimeConfig
 
 
 @dataclass(slots=True)
@@ -45,7 +47,7 @@ class SpectrumResult:
         Running total accumulation buffer of the calculated spectra on the
         active torch device
     error_buffer : torch.Tensor | None
-        Temporary device buffer holding a subset batch of `m_var` window
+        Temporary device buffer holding a subset batch of `m` window
         chunks to compute intermediate variance profiles.
     error_accumulator : np.ndarray | None
         Running summation of variance metrics (split across real and
@@ -94,15 +96,15 @@ class SpectrumResult:
 
 @dataclass(slots=True)
 class SpectrumResultStore:
-    """Container for all spectrum results produced by a calculation 
+    """Container for all spectrum results produced by a calculation
     pipeline.
 
-    Stores one :class:`SpectrumResult` per channel tuple and spectrum 
+    Stores one :class:`SpectrumResult` per channel tuple and spectrum
     order.
     Results are indexed by ``(channels, order)``, where ``channels`` is a
     tuple of data-channel indices and ``order`` is the polyspectrum order.
 
-    This class owns collection-level bookkeeping only. Numerical 
+    This class owns collection-level bookkeeping only. Numerical
     accumulation, error estimation, and finalization are handled elsewhere.
 
     Attributes
@@ -113,6 +115,7 @@ class SpectrumResultStore:
         auto-spectrum of channel 0, while ``((0, 1), 2)`` identifies a
         second-order cross-spectrum between channels 0 and 1.
     """
+
     results: dict[tuple[tuple[int, ...], int], SpectrumResult] = field(
         default_factory=dict
     )
@@ -129,3 +132,63 @@ class SpectrumResultStore:
         """Reset the mutable calculation state of all stored results."""
         for result in self.results.values():
             result.reset_state()
+
+
+def initialize_result_arrays(
+    result_store: SpectrumResultStore,
+    runtime: RuntimeConfig,
+) -> None:
+    freq_band = runtime.freq_all[runtime.f_min_idx : runtime.f_max_idx]
+
+    for result in result_store.results.values():
+        initialize_result(result, freq_band, runtime)
+
+
+def initialize_result(
+    result: SpectrumResult,
+    freq_band: np.ndarray,
+    runtime: RuntimeConfig,
+) -> None:
+    order = result.order
+    f_size = freq_band.shape[0]
+
+    if order == 3:
+        half_size = f_size // 2
+        result.freq = freq_band[:half_size]
+
+        if runtime.s3_calc == "1/2":
+            result.freq = np.concatenate((-result.freq[:0:-1], result.freq))
+    else:
+        result.freq = freq_band
+
+    result.error_buffer = allocate_error_buffer(
+        order=order,
+        f_size=f_size,
+        m=runtime.m,
+        device=runtime.device,
+        s3_calc=runtime.s3_calc,
+    )
+
+
+def allocate_error_buffer(
+    order: int,
+    f_size: int,
+    m: int,
+    device: torch.device,
+    s3_calc: Literal["1/4", "1/2"],
+):
+    if order == 1:
+        shape = (1, m)
+    elif order == 2:
+        shape = (f_size, m)
+    elif order == 3:
+        if s3_calc == "1/2":
+            shape = (f_size // 2, 2 * (f_size // 2) - 1, m)
+        else:
+            shape = (f_size // 2, f_size // 2, m)
+    elif order == 4:
+        shape = (f_size, f_size, m)
+    else:
+        raise ValueError(f"{order} not a valid order.")
+
+    return torch.ones(shape, device=device, dtype=torch.complex64)
