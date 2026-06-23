@@ -5,8 +5,13 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from collections.abc import Iterator
+
+import numpy as np
 import torch
 from torch import Tensor
+
+from .planning import RuntimeConfig
 
 
 def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:
@@ -31,7 +36,7 @@ def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:
     return torch.exp(-t * t)
 
 
-def _acG_window_func(
+def acG_window_func(
     N: int,
     sigma_t: float = 0.14,
     torch_device: torch.device = torch.device("cpu"),
@@ -60,8 +65,65 @@ def _acG_window_func(
     term_h_p_N = term_h
     term_h_m_N = _gaussian(h - N, N, sigma_t)
 
-    acG_k = term_k - (term_h * (term_k_p_N + term_k_m_N)) / (
-        term_h_p_N + term_h_m_N
-    )
+    acG_k = term_k - (term_h * (term_k_p_N + term_k_m_N)) / (term_h_p_N + term_h_m_N)
 
     return acG_k / torch.max(acG_k)
+
+
+def to_device(array: np.ndarray, runtime: RuntimeConfig) -> torch.Tensor:
+    if runtime.use_float32:
+        array = array.astype(np.float32, copy=False)
+
+    return torch.from_numpy(array).to(runtime.device)
+
+
+def compute_fft(
+    chunk: torch.Tensor,
+    window: torch.Tensor,
+    runtime: RuntimeConfig,
+) -> torch.Tensor:
+    weighted_chunk = window * chunk
+
+    if runtime.use_full_fft:
+        coeffs = torch.fft.fft(weighted_chunk, dim=1)
+        coeffs = torch.fft.fftshift(coeffs, dim=1)
+    else:
+        coeffs = torch.fft.rfft(weighted_chunk, dim=1)
+
+    return coeffs * runtime.dt
+
+
+def prepare_windows(runtime: RuntimeConfig) -> torch.Tensor:
+    dtype = torch.float32 if runtime.use_float32 else torch.float64
+    single_window = acG_window_func(
+        runtime.window_points,
+        torch_device=runtime.device,
+        dtype=dtype,
+    )
+
+    return single_window.reshape(1, runtime.window_points, 1).repeat(runtime.m, 1, 1)
+
+
+def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
+    chunk_size = runtime.window_points * runtime.m
+
+    for window_index in range(runtime.n_windows):
+        base = window_index * chunk_size
+        for shift in (0, runtime.window_points // 2):
+            start = base + shift
+            end = start + chunk_size
+            yield start, end
+
+
+def reshape_window_chunk(
+    chunk: np.ndarray,
+    runtime: RuntimeConfig,
+) -> np.ndarray:
+    expected_size = runtime.window_points * runtime.m
+
+    if chunk.shape[0] != expected_size:
+        raise ValueError(
+            f"Expected chunk with {expected_size} samples, got {chunk.shape[0]}."
+        )
+
+    return chunk.reshape(runtime.m, runtime.window_points, 1)
