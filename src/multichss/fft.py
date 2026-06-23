@@ -71,6 +71,7 @@ def acG_window_func(
 
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> torch.Tensor:
+    """Copy np.array to torch.device using the correct data type"""
     if runtime.use_float32:
         array = array.astype(np.float32, copy=False)
 
@@ -82,6 +83,7 @@ def compute_fft(
     window: torch.Tensor,
     runtime: RuntimeConfig,
 ) -> torch.Tensor:
+    """Compute the FFT as specified in DOI:10.1016/j.dsp.2026.105893"""
     weighted_chunk = window * chunk
 
     if runtime.use_full_fft:
@@ -94,6 +96,7 @@ def compute_fft(
 
 
 def prepare_windows(runtime: RuntimeConfig) -> torch.Tensor:
+    """Return window for m chunks in the correct shape"""
     dtype = torch.float32 if runtime.use_float32 else torch.float64
     single_window = acG_window_func(
         runtime.window_points,
@@ -105,6 +108,7 @@ def prepare_windows(runtime: RuntimeConfig) -> torch.Tensor:
 
 
 def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
+    """Return the window slice indices"""
     chunk_size = runtime.window_points * runtime.m
 
     for window_index in range(runtime.n_windows):
@@ -119,6 +123,7 @@ def reshape_window_chunk(
     chunk: np.ndarray,
     runtime: RuntimeConfig,
 ) -> np.ndarray:
+    """Reshape each chunk to m windows"""
     expected_size = runtime.window_points * runtime.m
 
     if chunk.shape[0] != expected_size:
