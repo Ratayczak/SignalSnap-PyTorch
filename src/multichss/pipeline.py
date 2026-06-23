@@ -25,9 +25,8 @@ def calculate_spectra(
         selected=selected,
     )
     tasks = build_spectrum_tasks(
-        spectrum_config,
-        cross_config,
-        list(runtime_config.selected),
+        runtime_config,
+        cross_config
     )
     result_store = initialize_result_store(tasks)
     return runtime_config, tasks, result_store
