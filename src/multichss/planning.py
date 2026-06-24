@@ -5,15 +5,20 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
 import numpy as np
 import torch
 
-from typing import Literal
+from .results import SpectrumResult, SpectrumResultStore
+from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
-from .results import SpectrumResultStore, SpectrumResult
-from .configurators import SpectrumConfig, CrossConfig, DataConfig
-
+if TYPE_CHECKING:
+    from .configurators import CrossConfig, DataConfig, SpectrumConfig
+    
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
@@ -34,6 +39,10 @@ class RuntimeConfig:
         Sampling interval shared by all selected data channels.
     fs : float
         Sampling frequency.
+    t_unit : Literal["s", "ms", "us", "ns", "ps"]
+        Unit of time step.
+    f_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
+        Unit of sampling frequency.
     f_max_allowed : float
         Nyquist frequency.
     f_min, f_max : float
@@ -67,6 +76,8 @@ class RuntimeConfig:
     orders: tuple[int, ...]
     dt: float
     fs: float
+    t_unit: TimeUnits
+    f_unit: FrequencyUnits
     f_max_allowed: float
     f_min: float
     f_max: float
@@ -135,8 +146,8 @@ def normalize_selected(
 def validate_data_configs(
     data_config_list: list[DataConfig],
     selected: tuple[int, ...],
-) -> tuple[int, float]:
-    """Validate selected data and return ``(n_data_points, dt)``."""
+) -> tuple[int, float, TimeUnits]:
+    """Validate selected data and return ``(n_data_points, dt, t_unit)``."""
     if not data_config_list:
         raise ValueError("At least one DataConfig is required.")
 
@@ -153,6 +164,7 @@ def validate_data_configs(
         raise TypeError("DataConfig.data must provide a shape attribute.") from exc
 
     dt = first_config.dt
+    t_unit = first_config.t_unit
 
     for channel in selected:
         data_config = data_config_list[channel]
@@ -160,10 +172,10 @@ def validate_data_configs(
             raise ValueError(f"Selected channel {channel} does not contain data.")
         if data_config.data.shape[0] != n_data_points:
             raise ValueError("Imported data must have same length!")
-        if data_config.dt != dt:
-            raise ValueError("Selected data channels must use the same dt.")
+        if data_config.dt != dt or data_config.t_unit != t_unit:
+            raise ValueError("Selected data channels must use the same dt and t_unit.")
 
-    return n_data_points, dt
+    return n_data_points, dt, t_unit
 
 
 def build_runtime_config(
@@ -180,7 +192,8 @@ def build_runtime_config(
     frequency-band indices.
     """
     selected_channels = normalize_selected(data_config_list, selected)
-    n_data_points, dt = validate_data_configs(data_config_list, selected_channels)
+    n_data_points, dt, t_unit = validate_data_configs(data_config_list, 
+                                                      selected_channels)
 
     device = torch.device(spectrum_config.backend)
     fs = 1 / dt
@@ -239,6 +252,8 @@ def build_runtime_config(
         orders=tuple(orders),
         dt=dt,
         fs=fs,
+        t_unit=t_unit,
+        f_unit=unit_conversion_time_to_freq(t_unit),
         f_max_allowed=f_max_allowed,
         f_min=spectrum_config.f_min,
         f_max=f_max,

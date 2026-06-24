@@ -5,9 +5,15 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-from typing import Any, Iterable
+from __future__ import annotations
 
-from multichss.configurators import DataConfig
+from typing import TYPE_CHECKING, Any, Iterable, Literal, TypeAlias
+
+if TYPE_CHECKING:
+    from multichss.configurators import DataConfig
+
+TimeUnits: TypeAlias = Literal["s", "ms", "us", "ns", "ps"]
+FrequencyUnits: TypeAlias = Literal["Hz", "kHz", "MHz", "GHz", "THz"]
 
 
 def data_config_dic(
@@ -16,10 +22,16 @@ def data_config_dic(
     return {config.data: config for config in data_config_list}
 
 
-def unit_conversion_freq_to_time(f_unit: str) -> str:
-    mapping = {"Hz": "s", "kHz": "ms", "MHz": "us", "GHz": "ns", "THz": "ps"}
+def unit_conversion_time_to_freq(t_unit: TimeUnits) -> FrequencyUnits:
+    mapping: dict[TimeUnits, FrequencyUnits] = {
+        "s": "Hz",
+        "ms": "kHz",
+        "us": "MHz",
+        "ns": "GHz",
+        "ps": "THz",
+    }
 
     try:
-        return mapping[f_unit]
+        return mapping[t_unit]
     except KeyError:
-        raise ValueError(f"Unknown frequency unit: {f_unit}")
+        raise ValueError(f"Unknown time unit: {t_unit}")

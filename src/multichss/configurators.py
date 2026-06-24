@@ -5,6 +5,8 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -18,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from .utils import TimeUnits
+
 os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
 SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -29,7 +33,7 @@ class CrossConfig(BaseModel):
     Attributes
     ----------
         auto_corr:
-            Determines wether single-channel (auto-correlation) spectra 
+            Determines wether single-channel (auto-correlation) spectra
             will be calculated.
 
         cross_corr_X:
@@ -50,17 +54,20 @@ class DataConfig(BaseModel):
 
     Attributes
     ----------
-        data:
+        data: Any
             The recorded signal data (e.g. a NumPy array).
-        dt:
-            The time interval between two consecutive data points
+        dt: Annotated[float, Field(gt=0)]
+            The time interval between two consecutive data points 
             (must be > 0).
+        t_unit: Literal["s", "ms", "us", "ns", "ps"]
+            Unit of the time step. Defaults to "s".
     """
 
     model_config = SHARED_CONFIG
 
     data: Any
     dt: Annotated[float, Field(gt=0)]
+    t_unit: TimeUnits = "s"
 
 
 class PlotConfig(BaseModel):
@@ -108,7 +115,6 @@ class PlotConfig(BaseModel):
 class SpectrumConfig(BaseModel):
     model_config = SHARED_CONFIG
 
-    f_unit: Literal["Hz", "kHz", "MHz", "GHz", "THz"] = "Hz"
     f_max: float | None = None
     f_min: float = 0.0
     s3_calc: Literal["1/4", "1/2"] = "1/4"  # TODO Add '1' here later when ready
