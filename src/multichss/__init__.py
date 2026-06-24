@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-
 from .configurators import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
 from .pipeline import calculate_spectra
 from .planning import (
@@ -18,7 +17,12 @@ from .planning import (
     initialize_result_store,
 )
 from .results import SpectrumResult, SpectrumResultStore
-from .utils import FrequencyUnits, TimeUnits, data_config_dic, unit_conversion_time_to_freq
+from .utils import (
+    FrequencyUnits,
+    TimeUnits,
+    data_config_dic,
+    unit_conversion_time_to_freq,
+)
 
 __all__ = [
     "CrossConfig",
