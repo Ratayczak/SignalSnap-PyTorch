@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from .utils import TimeUnits, S3Calcs
+from .utils import S3Calcs, TimeUnits
 
 os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
 SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
