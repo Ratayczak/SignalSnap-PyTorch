@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from .configurators import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
-from .pipeline import calculate_spectra
+from .pipelines import calculate_spectra
 from .planning import (
     RuntimeConfig,
     SpectrumTask,
