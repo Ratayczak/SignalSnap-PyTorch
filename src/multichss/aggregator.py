@@ -5,10 +5,11 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-from .results import SpectrumResult
-from .planning import RuntimeConfig
-import torch
 import numpy as np
+import torch
+
+from .planning import RuntimeConfig
+from .results import SpectrumResult
 
 
 def accumulate_spectrum(
