@@ -123,7 +123,7 @@ class SpectrumConfig(BaseModel):
     order_in: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"
     m: Annotated[int, Field(gt=0)] = 10
     show_first_frame: bool = True
-    break_after: int = int(1e6)
+    break_after: Annotated[int, Field(gt=0)] | None = int(1e6)
 
     @model_validator(mode="after")
     def validate_frequency_limits(self) -> "SpectrumConfig":
