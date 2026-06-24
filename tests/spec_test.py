@@ -3,9 +3,8 @@
 # However i know the results so they are good for testing.
 
 import numpy as np
-from multichss.MultiChSS_SpectrumConfig import SpectrumConfig, DataImportConfig
-from multichss.MultiChSS_SpectrumCalculator import SpectrumCalculator
-from multichss.MultiChSS_CrossConfig import CrossConfig
+from multichss.pipelines import calculate_spectra
+from multichss.configurators import CrossConfig, SpectrumConfig, DataConfig
 
 def test_c1_returns_correct_mean():
     """
@@ -18,24 +17,27 @@ def test_c1_returns_correct_mean():
     y = np.sin(2 * np.pi * t) + 2  # known mean = 2.0
 
     # Wrap into config objects
-    config1 = DataImportConfig(data=y)
+    config1 = DataConfig(data=y, dt=0.01, t_unit="s")
     selected_data = [0]
 
     sconfig = SpectrumConfig(
-        dt=0.01, f_min=0, f_max=2, s3_calc='1/4',
-        f_unit='Hz', backend='cpu', order_in=[1],
+        f_min=0, f_max=2, s3_calc='1/4', backend='cpu', order_in=[1],
         spectrum_size=100, show_first_frame=False
     )
 
     cconfig = CrossConfig(auto_corr=True)
 
     # Run the spectrum calculator
-    scalc = SpectrumCalculator(sconfig, cconfig, [config1], selected=selected_data)
-    scalc.calc_spec()
+    result_store = calculate_spectra(sconfig, cconfig, [config1], selected_data)
+    result = result_store.get((0,), 1)
+
+    assert result.spectrum is not None
 
     # Grab the component from the first-order spectrum
-    real_part = scalc.s[0][1][0].real
-    imag_part = scalc.s[0][1][0].imag
+    real_part = result.spectrum[0].real
+    imag_part = result.spectrum[0].imag
+
+    print(result.spectrum)
 
     # Assert
     assert abs(real_part - 2.0) < 1e-6, f"Expected real=2.0, got {real_part}"
