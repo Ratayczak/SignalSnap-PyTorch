@@ -18,14 +18,14 @@ from .utils import FrequencyUnits, S3Calcs, TimeUnits, unit_conversion_time_to_f
 
 if TYPE_CHECKING:
     from .configurators import CrossConfig, DataConfig, SpectrumConfig
-    
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """Resolved calculation settings derived from user configuration.
 
     ``SpectrumConfig`` and ``DataConfig`` describe what the user asked for.
-    ``RuntimeConfig`` describes what the calculation will actually use 
+    ``RuntimeConfig`` describes what the calculation will actually use
     after defaults, data-size constraints, frequency axes, and device
     details have been resolved.
 
@@ -188,14 +188,15 @@ def build_runtime_config(
     """Resolve immutable user configuration into calculation runtime values.
 
     This absorbs the non-mutating parts of the old calculator ``__init__``
-    and ``setup_calc_spec`` logic: selected-channel normalization, data 
-    validation, Nyquist-derived ``f_max`` defaulting, window sizing, 
-    effective ``m`` value, FFT mode, device precision behavior, and 
+    and ``setup_calc_spec`` logic: selected-channel normalization, data
+    validation, Nyquist-derived ``f_max`` defaulting, window sizing,
+    effective ``m`` value, FFT mode, device precision behavior, and
     frequency-band indices.
     """
     selected_channels = normalize_selected(data_config_list, selected)
-    n_data_points, dt, t_unit = validate_data_configs(data_config_list, 
-                                                      selected_channels)
+    n_data_points, dt, t_unit = validate_data_configs(
+        data_config_list, selected_channels
+    )
 
     device = torch.device(spectrum_config.backend)
     fs = 1 / dt
@@ -271,7 +272,7 @@ def build_runtime_config(
         use_float32=spectrum_config.backend == "mps",
         device=device,
         s3_calc=spectrum_config.s3_calc,
-        break_after=spectrum_config.break_after
+        break_after=spectrum_config.break_after,
     )
 
 
@@ -282,7 +283,7 @@ def build_spectrum_tasks(
     """Build the concrete spectrum tasks requested by the configuration.
 
     Expands the high-level configuration into one :class:`SpectrumTask` per
-    spectrum that should be calculated. Auto-correlation tasks are 
+    spectrum that should be calculated. Auto-correlation tasks are
     generated for each selected channel when ``cross_config.auto_corr`` is
     enabled. Cross tasks are generated from ``cross_corr_2``,
     ``cross_corr_3``, and ``cross_corr_4`` when their corresponding orders
@@ -333,6 +334,9 @@ def build_spectrum_tasks(
                     )
             tasks.append(SpectrumTask(channels=channels, order=order))
 
+    if not tasks:
+        raise ValueError("No spectrum tasks were requested.")
+    
     task_keys = [(task.channels, task.order) for task in tasks]
     if len(task_keys) != len(set(task_keys)):
         raise ValueError("Duplicate spectrum tasks were requested.")
@@ -340,18 +344,21 @@ def build_spectrum_tasks(
     return tasks
 
 
-def initialize_result_store(tasks: list[SpectrumTask]) -> SpectrumResultStore:
+def initialize_result_store(
+    tasks: list[SpectrumTask], runtime: RuntimeConfig
+) -> SpectrumResultStore:
     """Create an empty result store for a list of spectrum tasks.
 
-    Each task is converted into a :class:`SpectrumResult` with matching 
-    order and channels. The returned store contains result containers only;
-    device buffers, frequency axes, accumulated spectra, and error 
-    estimates are filled later by the calculation pipeline.
+    Each task is converted into a :class:`SpectrumResult` with matching
+    order and channels.
 
     Parameters
     ----------
     tasks : list[SpectrumTask]
         Spectrum tasks that should receive corresponding result containers.
+    runtime: RuntimeConfig
+        RuntimeConfig that contains all necessary information to initialize
+        result arrays
 
     Returns
     -------
@@ -361,4 +368,5 @@ def initialize_result_store(tasks: list[SpectrumTask]) -> SpectrumResultStore:
     store = SpectrumResultStore()
     for task in tasks:
         store.add(SpectrumResult(order=task.order, channels=task.channels))
+    store.initialize_arrays(runtime)
     return store
