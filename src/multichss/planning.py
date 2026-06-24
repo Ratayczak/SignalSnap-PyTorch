@@ -69,7 +69,8 @@ class RuntimeConfig:
     device : torch.device
         Torch device used for calculation.
     s3_calc: Literal["1/4", "1/2"]
-        
+    break_after: int | None
+        Maximum number of calculated spectra
     """
 
     selected: tuple[int, ...]
@@ -93,6 +94,7 @@ class RuntimeConfig:
     use_float32: bool
     device: torch.device
     s3_calc: S3Calcs
+    break_after: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +270,8 @@ def build_runtime_config(
         use_full_fft=use_full_fft,
         use_float32=spectrum_config.backend == "mps",
         device=device,
-        s3_calc=spectrum_config.s3_calc
+        s3_calc=spectrum_config.s3_calc,
+        break_after=spectrum_config.break_after
     )
 
 
@@ -322,7 +325,17 @@ def build_spectrum_tasks(
                 raise ValueError(
                     f"Order {order} spectra require {order} channels, got {channels}."
                 )
+            for channel in channels:
+                if channel not in runtime_config.selected:
+                    raise ValueError(
+                        f"Cross spectrum {channels} references channel {channel}, "
+                        f"which is not in selected channels {runtime_config.selected}."
+                    )
             tasks.append(SpectrumTask(channels=channels, order=order))
+
+    task_keys = [(task.channels, task.order) for task in tasks]
+    if len(task_keys) != len(set(task_keys)):
+        raise ValueError("Duplicate spectrum tasks were requested.")
 
     return tasks
 
