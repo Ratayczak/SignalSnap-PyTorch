@@ -347,7 +347,7 @@ def build_spectrum_tasks(
 def initialize_result_store(
     tasks: list[SpectrumTask], runtime: RuntimeConfig
 ) -> SpectrumResultStore:
-    """Create an empty result store for a list of spectrum tasks.
+    """Create an initialized result store for a list of spectrum tasks.
 
     Each task is converted into a :class:`SpectrumResult` with matching
     order and channels.
@@ -363,7 +363,7 @@ def initialize_result_store(
     Returns
     -------
     SpectrumResultStore
-        Store containing one empty :class:`SpectrumResult` per task.
+        Store containing one initialized :class:`SpectrumResult` per task.
     """
     store = SpectrumResultStore()
     for task in tasks:

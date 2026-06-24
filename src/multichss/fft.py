@@ -118,7 +118,8 @@ def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
         for shift in (0, runtime.window_points // 2):
             start = base + shift
             end = start + chunk_size
-            yield start, end
+            if end <= runtime.n_data_points:
+                yield start, end
 
 
 def reshape_window_chunk(

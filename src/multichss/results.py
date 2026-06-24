@@ -85,7 +85,7 @@ class SpectrumResult:
     @property
     def is_initialized(self) -> bool:
         """Check if the device accumulators have been allocated."""
-        return self.spectrum_accumulator is not None
+        return self.error_buffer is not None
 
     def reset_state(self):
         """Clears accumulators to prepare for a fresh calculation."""
