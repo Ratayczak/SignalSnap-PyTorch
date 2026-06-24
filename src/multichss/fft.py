@@ -74,7 +74,7 @@ def acG_window_func(
     return acG_k / torch.max(acG_k)
 
 
-def to_device(array: np.ndarray, runtime: RuntimeConfig) -> torch.Tensor:
+def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
     """Copy np.array to torch.device using the correct data type"""
     if runtime.use_float32:
         array = array.astype(np.float32, copy=False)
@@ -82,11 +82,7 @@ def to_device(array: np.ndarray, runtime: RuntimeConfig) -> torch.Tensor:
     return torch.from_numpy(array).to(runtime.device)
 
 
-def compute_fft(
-    chunk: torch.Tensor,
-    window: torch.Tensor,
-    runtime: RuntimeConfig,
-) -> torch.Tensor:
+def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor:
     """Compute the FFT as specified in DOI:10.1016/j.dsp.2026.105893"""
     weighted_chunk = window * chunk
 
@@ -99,7 +95,7 @@ def compute_fft(
     return coeffs * runtime.dt
 
 
-def prepare_windows(runtime: RuntimeConfig) -> torch.Tensor:
+def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
     """Return window for m chunks in the correct shape"""
     dtype = torch.float32 if runtime.use_float32 else torch.float64
     single_window = acG_window_func(
@@ -107,8 +103,10 @@ def prepare_windows(runtime: RuntimeConfig) -> torch.Tensor:
         torch_device=runtime.device,
         dtype=dtype,
     )
-
-    return single_window.reshape(1, runtime.window_points, 1).repeat(runtime.m, 1, 1)
+    repeated_window = single_window.reshape(1, runtime.window_points, 1).repeat(
+        runtime.m, 1, 1
+    )
+    return single_window, repeated_window
 
 
 def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
