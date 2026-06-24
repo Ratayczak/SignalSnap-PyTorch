@@ -99,6 +99,27 @@ class SpectrumResult:
         self.chunks_processed = 0
         self.error_batches_processed = 0
 
+    def initialize_arrays(self, freq_band: np.ndarray, runtime: RuntimeConfig) -> None:
+        order = self.order
+        f_size = freq_band.shape[0]
+
+        if order == 3:
+            half_size = f_size // 2
+            self.freq = freq_band[:half_size]
+
+            if runtime.s3_calc == "1/2":
+                self.freq = np.concatenate((-self.freq[:0:-1], self.freq))
+        else:
+            self.freq = freq_band
+
+        self.error_buffer = allocate_error_buffer(
+            order=order,
+            f_size=f_size,
+            m=runtime.m,
+            device=runtime.device,
+            s3_calc=runtime.s3_calc,
+        )
+
 
 @dataclass(slots=True)
 class SpectrumResultStore:
@@ -139,41 +160,11 @@ class SpectrumResultStore:
         for result in self.results.values():
             result.reset_state()
 
+    def initialize_arrays(self, runtime: RuntimeConfig) -> None:
+        freq_band = runtime.freq_all[runtime.f_min_idx : runtime.f_max_idx]
 
-def initialize_result_arrays(
-    result_store: SpectrumResultStore,
-    runtime: RuntimeConfig,
-) -> None:
-    freq_band = runtime.freq_all[runtime.f_min_idx : runtime.f_max_idx]
-
-    for result in result_store.results.values():
-        initialize_result(result, freq_band, runtime)
-
-
-def initialize_result(
-    result: SpectrumResult,
-    freq_band: np.ndarray,
-    runtime: RuntimeConfig,
-) -> None:
-    order = result.order
-    f_size = freq_band.shape[0]
-
-    if order == 3:
-        half_size = f_size // 2
-        result.freq = freq_band[:half_size]
-
-        if runtime.s3_calc == "1/2":
-            result.freq = np.concatenate((-result.freq[:0:-1], result.freq))
-    else:
-        result.freq = freq_band
-
-    result.error_buffer = allocate_error_buffer(
-        order=order,
-        f_size=f_size,
-        m=runtime.m,
-        device=runtime.device,
-        s3_calc=runtime.s3_calc,
-    )
+        for result in self.results.values():
+            result.initialize_arrays(freq_band, runtime)
 
 
 def allocate_error_buffer(
