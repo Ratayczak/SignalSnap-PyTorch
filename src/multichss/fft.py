@@ -5,13 +5,17 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from __future__ import annotations
+
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from torch import Tensor
 
-from .planning import RuntimeConfig
+if TYPE_CHECKING:
+    from .planning import RuntimeConfig
 
 
 def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:

@@ -5,11 +5,16 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import Literal, TYPE_CHECKING
+
 import numpy as np
 import torch
-from typing import Literal
-from .planning import RuntimeConfig
+
+if TYPE_CHECKING:
+    from .planning import RuntimeConfig
 
 
 @dataclass(slots=True)

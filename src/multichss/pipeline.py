@@ -5,12 +5,14 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+from __future__ import annotations
+
+from .configurators import CrossConfig, DataConfig, SpectrumConfig
 from .planning import (
     build_runtime_config,
     build_spectrum_tasks,
     initialize_result_store,
 )
-from .configurators import SpectrumConfig, CrossConfig, DataConfig
 
 
 def calculate_spectra(

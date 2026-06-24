@@ -5,33 +5,36 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
-import warnings
+from __future__ import annotations
 
-from .MultiChSS_SpectrumCalculator import SpectrumCalculator
-from .MultiChSS_SpectrumPlotter import SpectrumPlotter
 
 from .configurators import CrossConfig, DataConfig, PlotConfig, SpectrumConfig
-from .planning import RuntimeConfig, build_runtime_config
-from .utils import data_config_dic
+from .pipeline import calculate_spectra
+from .planning import (
+    RuntimeConfig,
+    SpectrumTask,
+    build_runtime_config,
+    build_spectrum_tasks,
+    initialize_result_store,
+)
+from .results import SpectrumResult, SpectrumResultStore
+from .utils import FrequencyUnits, TimeUnits, data_config_dic, unit_conversion_time_to_freq
 
 __all__ = [
     "CrossConfig",
     "DataConfig",
+    "FrequencyUnits",
     "PlotConfig",
-    "SpectrumConfig",
     "RuntimeConfig",
-    "SpectrumCalculator",
-    "SpectrumPlotter",
+    "SpectrumConfig",
+    "SpectrumResult",
+    "SpectrumResultStore",
+    "SpectrumTask",
+    "TimeUnits",
     "build_runtime_config",
-    "data_config_dic"
+    "build_spectrum_tasks",
+    "calculate_spectra",
+    "data_config_dic",
+    "initialize_result_store",
+    "unit_conversion_time_to_freq",
 ]
-
-def __getattr__(name):
-    if name == "DataImportConfig":
-        warnings.warn(
-            "DataImportConfig is deprecated and reworked into DataConfig. Please update your code.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        return DataConfig
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

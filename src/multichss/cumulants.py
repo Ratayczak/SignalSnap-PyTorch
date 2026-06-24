@@ -4,3 +4,5 @@
 # This software is provided under the terms of the 3-Clause BSD License.
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
+
+from __future__ import annotations
