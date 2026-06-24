@@ -8,13 +8,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
 from .results import SpectrumResult, SpectrumResultStore
-from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
+from .utils import FrequencyUnits, S3Calcs, TimeUnits, unit_conversion_time_to_freq
 
 if TYPE_CHECKING:
     from .configurators import CrossConfig, DataConfig, SpectrumConfig
@@ -92,7 +92,7 @@ class RuntimeConfig:
     use_full_fft: bool
     use_float32: bool
     device: torch.device
-    s3_calc: Literal["1/4", "1/2"]
+    s3_calc: S3Calcs
 
 
 @dataclass(frozen=True, slots=True)

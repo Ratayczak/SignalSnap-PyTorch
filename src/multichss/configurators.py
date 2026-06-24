@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from .utils import TimeUnits
+from .utils import TimeUnits, S3Calcs
 
 os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
 SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -117,7 +117,7 @@ class SpectrumConfig(BaseModel):
 
     f_max: float | None = None
     f_min: float = 0.0
-    s3_calc: Literal["1/4", "1/2"] = "1/4"  # TODO Add '1' here later when ready
+    s3_calc: S3Calcs = "1/4"  # TODO Add '1' here later when ready
     backend: Literal["cpu", "mps", "cuda"] = "mps"
     spectrum_size: Annotated[int, Field(gt=0)] = 100
     order_in: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"

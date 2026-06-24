@@ -8,13 +8,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
 if TYPE_CHECKING:
     from .planning import RuntimeConfig
+    from .utils import S3Calcs
 
 
 @dataclass(slots=True)
@@ -180,7 +181,7 @@ def allocate_error_buffer(
     f_size: int,
     m: int,
     device: torch.device,
-    s3_calc: Literal["1/4", "1/2"],
+    s3_calc: S3Calcs,
 ):
     if order == 1:
         shape = (1, m)
