@@ -18,6 +18,71 @@ if TYPE_CHECKING:
     from .planning import RuntimeConfig
 
 
+### old code from previous api
+def gaussian_window(x: Tensor,
+                    n_windows: int,
+                    l: int,
+                    sigma_t: float
+) -> Tensor:
+    """
+    Approx. confined Gaussian window (see DOI:10.1016/j.sigpro.2014.03.033)
+    """
+
+    center = n_windows * 0.5
+    denom  = 2.0 * l * sigma_t
+
+    t = (x - center) / denom
+    return torch.exp(-t * t)
+
+# done
+def calc_window(x: Tensor, 
+                n_windows: int, 
+                l: int, 
+                sigma_t: float
+) -> Tensor:
+    """
+    Helper function to calculate the approx. confined gaussian window
+    as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
+    """
+    
+    h: Tensor = x.new_tensor(-0.5)
+
+    term_x = gaussian_window(x, n_windows, l, sigma_t)
+    term_h = gaussian_window(h, n_windows, l, sigma_t)
+    term_x_p_l = gaussian_window(x + l, n_windows, l, sigma_t)
+    term_x_m_l = gaussian_window(x - l, n_windows, l, sigma_t)
+    term_h_p_l = gaussian_window(h + l, n_windows, l, sigma_t)
+    term_h_m_l = gaussian_window(h - l, n_windows, l, sigma_t)
+
+    denom = term_h_p_l + term_h_m_l
+    win = term_x - (term_h * (term_x_p_l + term_x_m_l)) / denom
+
+    return win
+
+# done
+def cg_window(
+        n_windows: int, 
+        fs: float, 
+        torch_device: torch.device = torch.device("cpu"),
+        dtype: torch.dtype = torch.float64,
+    ) -> Tensor:
+    """
+    Helper function to calculate the approx. confined gaussian window
+    as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
+    """
+
+    x = torch.linspace(0, n_windows, n_windows, device=torch_device, dtype=dtype)
+    l = n_windows + 1
+    sigma_t = 0.14
+
+    window = calc_window(x, n_windows, l, sigma_t)
+    norm_t = (window * window).sum() / fs
+    
+    window_full = window / torch.sqrt(norm_t)
+
+    return window_full
+### end of old code
+
 def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:
     """
     Helper function to calculate the Gaussian
@@ -98,10 +163,13 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
 def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
     """Return window for m chunks in the correct shape"""
     dtype = torch.float32 if runtime.use_float32 else torch.float64
-    single_window = acG_window_func(
-        runtime.window_points,
-        torch_device=runtime.device,
-        dtype=dtype,
+    # single_window = acG_window_func(
+    #     runtime.window_points,
+    #     torch_device=runtime.device,
+    #     dtype=dtype,
+    # )
+    single_window = cg_window(
+        runtime.window_points,fs=1, torch_device=runtime.device, dtype=dtype
     )
     repeated_window = single_window.reshape(1, runtime.window_points, 1).repeat(
         runtime.m, 1, 1
