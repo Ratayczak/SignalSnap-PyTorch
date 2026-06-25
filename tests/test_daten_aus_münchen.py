@@ -5,23 +5,27 @@ import numpy as np
 from multichss.configurators import DataConfig, SpectrumConfig, CrossConfig
 from multichss.pipelines import calculate_spectra
 
+import h5py
 
 def test_straightforward_example_matches_old_spectra():
-    data = np.load("./tests/test_data/signals/straightforward_example_signal.npz")
-    x = data["x"][0:1000000000]
-    m = data["m"][0:1000000000]
+    with h5py.File("C:/Users/david/Masterarbeit/data/5Qubit/raw/DRaw_C_Te_v0.h5", "r") as f:
+        X_test = f["/X_test"][:]
 
-    dconfig1 = DataConfig(data=x, dt=0.001, t_unit="us")
-    dconfig2 = DataConfig(data=m, dt=0.001, t_unit="us")
+    signal_channel_0 = X_test[:, :, 0].reshape(-1)
+    signal_channel_1 = X_test[:, :, 1].reshape(-1)
+    signal_channel_0 = signal_channel_0[:1000000]
+    signal_channel_1 = signal_channel_1[:1000000]
+    dconfig1 = DataConfig(data=signal_channel_0, dt=2., t_unit="ns")
+    dconfig2 = DataConfig(data=signal_channel_1, dt=2., t_unit="ns")
     selected_data = [0, 1]
 
     sconfig = SpectrumConfig(
         f_min=0,
-        f_max=5,
+        f_max=0.25,
         s3_calc="1/4",
         backend="cuda",
         order_in=[1, 2, 3, 4],
-        spectrum_size=1000,
+        spectrum_size=600,
         show_first_frame=False,
     )
 
@@ -35,12 +39,10 @@ def test_straightforward_example_matches_old_spectra():
     result3 = result_store.get((0, 0, 0), 3)
     result4 = result_store.get((0, 0, 0, 0), 4)
 
-    benchmark_spectra = np.load(
-        "./tests/test_data/spectra/straightforward_example_spectrum.npz"
-    )
-    old_spectra = benchmark_spectra["spectra"]
-    old_error = benchmark_spectra["error"]
-    old_freqs = benchmark_spectra["freqs"]
+    benchmark_spectra = np.load("./tests/test_data/erste_daten_aus_münchen.npz", allow_pickle=True)
+    old_spectra = benchmark_spectra["spectra"].item()
+    old_error = benchmark_spectra["error"].item()
+    old_freqs = benchmark_spectra["freqs"].item()
 
     assert result1.spectrum is not None
     assert result2.spectrum is not None
