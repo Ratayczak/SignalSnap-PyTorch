@@ -11,11 +11,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 if TYPE_CHECKING:
     from .planning import RuntimeConfig
-    from .utils import S3Calcs
+    from torch import Tensor
 
 
 @dataclass(slots=True)
@@ -52,19 +51,12 @@ class SpectrumResult:
     spectrum_accumulator : torch.Tensor | None
         Running total accumulation buffer of the calculated spectra on the
         active torch device
-    error_buffer : torch.Tensor | None
-        Temporary device buffer holding a subset batch of `m` window
-        chunks to compute intermediate variance profiles.
-    error_accumulator : np.ndarray | None
-        Running summation of variance metrics (split across real and
-        imaginary parts) accumulated on the host CPU.
-    error_buffer_index : int
-        The current write position pointer inside `error_buffer`.
+    error_accumulator_x_squared : torch.Tensor | None
+        Running total accumulation buffer of the real and imaginary parts
+        of the spectra squared on the active torch device.
     chunks_processed : int
         The total number of individual signal windows integrated into
         `spectrum_accumulator`.
-    error_batches_processed : int
-        The total number of variance/error batches completed and merged.
     """
 
     order: int
@@ -74,18 +66,10 @@ class SpectrumResult:
     spectrum: np.ndarray | None = None  # s
     spectrum_error: np.ndarray | None = None  # s_err
 
-    spectrum_accumulator: torch.Tensor | None = None  # s_gpu
-    error_buffer: torch.Tensor | None = None  # s_errs_buffer
-    error_accumulator: np.ndarray | None = None  # s_err_accumulated
+    spectrum_accumulator: Tensor | None = None  # s_gpu
+    error_accumulator_x_squared: Tensor | None = None
 
-    error_buffer_index: int = 0  # err_counter
     chunks_processed: int = 0  # n_chunks_processed
-    error_batches_processed: int = 0  # n_error_estimates
-
-    @property
-    def is_initialized(self) -> bool:
-        """Check if the device accumulators have been allocated."""
-        return self.error_buffer is not None
 
     def reset_state(self):
         """Clears accumulators to prepare for a fresh calculation."""
@@ -93,11 +77,8 @@ class SpectrumResult:
         self.spectrum = None
         self.spectrum_error = None
         self.spectrum_accumulator = None
-        self.error_buffer = None
-        self.error_accumulator = None
-        self.error_buffer_index = 0
+        self.error_accumulator_x_squared = None
         self.chunks_processed = 0
-        self.error_batches_processed = 0
 
     def initialize_arrays(self, freq_band: np.ndarray, runtime: RuntimeConfig) -> None:
         order = self.order
@@ -111,15 +92,6 @@ class SpectrumResult:
                 self.freq = np.concatenate((-self.freq[:0:-1], self.freq))
         else:
             self.freq = freq_band
-
-        self.error_buffer = allocate_error_buffer(
-            order=order,
-            f_size=f_size,
-            m=runtime.m,
-            device=runtime.device,
-            s3_calc=runtime.s3_calc,
-            dtype=runtime.complex_dtype,
-        )
 
 
 @dataclass(slots=True)
@@ -166,28 +138,3 @@ class SpectrumResultStore:
 
         for result in self.results.values():
             result.initialize_arrays(freq_band, runtime)
-
-
-def allocate_error_buffer(
-    order: int,
-    f_size: int,
-    m: int,
-    device: torch.device,
-    s3_calc: S3Calcs,
-    dtype: torch.dtype = torch.complex64,
-):
-    if order == 1:
-        shape = (1, m)
-    elif order == 2:
-        shape = (f_size, m)
-    elif order == 3:
-        if s3_calc == "1/2":
-            shape = (f_size // 2, 2 * (f_size // 2) - 1, m)
-        else:
-            shape = (f_size // 2, f_size // 2, m)
-    elif order == 4:
-        shape = (f_size, f_size, m)
-    else:
-        raise ValueError(f"{order} not a valid order.")
-
-    return torch.ones(shape, device=device, dtype=dtype)
