@@ -53,7 +53,7 @@ def test_new_vs_old_api_auto_corr_1():
         "./tests/test_data/references/5Qubit_short_data_auto_corr.npz", allow_pickle=True
     )
     old_spectra = benchmark_spectra["spectra"].item()
-    old_error = benchmark_spectra["error"].item()
+    # old_error = benchmark_spectra["error"].item()
     old_freqs = benchmark_spectra["freqs"].item()
 
     assert result1.spectrum is not None
@@ -301,7 +301,7 @@ def test_new_vs_old_api_cross_corr_1():
         allow_pickle=True,
     )
     old_spectra_ch124 = benchmark_spectra_ch124["spectra"].item()
-    old_error_ch124 = benchmark_spectra_ch124["error"].item()
+    # old_error_ch124 = benchmark_spectra_ch124["error"].item()
     old_freqs_ch124 = benchmark_spectra_ch124["freqs"].item()
 
     benchmark_spectra_ch3 = np.load(
@@ -309,7 +309,7 @@ def test_new_vs_old_api_cross_corr_1():
         allow_pickle=True,
     )
     old_spectra_ch3 = benchmark_spectra_ch3["spectra"].item()
-    old_error_ch3 = benchmark_spectra_ch3["error"].item()
+    # old_error_ch3 = benchmark_spectra_ch3["error"].item()
     old_freqs_ch3 = benchmark_spectra_ch3["freqs"].item()
 
     cross_corr_results_ch124 = [
