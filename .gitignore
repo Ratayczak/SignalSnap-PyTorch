@@ -30,6 +30,5 @@ htmlcov/
 .tox/
 .coverage
 .cache/
-test_data/
 
 
