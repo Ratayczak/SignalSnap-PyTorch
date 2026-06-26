@@ -7,16 +7,26 @@ from multichss.pipelines import calculate_spectra
 
 import h5py
 
-def test_straightforward_example_matches_old_spectra():
-    with h5py.File("C:/Users/david/Masterarbeit/data/5Qubit/raw/DRaw_C_Te_v0.h5", "r") as f:
-        X_test = f["/X_test"][:]
+
+def test_new_vs_old_api_1():
+    """
+    Tests if the refactor implements the same calculations. To check if the
+    implementation is correct, the old window function needs to be used in
+    SpectrumConfig.
+    """
+    with h5py.File(
+        "C:/Users/david/Masterarbeit/data/5Qubit/raw/DRaw_C_Te_v0.h5", "r"
+    ) as f:
+        x_test_dataset = f["/X_test"]
+        assert isinstance(x_test_dataset, h5py.Dataset)
+        X_test = x_test_dataset[...]
 
     signal_channel_0 = X_test[:, :, 0].reshape(-1)
     signal_channel_1 = X_test[:, :, 1].reshape(-1)
     signal_channel_0 = signal_channel_0[:1000000]
     signal_channel_1 = signal_channel_1[:1000000]
-    dconfig1 = DataConfig(data=signal_channel_0, dt=2., t_unit="ns")
-    dconfig2 = DataConfig(data=signal_channel_1, dt=2., t_unit="ns")
+    dconfig1 = DataConfig(data=signal_channel_0, dt=2.0, t_unit="ns")
+    dconfig2 = DataConfig(data=signal_channel_1, dt=2.0, t_unit="ns")
     selected_data = [0, 1]
 
     sconfig = SpectrumConfig(
@@ -27,6 +37,7 @@ def test_straightforward_example_matches_old_spectra():
         order_in=[1, 2, 3, 4],
         spectrum_size=600,
         show_first_frame=False,
+        old_window=True,
     )
 
     cconfig = CrossConfig(auto_corr=True)
@@ -39,7 +50,9 @@ def test_straightforward_example_matches_old_spectra():
     result3 = result_store.get((0, 0, 0), 3)
     result4 = result_store.get((0, 0, 0, 0), 4)
 
-    benchmark_spectra = np.load("./tests/test_data/erste_daten_aus_münchen.npz", allow_pickle=True)
+    benchmark_spectra = np.load(
+        "./tests/test_data/erste_daten_aus_münchen.npz", allow_pickle=True
+    )
     old_spectra = benchmark_spectra["spectra"].item()
     old_error = benchmark_spectra["error"].item()
     old_freqs = benchmark_spectra["freqs"].item()

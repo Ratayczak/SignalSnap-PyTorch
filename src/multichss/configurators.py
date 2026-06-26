@@ -113,6 +113,38 @@ class PlotConfig(BaseModel):
 
 
 class SpectrumConfig(BaseModel):
+    """Spectrum configuration for polyspectra calculations.
+
+    ``SpectrumConfig`` describes what the user asks the calculation to use:
+    frequency bounds, spectrum orders, backend, spectrum size, window count,
+    and compatibility options. These settings are later resolved together
+    with ``DataConfig`` into a ``RuntimeConfig``.
+
+    Parameters
+    ----------
+    f_max : float | None
+        Upper frequency bound. If omitted, the maximum allowed frequency is used.
+    f_min : float
+        Lower frequency bound.
+    s3_calc : Literal["1/4", "1/2"]
+        Method used for third-order spectrum calculation.
+    backend : Literal["cpu", "mps", "cuda"]
+        Torch backend requested for calculation.
+    spectrum_size : int
+        Number of frequency points in the spectrum.
+    order_in : Literal["all"] | list[int]
+        Spectrum orders to calculate.
+    m : int
+        Window count per spectrum.
+    show_first_frame : bool
+        Whether to display the first processed frame.
+    break_after : int | None
+        Maximum number of calculated spectra.
+    _old_window : bool
+        Compatibility option. If set to true, the wrong approximated
+        confined gaussian window from the old API is used as a window
+        function.
+    """
     model_config = SHARED_CONFIG
 
     f_max: float | None = None
@@ -124,6 +156,11 @@ class SpectrumConfig(BaseModel):
     m: Annotated[int, Field(gt=0)] = 10
     show_first_frame: bool = True
     break_after: Annotated[int, Field(gt=0)] | None = int(1e6)
+    old_window: bool = False
+
+    @property
+    def _old_window(self) -> bool:
+        return self.old_window
 
     @model_validator(mode="after")
     def validate_frequency_limits(self) -> "SpectrumConfig":

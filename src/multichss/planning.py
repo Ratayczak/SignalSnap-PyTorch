@@ -71,6 +71,10 @@ class RuntimeConfig:
     s3_calc: Literal["1/4", "1/2"]
     break_after: int | None
         Maximum number of calculated spectra
+    _old_window: bool
+        Compatibility option. If set to true, the wrong approximated 
+        confined gaussian window from the old API is used as a window
+        function. 
     """
 
     selected: tuple[int, ...]
@@ -95,6 +99,7 @@ class RuntimeConfig:
     device: torch.device
     s3_calc: S3Calcs
     break_after: int | None
+    _old_window: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +278,7 @@ def build_runtime_config(
         device=device,
         s3_calc=spectrum_config.s3_calc,
         break_after=spectrum_config.break_after,
+        _old_window=spectrum_config._old_window
     )
 
 
