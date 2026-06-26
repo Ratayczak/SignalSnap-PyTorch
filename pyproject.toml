@@ -26,6 +26,12 @@ dependencies = [
     "pydantic>=2.5.0"
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "h5py",
+]
+
 [project.urls]
 Homepage = "https://github.com/ArminGEtemad/SignalSnap-PyTorch"
 

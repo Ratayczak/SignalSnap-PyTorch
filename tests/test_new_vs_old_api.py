@@ -15,16 +15,15 @@ def test_new_vs_old_api_auto_corr_1():
     SpectrumConfig.
     """
     with h5py.File(
-        "C:/Users/david/Masterarbeit/data/5Qubit/raw/DRaw_C_Te_v0.h5", "r"
+        "./tests/test_data/datasets/5Qubit_short_data.h5", "r"
     ) as f:
         x_test_dataset = f["/X_test"]
         assert isinstance(x_test_dataset, h5py.Dataset)
         X_test = x_test_dataset[...]
 
-    signal_channel_0 = X_test[:, :, 0].reshape(-1)
-    signal_channel_1 = X_test[:, :, 1].reshape(-1)
-    signal_channel_0 = signal_channel_0[:1000000]
-    signal_channel_1 = signal_channel_1[:1000000]
+    signal_channel_0 = X_test[:1000, :, 0].reshape(-1)
+    signal_channel_1 = X_test[:1000, :, 1].reshape(-1)
+    
     dconfig1 = DataConfig(data=signal_channel_0, dt=2.0, t_unit="ns")
     dconfig2 = DataConfig(data=signal_channel_1, dt=2.0, t_unit="ns")
     selected_data = [0, 1]
@@ -35,7 +34,7 @@ def test_new_vs_old_api_auto_corr_1():
         s3_calc="1/4",
         backend="cuda",
         order_in=[1, 2, 3, 4],
-        spectrum_size=1000,
+        spectrum_size=100,
         show_first_frame=False,
         old_window=True,
     )
@@ -51,7 +50,7 @@ def test_new_vs_old_api_auto_corr_1():
     result4 = result_store.get((0, 0, 0, 0), 4)
 
     benchmark_spectra = np.load(
-        "./tests/test_data/erste_daten_aus_münchen_auto_corr.npz", allow_pickle=True
+        "./tests/test_data/references/5Qubit_short_data_auto_corr.npz", allow_pickle=True
     )
     old_spectra = benchmark_spectra["spectra"].item()
     old_error = benchmark_spectra["error"].item()
@@ -233,16 +232,15 @@ def test_new_vs_old_api_cross_corr_1():
     SpectrumConfig.
     """
     with h5py.File(
-        "C:/Users/david/Masterarbeit/data/5Qubit/raw/DRaw_C_Te_v0.h5", "r"
+        "./tests/test_data/datasets/5Qubit_short_data.h5", "r"
     ) as f:
         x_test_dataset = f["/X_test"]
         assert isinstance(x_test_dataset, h5py.Dataset)
         X_test = x_test_dataset[...]
 
-    signal_channel_0 = X_test[:, :, 0].reshape(-1)
-    signal_channel_1 = X_test[:, :, 1].reshape(-1)
-    signal_channel_0 = signal_channel_0[:1000000]
-    signal_channel_1 = signal_channel_1[:1000000]
+    signal_channel_0 = X_test[:1000, :, 0].reshape(-1)
+    signal_channel_1 = X_test[:1000, :, 1].reshape(-1)
+
     dconfig1 = DataConfig(data=signal_channel_0, dt=2.0, t_unit="ns")
     dconfig2 = DataConfig(data=signal_channel_1, dt=2.0, t_unit="ns")
     selected_data = [0, 1]
@@ -253,7 +251,7 @@ def test_new_vs_old_api_cross_corr_1():
         s3_calc="1/4",
         backend="cuda",
         order_in=[1, 2, 4],
-        spectrum_size=1000,
+        spectrum_size=100,
         show_first_frame=False,
         old_window=True,
     )
@@ -279,7 +277,7 @@ def test_new_vs_old_api_cross_corr_1():
         s3_calc="1/2",
         backend="cuda",
         order_in=[3],
-        spectrum_size=1000,
+        spectrum_size=100,
         show_first_frame=False,
         old_window=True,
     )
@@ -297,14 +295,16 @@ def test_new_vs_old_api_cross_corr_1():
     result_001_3 = result_store2.get((0, 0, 1), 3)
 
     benchmark_spectra_ch124 = np.load(
-        "./tests/test_data/erste_daten_aus_münchen_cross_corr_ch124.npz", allow_pickle=True
+        "./tests/test_data/references/5Qubit_short_data_cross_corr_ch124.npz",
+        allow_pickle=True,
     )
     old_spectra_ch124 = benchmark_spectra_ch124["spectra"].item()
     old_error_ch124 = benchmark_spectra_ch124["error"].item()
     old_freqs_ch124 = benchmark_spectra_ch124["freqs"].item()
 
     benchmark_spectra_ch3 = np.load(
-        "./tests/test_data/erste_daten_aus_münchen_cross_corr_ch3.npz", allow_pickle=True
+        "./tests/test_data/references/5Qubit_short_data_cross_corr_ch3.npz",
+        allow_pickle=True,
     )
     old_spectra_ch3 = benchmark_spectra_ch3["spectra"].item()
     old_error_ch3 = benchmark_spectra_ch3["error"].item()
