@@ -5,6 +5,15 @@
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
 
+
+## 
+# !!
+# THIS FILE IS DEPRECIATED AND NO LONGER USED BY THE NEW API. IT IS ONLY
+# KEPT FOR REFERENCE
+# !!
+##
+
+
 import h5py
 import numpy as np
 import pickle
