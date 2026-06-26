@@ -107,7 +107,7 @@ def cg_window(n_windows: int, fs: float) -> Tuple[Tensor, float]:
     as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
     """
 
-    x = torch.linspace(0, n_windows, n_windows)
+    x = torch.linspace(0, n_windows, n_windows, dtype=torch.float64)
     l = n_windows + 1
     sigma_t = 0.14
 
@@ -305,9 +305,9 @@ class SpectrumCalculator:
         """
         if self.sconfig.s3_calc == '1/2': 
             n = 2 * (f_max_idx // 2) - 1
-            a_w3 = torch.ones((f_max_idx // 2, n, m), dtype=torch.complex64) *1j
+            a_w3 = torch.ones((f_max_idx // 2, n, m), dtype=torch.complex128) *1j
         elif self.sconfig.s3_calc == '1/4':
-            a_w3 = torch.ones((f_max_idx // 2, f_max_idx // 2, m), dtype=torch.complex64) *1j
+            a_w3 = torch.ones((f_max_idx // 2, f_max_idx // 2, m), dtype=torch.complex128) *1j
         return a_w3
 
     def index_generation_to_aw_3(self, f_max_idx):
@@ -591,11 +591,11 @@ class SpectrumCalculator:
             if order == 1:
                 self.s_errs[dataset_idx][order] = torch.ones((1, self.sconfig.m_var), 
                                                              device=self.sconfig.backend,
-                                                             dtype=torch.complex64)
+                                                             dtype=torch.complex128)
             elif order == 2:
                 self.s_errs[dataset_idx][order] = torch.ones((f_max_idx, self.sconfig.m_var), 
                                                              device=self.sconfig.backend,
-                                                             dtype=torch.complex64)
+                                                             dtype=torch.complex128)
             elif order == 3:
                 # for cross/cross3 we can have 2D freq
                 if self.sconfig.s3_calc == '1/2': # non-negative x axis
@@ -603,18 +603,18 @@ class SpectrumCalculator:
                     self.s_errs[dataset_idx][order] = torch.ones((f_max_idx//2, n,
                                                                   self.sconfig.m_var),
                                                                  device=self.sconfig.backend,
-                                                                 dtype=torch.complex64)
+                                                                 dtype=torch.complex128)
                 elif self.sconfig.s3_calc == '1/4':# negative and positive x axis
                     self.s_errs[dataset_idx][order] = torch.ones((f_max_idx//2, f_max_idx//2,
                                                                   self.sconfig.m_var),
                                                                  device=self.sconfig.backend,
-                                                                 dtype=torch.complex64)
+                                                                 dtype=torch.complex128)
 
             elif order == 4:
                 # for cross/cross4 we can have 2D freq
                 self.s_errs[dataset_idx][order] = torch.ones((f_max_idx, f_max_idx, self.sconfig.m_var),
                                                              device=self.sconfig.backend,
-                                                             dtype=torch.complex64)
+                                                             dtype=torch.complex128)
 
     def process_order(self):
         """
@@ -740,7 +740,7 @@ class SpectrumCalculator:
         """
         Helper function that converts a NumPy array to a torch tensor on the proper device.
         """
-        tensor = torch.from_numpy(array.astype(np.float32)) if self.use_float32 else torch.from_numpy(array)
+        tensor = torch.from_numpy(array.astype(np.float32)) if self.use_float32 else torch.from_numpy(array.astype(np.float64))
         return tensor.to(self.device)
 
     def _compute_fft(self, window, chunk_gpu):

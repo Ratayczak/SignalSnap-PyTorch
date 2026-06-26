@@ -136,6 +136,10 @@ class SpectrumConfig(BaseModel):
         Spectrum orders to calculate.
     m : int
         Window count per spectrum.
+    precision: Literal["auto", "single", "double"] = "auto"
+        Floating point precision. "single" will result in float32 and
+        complex64. "double" will result in float64 and complex128. "auto"
+        will choose "single" if backend is "mps" and "double" otherwise.  
     show_first_frame : bool
         Whether to display the first processed frame.
     break_after : int | None
@@ -154,6 +158,7 @@ class SpectrumConfig(BaseModel):
     spectrum_size: Annotated[int, Field(gt=0)] = 100
     order_in: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"
     m: Annotated[int, Field(gt=0)] = 10
+    precision: Literal["auto", "single", "double"] = "auto"
     show_first_frame: bool = True
     break_after: Annotated[int, Field(gt=0)] | None = int(1e6)
     old_window: bool = False

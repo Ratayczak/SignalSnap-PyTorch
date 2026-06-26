@@ -118,6 +118,7 @@ class SpectrumResult:
             m=runtime.m,
             device=runtime.device,
             s3_calc=runtime.s3_calc,
+            dtype=runtime.complex_dtype,
         )
 
 
@@ -173,6 +174,7 @@ def allocate_error_buffer(
     m: int,
     device: torch.device,
     s3_calc: S3Calcs,
+    dtype: torch.dtype = torch.complex64,
 ):
     if order == 1:
         shape = (1, m)
@@ -188,4 +190,4 @@ def allocate_error_buffer(
     else:
         raise ValueError(f"{order} not a valid order.")
 
-    return torch.ones(shape, device=device, dtype=torch.complex64)
+    return torch.ones(shape, device=device, dtype=dtype)

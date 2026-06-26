@@ -136,10 +136,10 @@ def acG_window_func(
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
     """Copy np.array to torch.device using the correct data type"""
-    if runtime.use_float32:
-        array = array.astype(np.float32, copy=False)
+    if np.iscomplexobj(array):
+        raise TypeError("Input data cannot be complex.")
 
-    return torch.from_numpy(array).to(runtime.device)
+    return torch.as_tensor(array, dtype=runtime.real_dtype, device=runtime.device)
 
 
 def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor:
@@ -157,17 +157,18 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
 
 def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
     """Return window for m chunks in the correct shape"""
-    dtype = torch.float32 if runtime.use_float32 else torch.float64
-
     if runtime._old_window:
         single_window = _old_cg_window(
-            runtime.window_points, fs=1, torch_device=runtime.device, dtype=dtype
+            runtime.window_points,
+            fs=1,
+            torch_device=runtime.device,
+            dtype=runtime.real_dtype,
         )
     else:
         single_window = acG_window_func(
             runtime.window_points,
             torch_device=runtime.device,
-            dtype=dtype,
+            dtype=runtime.real_dtype,
         )
 
     repeated_window = single_window.reshape(1, runtime.window_points, 1).repeat(

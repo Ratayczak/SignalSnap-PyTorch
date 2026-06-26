@@ -63,9 +63,10 @@ class RuntimeConfig:
         Slice indices selecting the configured frequency band.
     use_full_fft : bool
         Whether negative frequencies require full FFT handling.
-    use_float32 : bool
-        Whether host data should be converted to float32 before device
-        upload.
+    real_dtype: torch.dtype
+        Sets the dtype of floats.
+    complex_dtype: torch.dtype
+        Sets the dtype of complex numbers.
     device : torch.device
         Torch device used for calculation.
     s3_calc: Literal["1/4", "1/2"]
@@ -95,7 +96,8 @@ class RuntimeConfig:
     f_min_idx: int
     f_max_idx: int
     use_full_fft: bool
-    use_float32: bool
+    real_dtype: torch.dtype
+    complex_dtype: torch.dtype
     device: torch.device
     s3_calc: S3Calcs
     break_after: int | None
@@ -255,6 +257,20 @@ def build_runtime_config(
     f_max_idx = int(np.sum(freq_all <= f_max))
     f_min_idx = int(np.sum(freq_all < spectrum_config.f_min))
 
+    if spectrum_config.precision == "single":
+        real_dtype = torch.float32
+        complex_dtype = torch.complex64
+    elif spectrum_config.precision == "double":
+        real_dtype = torch.float64
+        complex_dtype = torch.complex128
+    else:
+        if spectrum_config.backend == "mps":
+            real_dtype = torch.float32
+            complex_dtype = torch.complex64
+        else:
+            real_dtype = torch.float64
+            complex_dtype = torch.complex128
+
     return RuntimeConfig(
         selected=selected_channels,
         orders=tuple(orders),
@@ -274,7 +290,8 @@ def build_runtime_config(
         f_min_idx=f_min_idx,
         f_max_idx=f_max_idx,
         use_full_fft=use_full_fft,
-        use_float32=spectrum_config.backend == "mps",
+        real_dtype=real_dtype,
+        complex_dtype=complex_dtype,
         device=device,
         s3_calc=spectrum_config.s3_calc,
         break_after=spectrum_config.break_after,

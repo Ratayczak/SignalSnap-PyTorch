@@ -40,6 +40,7 @@ def build_third_order_cache(runtime: RuntimeConfig) -> ThirdOrderCache:
             runtime.f_max_idx,
             runtime.m,
             device=runtime.device,
+            dtype=runtime.complex_dtype,
         ),
         indices=index_generation_to_aw_3(
             runtime.s3_calc,
