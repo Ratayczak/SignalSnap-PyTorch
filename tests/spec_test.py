@@ -22,7 +22,7 @@ def test_c1_returns_correct_mean():
 
     sconfig = SpectrumConfig(
         f_min=0, f_max=2, s3_calc='1/4', device='cpu', orders=[1],
-        spectrum_points=100,
+        frequency_points=100,
     )
 
     cconfig = CrossConfig(auto_corr=True)

@@ -36,7 +36,7 @@ def test_new_vs_old_api_auto_corr_1():
         s3_calc="1/4",
         device="cpu",
         orders=[1, 2, 3, 4],
-        spectrum_points=100,
+        frequency_points=100,
         old_window=True,
     )
 
@@ -262,7 +262,7 @@ def test_new_vs_old_api_cross_corr_1():
         s3_calc="1/4",
         device="cpu",
         orders=[1, 2, 4],
-        spectrum_points=100,
+        frequency_points=100,
         old_window=True,
     )
 
@@ -287,7 +287,7 @@ def test_new_vs_old_api_cross_corr_1():
         s3_calc="1/2",
         device="cpu",
         orders=[3],
-        spectrum_points=100,
+        frequency_points=100,
         old_window=True,
     )
 
