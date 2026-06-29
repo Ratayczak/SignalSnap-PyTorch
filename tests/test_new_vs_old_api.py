@@ -9,7 +9,7 @@ import h5py
 
 
 # old error erstimation was wrong, so pytest will fail if set to true
-compare_error = True
+compare_error = False
 
 
 def test_new_vs_old_api_auto_corr_1():
