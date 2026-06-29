@@ -9,7 +9,8 @@ import h5py
 
 
 # old error erstimation was wrong, so pytest will fail if set to true
-compare_error = False
+compare_error = True
+
 
 def test_new_vs_old_api_auto_corr_1():
     """
@@ -17,16 +18,14 @@ def test_new_vs_old_api_auto_corr_1():
     implementation is correct, the old window function needs to be used in
     SpectrumConfig.
     """
-    with h5py.File(
-        "./tests/test_data/datasets/5Qubit_short_data.h5", "r"
-    ) as f:
+    with h5py.File("./tests/test_data/datasets/5Qubit_short_data.h5", "r") as f:
         x_test_dataset = f["/X_test"]
         assert isinstance(x_test_dataset, h5py.Dataset)
         X_test = x_test_dataset[...]
 
     signal_channel_0 = X_test[:1000, :, 0].reshape(-1)
     signal_channel_1 = X_test[:1000, :, 1].reshape(-1)
-    
+
     dconfig1 = DataConfig(data=signal_channel_0, dt=2.0, t_unit="ns")
     dconfig2 = DataConfig(data=signal_channel_1, dt=2.0, t_unit="ns")
     selected_data = [0, 1]
@@ -35,10 +34,9 @@ def test_new_vs_old_api_auto_corr_1():
         f_min=0,
         f_max=0.25,
         s3_calc="1/4",
-        backend="cpu",
-        order_in=[1, 2, 3, 4],
-        spectrum_size=100,
-        show_first_frame=False,
+        device="cpu",
+        orders=[1, 2, 3, 4],
+        spectrum_points=100,
         old_window=True,
     )
 
@@ -53,7 +51,8 @@ def test_new_vs_old_api_auto_corr_1():
     result4 = result_store.get((0, 0, 0, 0), 4)
 
     benchmark_spectra = np.load(
-        "./tests/test_data/references/5Qubit_short_data_auto_corr.npz", allow_pickle=True
+        "./tests/test_data/references/5Qubit_short_data_auto_corr.npz",
+        allow_pickle=True,
     )
     old_spectra = benchmark_spectra["spectra"].item()
 
@@ -245,9 +244,7 @@ def test_new_vs_old_api_cross_corr_1():
     implementation is correct, the old window function needs to be used in
     SpectrumConfig.
     """
-    with h5py.File(
-        "./tests/test_data/datasets/5Qubit_short_data.h5", "r"
-    ) as f:
+    with h5py.File("./tests/test_data/datasets/5Qubit_short_data.h5", "r") as f:
         x_test_dataset = f["/X_test"]
         assert isinstance(x_test_dataset, h5py.Dataset)
         X_test = x_test_dataset[...]
@@ -263,10 +260,9 @@ def test_new_vs_old_api_cross_corr_1():
         f_min=-0.25,
         f_max=0.25,
         s3_calc="1/4",
-        backend="cpu",
-        order_in=[1, 2, 4],
-        spectrum_size=100,
-        show_first_frame=False,
+        device="cpu",
+        orders=[1, 2, 4],
+        spectrum_points=100,
         old_window=True,
     )
 
@@ -289,10 +285,9 @@ def test_new_vs_old_api_cross_corr_1():
         f_min=0,
         f_max=0.25,
         s3_calc="1/2",
-        backend="cpu",
-        order_in=[3],
-        spectrum_size=100,
-        show_first_frame=False,
+        device="cpu",
+        orders=[3],
+        spectrum_points=100,
         old_window=True,
     )
 
@@ -327,7 +322,7 @@ def test_new_vs_old_api_cross_corr_1():
     if compare_error:
         old_error_ch3 = benchmark_spectra_ch3["error"].item()
     else:
-        old_error_ch3 = None    
+        old_error_ch3 = None
     old_freqs_ch3 = benchmark_spectra_ch3["freqs"].item()
 
     cross_corr_results_ch124 = [

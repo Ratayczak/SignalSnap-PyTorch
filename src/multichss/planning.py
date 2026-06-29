@@ -204,24 +204,21 @@ def build_runtime_config(
     n_data_points, dt, t_unit = validate_data_configs(
         data_config_list, selected_channels
     )
-
-    device = torch.device(spectrum_config.backend)
     fs = 1 / dt
     f_max_allowed = 1 / (2 * dt)
     f_max = spectrum_config.f_max
     if f_max is None:
         f_max = f_max_allowed
 
-    window_len_factor = f_max_allowed / (f_max - spectrum_config.f_min)
-    t_window = (spectrum_config.spectrum_size - 1) * (2 * dt * window_len_factor)
-    window_points = int(np.round(t_window / dt))
+    window_T = (spectrum_config.spectrum_points - 1) / (f_max - spectrum_config.f_min)
+    window_points = int(np.round(window_T / dt))
     if window_points <= 0:
         raise ValueError("Calculated window_points must be greater than zero.")
 
     orders = (
         [1, 2, 3, 4]
-        if spectrum_config.order_in == "all"
-        else list(spectrum_config.order_in)
+        if spectrum_config.orders == "all"
+        else list(spectrum_config.orders)
     )
     if spectrum_config.f_min < 0 and 3 in orders:
         print(
@@ -264,7 +261,7 @@ def build_runtime_config(
         real_dtype = torch.float64
         complex_dtype = torch.complex128
     else:
-        if spectrum_config.backend == "mps":
+        if spectrum_config.device == "mps":
             real_dtype = torch.float32
             complex_dtype = torch.complex64
         else:
@@ -281,7 +278,7 @@ def build_runtime_config(
         f_max_allowed=f_max_allowed,
         f_min=spectrum_config.f_min,
         f_max=f_max,
-        t_window=t_window,
+        t_window=window_T,
         window_points=window_points,
         m=m,
         n_data_points=n_data_points,
@@ -292,10 +289,10 @@ def build_runtime_config(
         use_full_fft=use_full_fft,
         real_dtype=real_dtype,
         complex_dtype=complex_dtype,
-        device=device,
+        device=torch.device(spectrum_config.device),
         s3_calc=spectrum_config.s3_calc,
         break_after=spectrum_config.break_after,
-        _old_window=spectrum_config._old_window
+        _old_window=spectrum_config.old_window
     )
 
 

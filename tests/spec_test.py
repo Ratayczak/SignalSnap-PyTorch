@@ -21,8 +21,8 @@ def test_c1_returns_correct_mean():
     selected_data = [0]
 
     sconfig = SpectrumConfig(
-        f_min=0, f_max=2, s3_calc='1/4', backend='cpu', order_in=[1],
-        spectrum_size=100, show_first_frame=False
+        f_min=0, f_max=2, s3_calc='1/4', device='cpu', orders=[1],
+        spectrum_points=100,
     )
 
     cconfig = CrossConfig(auto_corr=True)

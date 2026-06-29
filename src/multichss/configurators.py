@@ -116,50 +116,51 @@ class SpectrumConfig(BaseModel):
     """Spectrum configuration for polyspectra calculations.
 
     ``SpectrumConfig`` describes what the user asks the calculation to use:
-    frequency bounds, spectrum orders, backend, spectrum size, window count,
-    and compatibility options. These settings are later resolved together
-    with ``DataConfig`` into a ``RuntimeConfig``.
+    frequency bounds, spectrum size, spectrum orders, window count per
+    spectral estimate, backend, and compatibility options. These settings
+    are later resolved together with ``DataConfig`` into a
+    ``RuntimeConfig``.
 
     Parameters
     ----------
-    f_max : float | None
-        Upper frequency bound. If omitted, the maximum allowed frequency is used.
     f_min : float
         Lower frequency bound.
+    f_max : float | None
+        Upper frequency bound. If omitted, the maximal allowed frequency is
+        used.
+    spectrum_points : int
+        Number of frequency points in the spectrum.
+    orders : Literal["all"] | list[int]
+        Spectrum orders to calculate. ``all`` are orders ``[1, 2, 3, 4]
+    m : int
+        Window count per spectral estimate.
     s3_calc : Literal["1/4", "1/2"]
         Method used for third-order spectrum calculation.
-    backend : Literal["cpu", "mps", "cuda"]
-        Torch backend requested for calculation.
-    spectrum_size : int
-        Number of frequency points in the spectrum.
-    order_in : Literal["all"] | list[int]
-        Spectrum orders to calculate.
-    m : int
-        Window count per spectrum.
+    device : Literal["cpu", "mps", "cuda"]
+        Torch device requested for calculation.
     precision: Literal["auto", "single", "double"] = "auto"
-        Floating point precision. "single" will result in float32 and
-        complex64. "double" will result in float64 and complex128. "auto"
-        will choose "single" if backend is "mps" and "double" otherwise.  
-    show_first_frame : bool
-        Whether to display the first processed frame.
-    break_after : int | None
-        Maximum number of calculated spectra.
-    _old_window : bool
+        Floating point precision. ``single`` will result in float32 and
+        complex64. ``double`` will result in float64 and complex128. 
+        ``auto`` will choose ``single`` if device is ``mps`` and
+        ``double`` otherwise.
+    N_p : int | None
+        Number of spectral estimates. If ``None``, as many estimates as
+        possible are calculated based on the data.
+    old_window : bool
         Compatibility option. If set to true, the wrong approximated
         confined gaussian window from the old API is used as a window
         function.
     """
     model_config = SHARED_CONFIG
 
-    f_max: float | None = None
     f_min: float = 0.0
-    s3_calc: S3Calcs = "1/4"  # TODO Add '1' here later when ready
-    backend: Literal["cpu", "mps", "cuda"] = "mps"
-    spectrum_size: Annotated[int, Field(gt=0)] = 100
-    order_in: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"
+    f_max: float | None = None
+    spectrum_points: Annotated[int, Field(gt=0)] = 100
+    orders: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"
     m: Annotated[int, Field(gt=0)] = 10
+    s3_calc: S3Calcs = "1/4"
+    device: Literal["cpu", "mps", "cuda"] = "cpu"
     precision: Literal["auto", "single", "double"] = "auto"
-    show_first_frame: bool = True
     break_after: Annotated[int, Field(gt=0)] | None = int(1e6)
     old_window: bool = False
 
