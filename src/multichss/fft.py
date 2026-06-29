@@ -157,7 +157,7 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
 
 def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
     """Return window for m chunks in the correct shape"""
-    if runtime._old_window:
+    if runtime.old_window:
         single_window = _old_cg_window(
             runtime.window_points,
             fs=1,

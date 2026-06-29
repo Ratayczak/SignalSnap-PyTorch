@@ -46,14 +46,14 @@ def calculate_spectra(
 
     for chunk_index, (start, end) in enumerate(iter_window_slices(runtime_config)):
         if (
-            runtime_config.break_after is not None
-            and chunk_index >= runtime_config.break_after
+            runtime_config.spectral_estimates_max is not None
+            and chunk_index >= runtime_config.spectral_estimates_max
         ):
             break
 
         coeffs_by_channel = {}
 
-        for channel in runtime_config.selected:
+        for channel in runtime_config.selected_channels:
             data = data_config_list[channel].data[start:end]
             chunk = reshape_window_chunk(data, runtime_config)
             chunk = to_device(chunk, runtime_config)

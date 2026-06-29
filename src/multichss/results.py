@@ -134,7 +134,7 @@ class SpectrumResultStore:
             result.reset_state()
 
     def initialize_arrays(self, runtime: RuntimeConfig) -> None:
-        freq_band = runtime.freq_all[runtime.f_min_idx : runtime.f_max_idx]
+        freq_band = runtime.freq_band
 
         for result in self.results.values():
             result.initialize_arrays(freq_band, runtime)

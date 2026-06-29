@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from .results import SpectrumResult, SpectrumResultStore
-from .utils import FrequencyUnits, S3Calcs, TimeUnits, unit_conversion_time_to_freq
+from .utils import S3Calcs
 
 if TYPE_CHECKING:
     from .configurators import CrossConfig, DataConfig, SpectrumConfig
@@ -24,75 +24,61 @@ if TYPE_CHECKING:
 class RuntimeConfig:
     """Resolved calculation settings derived from user configuration.
 
-    ``SpectrumConfig`` and ``DataConfig`` describe what the user asked for.
-    ``RuntimeConfig`` describes what the calculation will actually use
-    after defaults, data-size constraints, frequency axes, and device
-    details have been resolved.
+    :class:`SpectrumConfig` and :class:`DataConfig` describe what the user
+    asked for. :class:`RuntimeConfig` describes what the calculation will
+    actually use after defaults, data-size constraints, frequency axes, and
+    device details have been resolved.
 
-    Parameters
+    Attributes
     ----------
-    selected : tuple[int, ...]
+    selected_channels : tuple[int, ...]
         Data-channel indices used by the calculation.
     orders : tuple[int, ...]
         Spectrum orders to calculate.
     dt : float
         Sampling interval shared by all selected data channels.
-    fs : float
-        Sampling frequency.
-    t_unit : Literal["s", "ms", "us", "ns", "ps"]
-        Unit of time step.
-    f_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
-        Unit of sampling frequency.
-    f_max_allowed : float
-        Nyquist frequency.
-    f_min, f_max : float
-        Effective frequency bounds used for index selection.
-    t_window : float
-        Window duration in time units.
     window_points : int
         Number of samples per window.
     m : int
-        Effective window count per spectrum
+        Number of windows used per spectral estimate. This may be reduced
+        at runtime if the signal is too short. Must be positive.
     n_data_points : int
         Number of samples in each selected data channel.
     n_windows : int
         Number of window groups processed by the calculation.
-    freq_all : np.ndarray
-        Full generated frequency axis before selecting ``f_min:f_max``.
+    freq_band : np.ndarray
+        Selected frequency axis.
     f_min_idx, f_max_idx : int
         Slice indices selecting the configured frequency band.
     use_full_fft : bool
         Whether negative frequencies require full FFT handling.
-    real_dtype: torch.dtype
+    real_dtype : torch.dtype
         Sets the dtype of floats.
-    complex_dtype: torch.dtype
+    complex_dtype : torch.dtype
         Sets the dtype of complex numbers.
     device : torch.device
         Torch device used for calculation.
-    s3_calc: Literal["1/4", "1/2"]
-    break_after: int | None
-        Maximum number of calculated spectra
-    _old_window: bool
-        Compatibility option. If set to true, the wrong approximated 
-        confined gaussian window from the old API is used as a window
-        function. 
+    s3_calc : Literal["1/4", "1/2"]
+        Method used for third-order spectrum calculation.
+    spectral_estimates_max : int | None
+        Maximum number of spectral estimates. If ``None``, as many
+        estimates as possible are calculated based on the data. The true
+        number of spectral estimates may be lower if the data does not
+        have enough samples. Must be positive.
+    old_window : bool
+        Compatibility option. If set to ``True``, the approximated
+        confined Gaussian window from the old API is used as a window
+        function.
     """
 
-    selected: tuple[int, ...]
+    selected_channels: tuple[int, ...]
     orders: tuple[int, ...]
     dt: float
-    fs: float
-    t_unit: TimeUnits
-    f_unit: FrequencyUnits
-    f_max_allowed: float
-    f_min: float
-    f_max: float
-    t_window: float
     window_points: int
-    m: int  # covers m and m_var
+    m: int
     n_data_points: int
     n_windows: int
-    freq_all: np.ndarray
+    freq_band: np.ndarray
     f_min_idx: int
     f_max_idx: int
     use_full_fft: bool
@@ -100,8 +86,8 @@ class RuntimeConfig:
     complex_dtype: torch.dtype
     device: torch.device
     s3_calc: S3Calcs
-    break_after: int | None
-    _old_window: bool
+    spectral_estimates_max: int | None
+    old_window: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +116,7 @@ class SpectrumTask:
     channels: tuple[int, ...]
 
 
-def normalize_selected(
+def _normalize_selected(
     data_config_list: list[DataConfig],
     selected: list[int] | None = None,
 ) -> tuple[int, ...]:
@@ -152,11 +138,11 @@ def normalize_selected(
     return tuple(selected)
 
 
-def validate_data_configs(
+def _validate_data_configs(
     data_config_list: list[DataConfig],
     selected: tuple[int, ...],
-) -> tuple[int, float, TimeUnits]:
-    """Validate selected data and return ``(n_data_points, dt, t_unit)``."""
+) -> tuple[int, float]:
+    """Validate selected data and return ``(n_data_points, dt)``."""
     if not data_config_list:
         raise ValueError("At least one DataConfig is required.")
 
@@ -184,7 +170,7 @@ def validate_data_configs(
         if data_config.dt != dt or data_config.t_unit != t_unit:
             raise ValueError("Selected data channels must use the same dt and t_unit.")
 
-    return n_data_points, dt, t_unit
+    return n_data_points, dt
 
 
 def build_runtime_config(
@@ -192,25 +178,43 @@ def build_runtime_config(
     data_config_list: list[DataConfig],
     selected: list[int] | None = None,
 ) -> RuntimeConfig:
-    """Resolve immutable user configuration into calculation runtime values.
+    """Resolve user configuration into immutable runtime calculation
+    settings.
 
-    This absorbs the non-mutating parts of the old calculator ``__init__``
-    and ``setup_calc_spec`` logic: selected-channel normalization, data
-    validation, Nyquist-derived ``f_max`` defaulting, window sizing,
-    effective ``m`` value, FFT mode, device precision behavior, and
-    frequency-band indices.
+    Validates the selected data channels, derives the frequency axis and
+    frequency-band indices, checks Nyquist-frequency bounds, resolves the
+    effective window size and window count, and selects torch dtypes and
+    device settings used by the spectrum calculation.
+
+    Parameters
+    ----------
+    spectrum_config : :class:`SpectrumConfig`
+        User configuration for spectrum orders, frequency bounds, precision,
+        device, windowing, and related calculation options.
+    data_config_list : list[:class:`DataConfig`]
+        Data configurations containing the input data and sampling metadata.
+    selected : list[int] | None, optional
+        Data-channel indices to use. If ``None``, all data configurations are
+        selected.
     """
-    selected_channels = normalize_selected(data_config_list, selected)
-    n_data_points, dt, t_unit = validate_data_configs(
-        data_config_list, selected_channels
-    )
-    fs = 1 / dt
+    selected_channels = _normalize_selected(data_config_list, selected)
+    n_data_points, dt = _validate_data_configs(data_config_list, selected_channels)
     f_max_allowed = 1 / (2 * dt)
     f_max = spectrum_config.f_max
+
     if f_max is None:
         f_max = f_max_allowed
 
-    window_T = (spectrum_config.spectrum_points - 1) / (f_max - spectrum_config.f_min)
+        if f_max <= spectrum_config.f_min:
+            raise ValueError("f_min is larger than the Nyquist frequency.")
+
+    if f_max > f_max_allowed:
+        raise ValueError("f_max is larger than the Nyquist frequency.")
+
+    if spectrum_config.f_min < -f_max_allowed:
+        raise ValueError("f_min outside of Nyquist frequency bounds.")
+
+    window_T = (spectrum_config.frequency_points - 1) / (f_max - spectrum_config.f_min)
     window_points = int(np.round(window_T / dt))
     if window_points <= 0:
         raise ValueError("Calculated window_points must be greater than zero.")
@@ -221,18 +225,19 @@ def build_runtime_config(
         else list(spectrum_config.orders)
     )
     if spectrum_config.f_min < 0 and 3 in orders:
-        print(
-            "For negative frequencies in order 3 use s3_calc and positive frequencies\n"
+        raise ValueError(
+            "For negative frequencies in order 3 use s3_calc='1/2' "
+            "and positive frequencies.\n"
+            "Example: f_min=0, f_max=5, s3_calc='1/2'"
         )
-        print("Example: f_min=0, f_max=5, s3_calc='1/2'")
-        orders.remove(3)
 
     if not orders:
         raise ValueError(
             "No spectrum orders remain after applying runtime constraints."
         )
 
-    if not window_points * spectrum_config.m + window_points // 2 < n_data_points:
+    required_points = window_points * spectrum_config.m + window_points // 2
+    if not required_points < n_data_points:
         m = (n_data_points - window_points // 2) // window_points
         if m < max(orders):
             raise ValueError("Not enough data points")
@@ -269,21 +274,14 @@ def build_runtime_config(
             complex_dtype = torch.complex128
 
     return RuntimeConfig(
-        selected=selected_channels,
+        selected_channels=selected_channels,
         orders=tuple(orders),
         dt=dt,
-        fs=fs,
-        t_unit=t_unit,
-        f_unit=unit_conversion_time_to_freq(t_unit),
-        f_max_allowed=f_max_allowed,
-        f_min=spectrum_config.f_min,
-        f_max=f_max,
-        t_window=window_T,
         window_points=window_points,
         m=m,
         n_data_points=n_data_points,
         n_windows=n_windows,
-        freq_all=freq_all,
+        freq_band=freq_all[f_min_idx:f_max_idx],
         f_min_idx=f_min_idx,
         f_max_idx=f_max_idx,
         use_full_fft=use_full_fft,
@@ -291,8 +289,8 @@ def build_runtime_config(
         complex_dtype=complex_dtype,
         device=torch.device(spectrum_config.device),
         s3_calc=spectrum_config.s3_calc,
-        break_after=spectrum_config.break_after,
-        _old_window=spectrum_config.old_window
+        spectral_estimates_max=spectrum_config.spectral_estimates_max,
+        old_window=spectrum_config.old_window,
     )
 
 
@@ -311,22 +309,22 @@ def build_spectrum_tasks(
 
     Parameters
     ----------
-    runtime_config : RuntimeConfig
+    runtime_config : :class:`RuntimeConfig`
         Configuration for spectrum order, frequency bounds, and numerical
         calculation settings.
-    cross_config : CrossConfig
+    cross_config : :class:`CrossConfig`
         Configuration describing whether auto-spectra and which cross
         spectra should be calculated.
 
     Returns
     -------
-    list[SpectrumTask]
+    list[:class:`SpectrumTask`]
         Ordered list of concrete spectrum calculations to perform.
     """
     tasks: list[SpectrumTask] = []
 
     if cross_config.auto_corr:
-        for channel in runtime_config.selected:
+        for channel in runtime_config.selected_channels:
             for order in runtime_config.orders:
                 channels = (channel,) * order
                 tasks.append(SpectrumTask(order=order, channels=channels))
@@ -347,16 +345,17 @@ def build_spectrum_tasks(
                     f"Order {order} spectra require {order} channels, got {channels}."
                 )
             for channel in channels:
-                if channel not in runtime_config.selected:
+                if channel not in runtime_config.selected_channels:
                     raise ValueError(
                         f"Cross spectrum {channels} references channel {channel}, "
-                        f"which is not in selected channels {runtime_config.selected}."
+                        f"which is not in selected channels \
+                            {runtime_config.selected_channels}."
                     )
             tasks.append(SpectrumTask(channels=channels, order=order))
 
     if not tasks:
         raise ValueError("No spectrum tasks were requested.")
-    
+
     task_keys = [(task.channels, task.order) for task in tasks]
     if len(task_keys) != len(set(task_keys)):
         raise ValueError("Duplicate spectrum tasks were requested.")
@@ -374,11 +373,11 @@ def initialize_result_store(
 
     Parameters
     ----------
-    tasks : list[SpectrumTask]
+    tasks : list[:class:`SpectrumTask`]
         Spectrum tasks that should receive corresponding result containers.
-    runtime: RuntimeConfig
-        RuntimeConfig that contains all necessary information to initialize
-        result arrays
+    runtime : :class:`RuntimeConfig`
+        :class:`RuntimeConfig` that contains all necessary information to
+        initialize result arrays.
 
     Returns
     -------
