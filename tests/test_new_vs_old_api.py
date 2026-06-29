@@ -8,6 +8,9 @@ from multichss.pipelines import calculate_spectra
 import h5py
 
 
+# old error erstimation was wrong, so pytest will fail if set to true
+compare_error = False
+
 def test_new_vs_old_api_auto_corr_1():
     """
     Tests if the refactor implements the same calculations. To check if the
@@ -53,7 +56,12 @@ def test_new_vs_old_api_auto_corr_1():
         "./tests/test_data/references/5Qubit_short_data_auto_corr.npz", allow_pickle=True
     )
     old_spectra = benchmark_spectra["spectra"].item()
-    # old_error = benchmark_spectra["error"].item()
+
+    if compare_error:
+        old_error = benchmark_spectra["error"].item()
+    else:
+        old_error = None
+
     old_freqs = benchmark_spectra["freqs"].item()
 
     assert result1.spectrum is not None
@@ -86,43 +94,45 @@ def test_new_vs_old_api_auto_corr_1():
         atol=1e-8,
     )
 
-    # Old error estimation was wrong
-    # assert result1.spectrum_error is not None
-    # assert result2.spectrum_error is not None
-    # assert result3.spectrum_error is not None
-    # assert result4.spectrum_error is not None
+    if compare_error:
+        assert old_error is not None
+        # Old error estimation was wrong
+        assert result1.spectrum_error is not None
+        assert result2.spectrum_error is not None
+        assert result3.spectrum_error is not None
+        assert result4.spectrum_error is not None
 
-    # np.testing.assert_allclose(
-    #     np.asarray(result1.spectrum_error),
-    #     np.asarray(old_error[0][1]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    #     err_msg="First-order spectrum error doesn't match",
-    # )
+        np.testing.assert_allclose(
+            np.asarray(result1.spectrum_error),
+            np.asarray(old_error[0][1]),
+            rtol=1e-6,
+            atol=1e-8,
+            err_msg="First-order spectrum error doesn't match",
+        )
 
-    # np.testing.assert_allclose(
-    #     np.asarray(result2.spectrum_error),
-    #     np.asarray(old_error[0][2]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    #     err_msg="Second-order spectrum error doesn't match",
-    # )
+        np.testing.assert_allclose(
+            np.asarray(result2.spectrum_error),
+            np.asarray(old_error[0][2]),
+            rtol=1e-6,
+            atol=1e-8,
+            err_msg="Second-order spectrum error doesn't match",
+        )
 
-    # np.testing.assert_allclose(
-    #     np.asarray(result3.spectrum_error),
-    #     np.asarray(old_error[0][3]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    #     err_msg="Third-order spectrum error doesn't match",
-    # )
+        np.testing.assert_allclose(
+            np.asarray(result3.spectrum_error),
+            np.asarray(old_error[0][3]),
+            rtol=1e-6,
+            atol=1e-8,
+            err_msg="Third-order spectrum error doesn't match",
+        )
 
-    # np.testing.assert_allclose(
-    #     np.asarray(result4.spectrum_error),
-    #     np.asarray(old_error[0][4]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    #     err_msg="Fourth-order spectrum error doesn't match",
-    # )
+        np.testing.assert_allclose(
+            np.asarray(result4.spectrum_error),
+            np.asarray(old_error[0][4]),
+            rtol=1e-6,
+            atol=1e-8,
+            err_msg="Fourth-order spectrum error doesn't match",
+        )
 
     assert result1.freq is not None
     assert result2.freq is not None
@@ -177,36 +187,38 @@ def test_new_vs_old_api_auto_corr_1():
         atol=1e-8,
     )
 
-    # Old error estimation was wrong
-    # assert result1_ch1.spectrum_error is not None
-    # assert result2_ch1.spectrum_error is not None
-    # assert result3_ch1.spectrum_error is not None
-    # assert result4_ch1.spectrum_error is not None
+    if compare_error:
+        assert old_error is not None
+        # Old error estimation was wrong
+        assert result1_ch1.spectrum_error is not None
+        assert result2_ch1.spectrum_error is not None
+        assert result3_ch1.spectrum_error is not None
+        assert result4_ch1.spectrum_error is not None
 
-    # np.testing.assert_allclose(
-    #     np.asarray(result1_ch1.spectrum_error),
-    #     np.asarray(old_error[1][1]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    # )
-    # np.testing.assert_allclose(
-    #     np.asarray(result2_ch1.spectrum_error),
-    #     np.asarray(old_error[1][2]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    # )
-    # np.testing.assert_allclose(
-    #     np.asarray(result3_ch1.spectrum_error),
-    #     np.asarray(old_error[1][3]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    # )
-    # np.testing.assert_allclose(
-    #     np.asarray(result4_ch1.spectrum_error),
-    #     np.asarray(old_error[1][4]),
-    #     rtol=1e-6,
-    #     atol=1e-8,
-    # )
+        np.testing.assert_allclose(
+            np.asarray(result1_ch1.spectrum_error),
+            np.asarray(old_error[1][1]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            np.asarray(result2_ch1.spectrum_error),
+            np.asarray(old_error[1][2]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            np.asarray(result3_ch1.spectrum_error),
+            np.asarray(old_error[1][3]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            np.asarray(result4_ch1.spectrum_error),
+            np.asarray(old_error[1][4]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
 
     assert result1_ch1.freq is not None
     assert result2_ch1.freq is not None
@@ -301,7 +313,10 @@ def test_new_vs_old_api_cross_corr_1():
         allow_pickle=True,
     )
     old_spectra_ch124 = benchmark_spectra_ch124["spectra"].item()
-    # old_error_ch124 = benchmark_spectra_ch124["error"].item()
+    if compare_error:
+        old_error_ch124 = benchmark_spectra_ch124["error"].item()
+    else:
+        old_error_ch124 = None
     old_freqs_ch124 = benchmark_spectra_ch124["freqs"].item()
 
     benchmark_spectra_ch3 = np.load(
@@ -309,7 +324,10 @@ def test_new_vs_old_api_cross_corr_1():
         allow_pickle=True,
     )
     old_spectra_ch3 = benchmark_spectra_ch3["spectra"].item()
-    # old_error_ch3 = benchmark_spectra_ch3["error"].item()
+    if compare_error:
+        old_error_ch3 = benchmark_spectra_ch3["error"].item()
+    else:
+        old_error_ch3 = None    
     old_freqs_ch3 = benchmark_spectra_ch3["freqs"].item()
 
     cross_corr_results_ch124 = [
@@ -329,15 +347,17 @@ def test_new_vs_old_api_cross_corr_1():
             err_msg=f"{order}-order spectrum {channels} doesn't match",
         )
 
-        # Old error estimation was wrong
-        # assert result.spectrum_error is not None
-        # np.testing.assert_allclose(
-        #     np.asarray(result.spectrum_error),
-        #     np.asarray(old_error_ch124[channels][order]),
-        #     rtol=1e-6,
-        #     atol=1e-8,
-        #     err_msg=f"{order}-order spectrum error {channels} doesn't match",
-        # )
+        if compare_error:
+            # Old error estimation was wrong
+            assert old_error_ch124 is not None
+            assert result.spectrum_error is not None
+            np.testing.assert_allclose(
+                np.asarray(result.spectrum_error),
+                np.asarray(old_error_ch124[channels][order]),
+                rtol=1e-6,
+                atol=1e-8,
+                err_msg=f"{order}-order spectrum error {channels} doesn't match",
+            )
 
         assert result.freq is not None
         np.testing.assert_allclose(
@@ -364,15 +384,17 @@ def test_new_vs_old_api_cross_corr_1():
             err_msg=f"{order}-order spectrum {channels} doesn't match",
         )
 
-        # Old error estimation was wrong
-        # assert result.spectrum_error is not None
-        # np.testing.assert_allclose(
-        #     np.asarray(result.spectrum_error),
-        #     np.asarray(old_error_ch3[channels][order]),
-        #     rtol=1e-6,
-        #     atol=1e-8,
-        #     err_msg=f"{order}-order spectrum error {channels} doesn't match",
-        # )
+        if compare_error:
+            # Old error estimation was wrong
+            assert old_error_ch3 is not None
+            assert result.spectrum_error is not None
+            np.testing.assert_allclose(
+                np.asarray(result.spectrum_error),
+                np.asarray(old_error_ch3[channels][order]),
+                rtol=1e-6,
+                atol=1e-8,
+                err_msg=f"{order}-order spectrum error {channels} doesn't match",
+            )
 
         assert result.freq is not None
         np.testing.assert_allclose(
