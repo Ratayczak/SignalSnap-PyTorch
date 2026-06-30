@@ -20,9 +20,7 @@ if TYPE_CHECKING:
 
 ### old code from previous api
 def _old_gaussian_window(x: Tensor, n_windows: int, l: int, sigma_t: float) -> Tensor:
-    """
-    Approx. confined Gaussian window (see DOI:10.1016/j.sigpro.2014.03.033)
-    """
+    """Approx. confined Gaussian window (see DOI:10.1016/j.sigpro.2014.03.033)."""
 
     center = n_windows * 0.5
     denom = 2.0 * l * sigma_t
@@ -33,8 +31,8 @@ def _old_gaussian_window(x: Tensor, n_windows: int, l: int, sigma_t: float) -> T
 
 def _old_calc_window(x: Tensor, n_windows: int, l: int, sigma_t: float) -> Tensor:
     """
-    Helper function to calculate the approx. confined gaussian window
-    as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
+    Helper function to calculate the approx. confined gaussian window as defined in
+    https://doi.org/10.1016/j.sigpro.2014.03.033
     """
 
     h: Tensor = x.new_tensor(-0.5)
@@ -59,8 +57,8 @@ def _old_cg_window(
     dtype: torch.dtype = torch.float64,
 ) -> Tensor:
     """
-    Helper function to calculate the approx. confined gaussian window
-    as defined in https://doi.org/10.1016/j.sigpro.2014.03.033
+    Helper function to calculate the approx. confined gaussian window as defined in
+    https://doi.org/10.1016/j.sigpro.2014.03.033
     """
 
     x = torch.linspace(0, n_windows, n_windows, device=torch_device, dtype=dtype)
@@ -83,16 +81,17 @@ def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:
     Helper function to calculate the Gaussian
         G(x) = exp{- dt^2 [x - (N-1) / 2]^2 / [2 * sigma_t]^2}.
 
-    sigma_t is the temporal width of the Gaussian. Here, it is given in terms
-    of the window duration T
+    sigma_t is the temporal width of the Gaussian. Here, it is given in terms of the window
+    duration T
         sigma_t = sigma_t_prefactor * T = sigma_t_prefactor * N * dt
     so that we effectively calculate
         G(x) = exp{- [x - (N-1) / 2]^2 / [2 * N * sigma_t_prefactor]^2}
 
-    This Gaussian is used to construct the discrete approximate confined
-    Gaussian window function for N-point Fourier transforms.
+    This Gaussian is used to construct the discrete approximate confined Gaussian window function
+    for N-point Fourier transforms.
     (reference: DOI:10.1016/j.sigpro.2014.03.033)
     """
+
     center = (N - 1) * 0.5
     denom = 2.0 * N * sigma_t_prefactor
 
@@ -116,9 +115,10 @@ def acG_window_func(
 
     sigma_t is given in terms of the time duration T = N * dt per window.
 
-    To minimize floating-point precision errors, the window is
-    normalized such that the maximum is equal to 1.
+    To minimize floating-point precision errors, the window is normalized such that the maximum is
+    equal to 1.
     """
+
     h = torch.tensor(-0.5, device=torch_device, dtype=dtype)
     k = torch.arange(N, device=torch_device, dtype=dtype)
 
@@ -135,7 +135,8 @@ def acG_window_func(
 
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
-    """Copy np.array to torch.device using the correct data type"""
+    """Copy np.array to torch.device using the correct data type."""
+
     if np.iscomplexobj(array):
         raise TypeError("Input data cannot be complex.")
 
@@ -143,7 +144,8 @@ def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
 
 
 def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor:
-    """Compute the FFT as specified in DOI:10.1016/j.dsp.2026.105893"""
+    """Compute the FFT as specified in DOI:10.1016/j.dsp.2026.105893."""
+
     weighted_chunk = window * chunk
 
     if runtime.use_full_fft:
@@ -156,7 +158,8 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
 
 
 def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
-    """Return window for m chunks in the correct shape"""
+    """Return window for m chunks in the correct shape."""
+
     if runtime.old_window:
         single_window = _old_cg_window(
             runtime.window_points,
@@ -171,14 +174,13 @@ def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
             dtype=runtime.real_dtype,
         )
 
-    repeated_window = single_window.reshape(1, runtime.window_points, 1).repeat(
-        runtime.m, 1, 1
-    )
+    repeated_window = single_window.reshape(1, runtime.window_points, 1).repeat(runtime.m, 1, 1)
     return single_window, repeated_window
 
 
 def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
-    """Return the window slice indices"""
+    """Return the window slice indices."""
+
     chunk_size = runtime.window_points * runtime.m
 
     for window_index in range(runtime.n_windows):
@@ -190,16 +192,12 @@ def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
                 yield start, end
 
 
-def reshape_window_chunk(
-    chunk: np.ndarray,
-    runtime: RuntimeConfig,
-) -> np.ndarray:
-    """Reshape each chunk to m windows"""
+def reshape_window_chunk(chunk: np.ndarray, runtime: RuntimeConfig) -> np.ndarray:
+    """Reshape each chunk to m windows."""
+
     expected_size = runtime.window_points * runtime.m
 
     if chunk.shape[0] != expected_size:
-        raise ValueError(
-            f"Expected chunk with {expected_size} samples, got {chunk.shape[0]}."
-        )
+        raise ValueError(f"Expected chunk with {expected_size} samples, got {chunk.shape[0]}.")
 
     return chunk.reshape(runtime.m, runtime.window_points, 1)

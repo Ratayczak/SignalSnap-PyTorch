@@ -13,15 +13,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 
-from .cumulants import (
-    a_w3_gen,
-    c1,
-    c2,
-    c3,
-    c4,
-    calc_a_w3,
-    index_generation_to_aw_3,
-)
+from .cumulants import a_w3_gen, c1, c2, c3, c4, calc_a_w3, index_generation_to_aw_3
 
 if TYPE_CHECKING:
     from .planning import RuntimeConfig, SpectrumTask
@@ -42,11 +34,7 @@ def build_third_order_cache(runtime: RuntimeConfig) -> ThirdOrderCache:
             device=runtime.device,
             dtype=runtime.complex_dtype,
         ),
-        indices=index_generation_to_aw_3(
-            runtime.s3_calc,
-            runtime.f_max_idx,
-            device=runtime.device,
-        ),
+        indices=index_generation_to_aw_3(runtime.s3_calc, runtime.f_max_idx, device=runtime.device),
     )
 
 
@@ -77,17 +65,17 @@ def compute_single_spectrum(
         a_w1 = coeffs_by_channel[channels[0]][:, f_min_idx:f_max_idx, :]
         a_w2 = coeffs_by_channel[channels[1]][:, f_min_idx:f_max_idx, :]
         single_spectrum = c2(runtime.m, a_w1, a_w2)
-        norm = runtime.dt * (single_window ** 2).sum()
+        norm = runtime.dt * (single_window**2).sum()
 
     elif order == 3:
         if third_order_cache is None:
             raise ValueError("Third-order spectra require third_order_cache.")
 
-        a_w1 = coeffs_by_channel[channels[0]][:, f_min_idx:f_max_idx // 2, :]
+        a_w1 = coeffs_by_channel[channels[0]][:, f_min_idx : f_max_idx // 2, :]
         if channels[0] == channels[1]:
             a_w2 = a_w1
         else:
-            a_w2 = coeffs_by_channel[channels[1]][:, f_min_idx:f_max_idx // 2, :]
+            a_w2 = coeffs_by_channel[channels[1]][:, f_min_idx : f_max_idx // 2, :]
 
         coeffs_gpu_p = coeffs_by_channel[channels[2]].permute((1, 2, 0))
 

@@ -19,57 +19,51 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class SpectrumResult:
-    """Data container for the state and results of a single spectral
-    calculation.
+    """Data container for the state and results of a single spectral calculation.
 
-    Stores the configuration metadata, accumulated hardware states, error
-    buffers, and final computed results for a specific higher-order
-    auto- or cross-spectrum calculation.
+    Stores the configuration metadata, accumulated hardware states, error buffers, and final
+    computed results for a specific higher-order auto- or cross-spectrum calculation.
 
     Parameters
     ----------
     order : int
-        The order of the polyspectrum (e.g., 2 for power
-        spectrum, 3 for bispectrum, 4 for trispectrum).
+        The order of the polyspectrum (e.g., 2 for power spectrum, 3 for bispectrum, 4 for 
+        trispectrum).
     channels : tuple[int, ...]
-        The indices identifying which channels are part of this
-        calculation. For example, `(0,)` indicates an auto-spectrum on
-        channel 0, while `(0, 1)` indicates a cross-spectrum between
+        The indices identifying which channels are part of this calculation. For example, `(0,)`
+        indicates an auto-spectrum on channel 0, while `(0, 1)` indicates a cross-spectrum between 
         channels 0 and 1.
 
     Attributes
     ----------
     freq : np.ndarray | tuple[np.ndarray, np.ndarray] | None
-        The frequency axes associated with the spectrum. Single 1D array
-        for a power spectrum, or a tuple of two 1D arrays for higher-order
-        polyspectra.
+        The frequency axes associated with the spectrum. Single 1D array for a power spectrum, or a
+        tuple of two 1D arrays for higher-order polyspectra.
     spectrum : np.ndarray | None
         The final normalized spectral values transferred back to the CPU.
     spectrum_error : np.ndarray | None
-        The final calculated standard error of the mean (SEM) or variance
-        values transferred back to the CPU. # see TODO
+        The final calculated standard error of the mean (SEM) or variance values transferred back to
+        the CPU.
     spectrum_accumulator : torch.Tensor | None
-        Running total accumulation buffer of the calculated spectra on the
-        active torch device
+        Running total accumulation buffer of the calculated spectra on the active torch device
     error_accumulator_x_squared : torch.Tensor | None
-        Running total accumulation buffer of the real and imaginary parts
-        of the spectra squared on the active torch device.
+        Running total accumulation buffer of the real and imaginary parts of the spectra squared on
+        the active torch device.
     chunks_processed : int
-        The total number of individual signal windows integrated into
-        `spectrum_accumulator`.
+        The total number of individual signal windows integrated into `spectrum_accumulator`.
     """
 
     order: int
     channels: tuple[int, ...]
 
     freq: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None
-    spectrum: np.ndarray | None = None  # s
-    spectrum_error: np.ndarray | None = None  # s_err
+    spectrum: np.ndarray | None = None
+    spectrum_error: np.ndarray | None = None
 
-    spectrum_accumulator: Tensor | None = None  # s_gpu
+    spectrum_accumulator: Tensor | None = None
     error_accumulator_x_squared: Tensor | None = None
 
-    chunks_processed: int = 0  # n_chunks_processed
+    chunks_processed: int = 0
 
     def reset_state(self):
         """Clears accumulators to prepare for a fresh calculation."""
@@ -96,40 +90,38 @@ class SpectrumResult:
 
 @dataclass(slots=True)
 class SpectrumResultStore:
-    """Container for all spectrum results produced by a calculation
-    pipeline.
+    """Container for all spectrum results produced by a calculation pipeline.
 
-    Stores one :class:`SpectrumResult` per channel tuple and spectrum
-    order.
-    Results are indexed by ``(channels, order)``, where ``channels`` is a
-    tuple of data-channel indices and ``order`` is the polyspectrum order.
+    Stores one :class:`SpectrumResult` per channel tuple and spectrum order. Results are indexed by
+    ``(channels, order)``, where ``channels`` is a tuple of data-channel indices and ``order`` is
+    the polyspectrum order.
 
-    This class owns collection-level bookkeeping only. Numerical
-    accumulation, error estimation, and finalization are handled elsewhere.
+    This class owns collection-level bookkeeping only. Numerical accumulation, error estimation, and
+    finalization are handled elsewhere.
 
     Attributes
     ----------
     results : dict[tuple[tuple[int, ...], int], SpectrumResult]
-        Mapping from ``(channels, order)`` to the corresponding spectrum
-        result. For example, ``((0,), 2)`` identifies the second-order
-        auto-spectrum of channel 0, while ``((0, 1), 2)`` identifies a
-        second-order cross-spectrum between channels 0 and 1.
+        Mapping from ``(channels, order)`` to the corresponding spectrum result. For example,
+        ``((0,), 2)`` identifies the second-order auto-spectrum of channel 0, while ``((0, 1), 2)``
+        identifies a second-order cross-spectrum between channels 0 and 1.
     """
 
-    results: dict[tuple[tuple[int, ...], int], SpectrumResult] = field(
-        default_factory=dict
-    )
+    results: dict[tuple[tuple[int, ...], int], SpectrumResult] = field(default_factory=dict)
 
     def get(self, channels: tuple[int, ...], order: int) -> SpectrumResult:
         """Return the result for a channel tuple and spectrum order."""
+
         return self.results[(channels, order)]
 
     def add(self, result: SpectrumResult) -> None:
         """Add or replace a spectrum result using its channels and order."""
+
         self.results[(result.channels, result.order)] = result
 
     def reset_all_states(self) -> None:
         """Reset the mutable calculation state of all stored results."""
+
         for result in self.results.values():
             result.reset_state()
 

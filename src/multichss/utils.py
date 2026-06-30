@@ -17,9 +17,7 @@ FrequencyUnits: TypeAlias = Literal["Hz", "kHz", "MHz", "GHz", "THz"]
 S3Calcs: TypeAlias = Literal["1/4", "1/2"]
 
 
-def data_config_dic(
-    data_config_list: Iterable["DataConfig"],
-) -> dict[Any, "DataConfig"]:
+def data_config_dic(data_config_list: Iterable["DataConfig"]) -> dict[Any, "DataConfig"]:
     return {config.data: config for config in data_config_list}
 
 

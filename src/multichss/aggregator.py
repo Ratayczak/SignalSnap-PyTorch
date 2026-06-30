@@ -12,19 +12,15 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from .planning import RuntimeConfig
     from .results import SpectrumResult
 
 
-def accumulate_spectrum(
-    result: SpectrumResult,
-    single_spectrum: torch.Tensor,
-    runtime: RuntimeConfig,
-) -> None:
+def accumulate_spectrum(result: SpectrumResult, single_spectrum: torch.Tensor) -> None:
     """Accumulate one single-window spectrum into a result object.
 
     Updates the running spectrum sum and running real and imaginary squared sums
     """
+    
     if result.freq is None:
         raise ValueError("SpectrumResult must be initialized before accumulation.")
 
@@ -47,6 +43,7 @@ def accumulate_spectrum(
 
 def finalize_result(result: SpectrumResult) -> None:
     """Finalize accumulated spectra and error estimates on a result object."""
+
     if result.spectrum_accumulator is None:
         result.spectrum = None
         result.spectrum_error = None

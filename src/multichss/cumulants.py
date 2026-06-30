@@ -14,9 +14,8 @@ from .utils import S3Calcs
 
 
 def c1(use_full_fft: bool, a_w: Tensor) -> Tensor:
-    """
-    First order cumulant
-    """
+    """First-order cumulant."""
+
     s1 = torch.mean(a_w, dim=0)
     if use_full_fft:
         dc_index = s1.shape[0] // 2
@@ -28,9 +27,8 @@ def c1(use_full_fft: bool, a_w: Tensor) -> Tensor:
 
 
 def c2(m: int, a_w1: Tensor, a_w2: Tensor) -> Tensor:
-    """
-    second order cumulant is the covariance
-    """
+    """Second-order cumulant is the covariance."""
+
     a_w2_star = torch.conj(a_w2)
 
     factor = m / (m - 1)
@@ -48,19 +46,16 @@ def a_w3_gen(
     dtype: torch.dtype = torch.complex64,
 ) -> Tensor:
     """
-    generates an initialization tensor which will be used to calculate c3.
-    here sconfig.s3_calc can either be 1/2 or 1/4, which is chosen by the user.
-    1/2 to calculate positive and negative frequencies for x axis.
-    1/4 to calculate positive frequencies only.
+    Generates an initialization tensor which will be used to calculate c3. Here sconfig.s3_calc can
+    either be 1/2 or 1/4, which is chosen by the user. 1/2 to calculate positive and negative
+    frequencies for x axis. 1/4 to calculate positive frequencies only.
     """
+
     if s3_calc == "1/2":
         n = 2 * (f_max_idx // 2) - 1
         a_w3 = torch.ones((f_max_idx // 2, n, m), device=device, dtype=dtype) * 1j
     elif s3_calc == "1/4":
-        a_w3 = (
-            torch.ones((f_max_idx // 2, f_max_idx // 2, m), device=device, dtype=dtype)
-            * 1j
-        )
+        a_w3 = torch.ones((f_max_idx // 2, f_max_idx // 2, m), device=device, dtype=dtype) * 1j
     else:
         raise ValueError(f"Unknown s3_calc: {s3_calc}")
 
@@ -68,40 +63,34 @@ def a_w3_gen(
 
 
 def index_generation_to_aw_3(
-    s3_calc: S3Calcs,
-    f_max_idx: int,
-    device: torch.device | None = None,
+    s3_calc: S3Calcs, f_max_idx: int, device: torch.device | None = None
 ) -> Tensor:
     """
-    Constructs an index matrix to correctly place elements of the Fourier coefficients
-    of the signal in the desired order, accounting for potential spectrum symmetry.
-    here sconfig.s3_calc can either be 1/2 or 1/4, which is chosen by the user.
-    1/2 to calculate positive and negative frequencies for x axis.
-    1/4 to calculate positive frequencies only.
+    Constructs an index matrix to correctly place elements of the Fourier coefficients of the signal
+    in the desired order, accounting for potential spectrum symmetry. Here sconfig.s3_calc can
+    either be 1/2 or 1/4, which is chosen by the user. 1/2 to calculate positive and negative
+    frequencies for x axis. 1/4 to calculate positive frequencies only.
     """
+
     if s3_calc == "1/2":
         n = f_max_idx // 2
         indices = torch.arange(n, device=device).unsqueeze(1) + torch.arange(
             -(n - 1), n, device=device
         )
     elif s3_calc == "1/4":
-        indices = torch.arange(f_max_idx // 2, device=device).unsqueeze(
-            1
-        ) + torch.arange(f_max_idx // 2, device=device)
+        indices = torch.arange(f_max_idx // 2, device=device).unsqueeze(1) + torch.arange(
+            f_max_idx // 2, device=device
+        )
     else:
         raise ValueError(f"Unknown s3_calc: {s3_calc}")
 
     return indices
 
 
-def calc_a_w3(
-    a_w_all: Tensor, f_max_idx: int, m: int, a_w3: Tensor, indices: Tensor
-) -> Tensor:
-    # the complex type must be unified to prevent mismatch errors
-    # match dtype
+def calc_a_w3(a_w_all: Tensor, f_max_idx: int, m: int, a_w3: Tensor, indices: Tensor) -> Tensor:
     if a_w3.dtype != a_w_all.dtype:
         a_w3 = a_w3.to(a_w_all.dtype)
-    # same device
+
     if a_w3.device != a_w_all.device:
         a_w3 = a_w3.to(a_w_all.device)
 
@@ -112,14 +101,15 @@ def calc_a_w3(
 
 def c3(m: int, a_w1: Tensor, a_w2: Tensor, a_w3: Tensor) -> Tensor:
     """
-    third order cumulant
+    Third-order cumulant
     C_3 = m^2 / [(m - 1)(m - 2)] . (< a_w1 . a_w2 . a_w3 >
             - < a_w1 >< a_w2 . a_w3 > - < a_w1 . a_w2 >< a_w3 > - < a_w1 . a_w3 >< a_w2 >
             + 2 < a_w1 >< a_w2 >< a_w3 >)
-    with w3 = - w1 - w2 and as before <...> denotes the mean
-    the factor m^2 / (m - 1)(m - 2) is the unbiased estimator for the third order cumulant
+    with w3 = - w1 - w2 and as before <...> denotes the mean the factor m^2 / (m - 1)(m - 2) is the
+    unbiased estimator for the third order cumulant.
     (see arXiv:1904.12154)
     """
+
     a_w1_modified = a_w1.transpose(-1, -2)
     a_w1_modified_stacked = a_w1_modified.expand(
         a_w1_modified.size(0), a_w2.size(1), a_w1_modified.size(2)
@@ -165,13 +155,13 @@ def c3(m: int, a_w1: Tensor, a_w2: Tensor, a_w3: Tensor) -> Tensor:
 
 def c4(m: int, a_w1: Tensor, a_w2: Tensor, a_w3: Tensor, a_w4: Tensor) -> Tensor:
     """
-    fourth order cumulant
+    Fourth-order cumulant
     C_4 = m^2 / [(m - 1)(m - 2)(m - 3)] .
             {(m + 1)<(a_w1 - <a_w1>)(a_w2 - <a_w2>)(a_w3 - <a_w3>)(a_w3 - <a_w3>) >
             - (m + 1)[<(a_w1 - <a_w1>)(a_w2 - <a_w2>)> <(a_w3 - <a_w3>)(a_w3 - <a_w3>)>
                         + 2 o.p.]}
-        <...> denotes the mean
-    see arXiv:1904.12154 for more information
+    <...> denotes the mean.
+    (see arXiv:1904.12154)
     """
 
     # --- for a better readability ---
@@ -206,4 +196,5 @@ def c4(m: int, a_w1: Tensor, a_w2: Tensor, a_w3: Tensor, a_w4: Tensor) -> Tensor
     s4 = (m**2 / ((m - 1) * (m - 2) * (m - 3))) * (
         (m + 1) * xyzw_mean - (m - 1) * (xy_zw_mean + xz_yw_mean + xw_yz_mean)
     )
+
     return s4

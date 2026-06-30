@@ -24,10 +24,9 @@ if TYPE_CHECKING:
 class RuntimeConfig:
     """Resolved calculation settings derived from user configuration.
 
-    :class:`SpectrumConfig` and :class:`DataConfig` describe what the user
-    asked for. :class:`RuntimeConfig` describes what the calculation will
-    actually use after defaults, data-size constraints, frequency axes, and
-    device details have been resolved.
+    :class:`SpectrumConfig` and :class:`DataConfig` describe what the user asked for
+    :class:`RuntimeConfig` describes what the calculation will actually use after defaults,
+    data-size constraints, frequency axes, and device details have been resolved.
 
     Attributes
     ----------
@@ -40,8 +39,8 @@ class RuntimeConfig:
     window_points : int
         Number of samples per window.
     m : int
-        Number of windows used per spectral estimate. This may be reduced
-        at runtime if the signal is too short. Must be positive.
+        Number of windows used per spectral estimate. This may be reduced at runtime if the signal
+        is too short. Must be positive.
     n_data_points : int
         Number of samples in each selected data channel.
     n_windows : int
@@ -61,14 +60,12 @@ class RuntimeConfig:
     s3_calc : Literal["1/4", "1/2"]
         Method used for third-order spectrum calculation.
     spectral_estimates_max : int | None
-        Maximum number of spectral estimates. If ``None``, as many
-        estimates as possible are calculated based on the data. The true
-        number of spectral estimates may be lower if the data does not
-        have enough samples. Must be positive.
+        Maximum number of spectral estimates. If ``None``, as many estimates as possible are
+        calculated based on the data. The true number of spectral estimates may be lower if the data
+        does not have enough samples. Must be positive. # TODO
     old_window : bool
-        Compatibility option. If set to ``True``, the approximated
-        confined Gaussian window from the old API is used as a window
-        function.
+        Compatibility option. If set to ``True``, the approximated confined Gaussian window from the
+        old API is used as a window function.
     """
 
     selected_channels: tuple[int, ...]
@@ -94,22 +91,19 @@ class RuntimeConfig:
 class SpectrumTask:
     """Description of one spectrum that should be calculated.
 
-    A task is the normalized representation of a user request after
-    :class:`SpectrumConfig` and :class:`CrossConfig` have been expanded.
-    It identifies one polyspectrum order and the channel tuple that should
-    be used for that calculation.
+    A task is the normalized representation of a user request after :class:`SpectrumConfig` and
+    :class:`CrossConfig` have been expanded. It identifies one polyspectrum order and the channel
+    tuple that should be used for that calculation.
 
     Parameters
     ----------
     order : int
         The polyspectrum order to calculate.
     channels : tuple[int, ...]
-        The channel indices used by this calculation. Auto-spectra repeat
-        the same channel once per order, e.g. ``(0, 0)`` for the
-        second-order spectrum of channel 0 and ``(0, 0, 0)`` for the
-        third-order spectrum. Cross-spectra are represented by the
-        configured channel tuple, e.g. ``(0, 1)`` for a second-order
-        cross-spectrum.
+        The channel indices used by this calculation. Auto-spectra repeat the same channel once per
+        order, e.g. ``(0, 0)`` for the second-order spectrum of channel 0 and ``(0, 0, 0)`` for the
+        third-order spectrum. Cross-spectra are represented by the configured channel tuple, e.g.
+        ``(0, 1)`` for a second-order cross-spectrum.
     """
 
     order: int
@@ -117,10 +111,10 @@ class SpectrumTask:
 
 
 def _normalize_selected(
-    data_config_list: list[DataConfig],
-    selected: list[int] | None = None,
+    data_config_list: list[DataConfig], selected: list[int] | None = None
 ) -> tuple[int, ...]:
     """Resolve selected data-channel indices."""
+
     if selected is None:
         return tuple(range(len(data_config_list)))
 
@@ -139,10 +133,10 @@ def _normalize_selected(
 
 
 def _validate_data_configs(
-    data_config_list: list[DataConfig],
-    selected: tuple[int, ...],
+    data_config_list: list[DataConfig], selected: tuple[int, ...]
 ) -> tuple[int, float]:
     """Validate selected data and return ``(n_data_points, dt)``."""
+
     if not data_config_list:
         raise ValueError("At least one DataConfig is required.")
 
@@ -178,24 +172,21 @@ def build_runtime_config(
     data_config_list: list[DataConfig],
     selected: list[int] | None = None,
 ) -> RuntimeConfig:
-    """Resolve user configuration into immutable runtime calculation
-    settings.
+    """Resolve user configuration into immutable runtime calculation settings.
 
-    Validates the selected data channels, derives the frequency axis and
-    frequency-band indices, checks Nyquist-frequency bounds, resolves the
-    effective window size and window count, and selects torch dtypes and
-    device settings used by the spectrum calculation.
+    Validates the selected data channels, derives the frequency axis and frequency-band indices,
+    checks Nyquist-frequency bounds, resolves the effective window size and window count, and
+    selects torch dtypes and device settings used by the spectrum calculation.
 
     Parameters
     ----------
     spectrum_config : :class:`SpectrumConfig`
-        User configuration for spectrum orders, frequency bounds, precision,
-        device, windowing, and related calculation options.
+        User configuration for spectrum orders, frequency bounds, precision, device, windowing, and
+        related calculation options.
     data_config_list : list[:class:`DataConfig`]
         Data configurations containing the input data and sampling metadata.
     selected : list[int] | None, optional
-        Data-channel indices to use. If ``None``, all data configurations are
-        selected.
+        Data-channel indices to use. If ``None``, all data configurations are selected.
     """
     selected_channels = _normalize_selected(data_config_list, selected)
     n_data_points, dt = _validate_data_configs(data_config_list, selected_channels)
@@ -219,22 +210,15 @@ def build_runtime_config(
     if window_points <= 0:
         raise ValueError("Calculated window_points must be greater than zero.")
 
-    orders = (
-        [1, 2, 3, 4]
-        if spectrum_config.orders == "all"
-        else list(spectrum_config.orders)
-    )
+    orders = [1, 2, 3, 4] if spectrum_config.orders == "all" else list(spectrum_config.orders)
     if spectrum_config.f_min < 0 and 3 in orders:
         raise ValueError(
-            "For negative frequencies in order 3 use s3_calc='1/2' "
-            "and positive frequencies.\n"
+            "For negative frequencies in order 3 use s3_calc='1/2' and positive frequencies.\n"
             "Example: f_min=0, f_max=5, s3_calc='1/2'"
         )
 
     if not orders:
-        raise ValueError(
-            "No spectrum orders remain after applying runtime constraints."
-        )
+        raise ValueError("No spectrum orders remain after applying runtime constraints.")
 
     required_points = window_points * spectrum_config.m + window_points // 2
     if not required_points < n_data_points:
@@ -295,32 +279,28 @@ def build_runtime_config(
 
 
 def build_spectrum_tasks(
-    runtime_config: RuntimeConfig,
-    cross_config: CrossConfig,
+    runtime_config: RuntimeConfig, cross_config: CrossConfig
 ) -> list[SpectrumTask]:
     """Build the concrete spectrum tasks requested by the configuration.
 
-    Expands the high-level configuration into one :class:`SpectrumTask` per
-    spectrum that should be calculated. Auto-correlation tasks are
-    generated for each selected channel when ``cross_config.auto_corr`` is
-    enabled. Cross tasks are generated from ``cross_corr_2``,
-    ``cross_corr_3``, and ``cross_corr_4`` when their corresponding orders
-    are requested.
+    Expands the high-level configuration into one :class:`SpectrumTask` per spectrum that should be
+    calculated. Auto-correlation tasks are generated for each selected channel when
+    ``cross_config.auto_corr`` is enabled. Cross tasks are generated from ``cross_corr_2``,
+    ``cross_corr_3``, and ``cross_corr_4`` when their corresponding orders are requested.
 
     Parameters
     ----------
     runtime_config : :class:`RuntimeConfig`
-        Configuration for spectrum order, frequency bounds, and numerical
-        calculation settings.
+        Configuration for spectrum order, frequency bounds, and numerical calculation settings.
     cross_config : :class:`CrossConfig`
-        Configuration describing whether auto-spectra and which cross
-        spectra should be calculated.
+        Configuration describing whether auto-spectra and which cross spectra should be calculated.
 
     Returns
     -------
     list[:class:`SpectrumTask`]
         Ordered list of concrete spectrum calculations to perform.
     """
+
     tasks: list[SpectrumTask] = []
 
     if cross_config.auto_corr:
@@ -341,15 +321,12 @@ def build_spectrum_tasks(
         for channels in channel_groups:
             channels = tuple(channels)
             if len(channels) != order:
-                raise ValueError(
-                    f"Order {order} spectra require {order} channels, got {channels}."
-                )
+                raise ValueError(f"Order {order} spectra require {order} channels, got {channels}.")
             for channel in channels:
                 if channel not in runtime_config.selected_channels:
                     raise ValueError(
                         f"Cross spectrum {channels} references channel {channel}, "
-                        f"which is not in selected channels \
-                            {runtime_config.selected_channels}."
+                        f"which is not in selected channels {runtime_config.selected_channels}."
                     )
             tasks.append(SpectrumTask(channels=channels, order=order))
 
@@ -368,22 +345,21 @@ def initialize_result_store(
 ) -> SpectrumResultStore:
     """Create an initialized result store for a list of spectrum tasks.
 
-    Each task is converted into a :class:`SpectrumResult` with matching
-    order and channels.
+    Each task is converted into a :class:`SpectrumResult` with matching order and channels.
 
     Parameters
     ----------
     tasks : list[:class:`SpectrumTask`]
         Spectrum tasks that should receive corresponding result containers.
     runtime : :class:`RuntimeConfig`
-        :class:`RuntimeConfig` that contains all necessary information to
-        initialize result arrays.
+        :class:`RuntimeConfig` that contains all necessary information to initialize result arrays.
 
     Returns
     -------
     SpectrumResultStore
         Store containing one initialized :class:`SpectrumResult` per task.
     """
+    
     store = SpectrumResultStore()
     for task in tasks:
         store.add(SpectrumResult(order=task.order, channels=task.channels))
