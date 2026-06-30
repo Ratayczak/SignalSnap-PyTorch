@@ -118,6 +118,9 @@ def _normalize_selected(
 
     if not selected:
         raise ValueError("At least one data channel must be selected.")
+    
+    if len(selected) != len(set(selected)):
+        raise ValueError("Selected data channels cannot contain duplicates.")
 
     n_data_configs = len(data_config_list)
     for channel in selected:
@@ -142,27 +145,15 @@ def _validate_data_configs(
         raise ValueError("At least one data channel must be selected.")
 
     first_config = data_config_list[selected[0]]
-    if first_config.data is None:
-        raise ValueError(f"Selected channel {selected[0]} does not contain data.")
-
-    try:
-        n_data_points = first_config.data.shape[0]
-    except AttributeError as exc:
-        raise TypeError("DataConfig.data must provide a shape attribute.") from exc
-
-    dt = first_config.dt
-    t_unit = first_config.t_unit
 
     for channel in selected:
         data_config = data_config_list[channel]
-        if data_config.data is None:
-            raise ValueError(f"Selected channel {channel} does not contain data.")
-        if data_config.data.shape[0] != n_data_points:
+        if data_config.data.shape[0] != first_config.data.shape[0]:
             raise ValueError("Imported data must have same length!")
-        if data_config.dt != dt or data_config.t_unit != t_unit:
+        if data_config.dt != first_config.dt or data_config.t_unit != first_config.t_unit:
             raise ValueError("Selected data channels must use the same dt and t_unit.")
 
-    return n_data_points, dt
+    return first_config.data.shape[0], first_config.dt
 
 
 def build_runtime_config(
@@ -344,7 +335,10 @@ def build_spectrum_tasks(
             tasks.append(SpectrumTask(channels=channels, order=order))
 
     if not tasks:
-        raise ValueError("No spectrum tasks were requested.")
+        raise ValueError(
+            "No spectrum tasks were requested. This may be because the requested cross-correlation "
+            "spectra are not matching the specified orders in SpectrumConfig."
+        )
 
     task_keys = [(task.channels, task.order) for task in tasks]
     if len(task_keys) != len(set(task_keys)):

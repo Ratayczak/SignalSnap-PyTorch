@@ -137,9 +137,6 @@ def acG_window_func(
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
     """Copy np.array to torch.device using the correct data type."""
 
-    if np.iscomplexobj(array):
-        raise TypeError("Input data cannot be complex.")
-
     return torch.as_tensor(array, dtype=runtime.real_dtype, device=runtime.device)
 
 

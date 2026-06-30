@@ -11,12 +11,13 @@ import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, DirectoryPath, Field, field_validator, model_validator
 
 from .utils import S3Calcs, TimeUnits
 
 os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
-SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
+SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 ChannelIndex = Annotated[int, Field(ge=0)]
 
 
@@ -67,7 +68,7 @@ class DataConfig(BaseModel):
 
     Attributes
     ----------
-        data: array-like with a shape attribute
+        data: ArrayLike with a shape attribute
             The recorded signal data (e.g. a NumPy array).
         dt: float
             The time interval between two consecutive data points. Must be positive.
@@ -80,6 +81,22 @@ class DataConfig(BaseModel):
     data: Any
     dt: Annotated[float, Field(gt=0)]
     t_unit: TimeUnits = "s"
+
+    @field_validator("data")
+    @classmethod
+    def validate_data(cls, v: Any) -> Any:
+        if v is None:
+            raise ValueError("data cannot be None.")
+        if not hasattr(v, "shape"):
+            raise ValueError("DataConfig.data must provide a shape attribute.")
+        if len(v.shape) == 0 or v.shape[0] <= 0:
+            raise ValueError("DataConfig.data must contain at least one sample.")
+        if np.iscomplexobj(v):
+            raise TypeError("Input data cannot be complex.")
+        if len(v.shape) != 1:
+            raise ValueError("DataConfig.data must be one-dimensional.")
+
+        return v
 
 
 class PlotConfig(BaseModel):
@@ -159,7 +176,7 @@ class SpectrumConfig(BaseModel):
 
     f_min: float = 0.0
     f_max: float | None = None
-    frequency_points: Annotated[int, Field(gt=0)] = 100
+    frequency_points: Annotated[int, Field(ge=2)] = 100
     orders: (
         Literal["all"] | Annotated[list[Annotated[int, Field(ge=1, le=4)]], Field(min_length=1)]
     ) = "all"
