@@ -108,7 +108,7 @@ class SpectrumConfig(BaseModel):
 
     ``SpectrumConfig`` describes what the user asks the calculation to use: frequency bounds, number
     of frequency points, spectrum orders, window count per spectral estimate, backend torch device,
-    and compatibility options. These settings are later resolved together with ``DataConfig`` into a 
+    and compatibility options. These settings are later resolved together with ``DataConfig`` into a
     ``RuntimeConfig``.
 
     Attributes
@@ -120,7 +120,7 @@ class SpectrumConfig(BaseModel):
         frequency_points : int = 100
             Number of frequency points in the specified frequency range. Must be positive.
         orders : Literal["all"] | list[int] = "all"
-            Spectrum orders (between 1 and 4) to be calculated. ``all`` means orders 
+            Spectrum orders (between 1 and 4) to be calculated. ``all`` means orders
             ``[1, 2, 3, 4]``.
         m : int = 10
             Number of windows used per spectral estimate. This may be reduced at runtime if the
@@ -134,7 +134,7 @@ class SpectrumConfig(BaseModel):
             ``double`` will result in ``float64`` and ``complex128``. ``auto`` will choose
             ``single`` if device is ``mps`` and ``double`` otherwise.
         spectral_estimates_max : int | None = int(1e6)
-            Maximum number of spectral estimates. If ``None``, as many estimates as possible are 
+            Maximum number of spectral estimates. If ``None``, as many estimates as possible are
             calculated based on the data. The true number of spectral estimates may be lower if the
             data doesnot have enough samples. Must be positive.
         old_window : bool = False
@@ -147,7 +147,9 @@ class SpectrumConfig(BaseModel):
     f_min: float = 0.0
     f_max: float | None = None
     frequency_points: Annotated[int, Field(gt=0)] = 100
-    orders: Literal["all"] | list[Annotated[int, Field(ge=1, le=4)]] = "all"
+    orders: (
+        Literal["all"] | Annotated[list[Annotated[int, Field(ge=1, le=4)]], Field(min_length=1)]
+    ) = "all"
     m: Annotated[int, Field(gt=0)] = 10
     s3_calc: S3Calcs = "1/4"
     device: Literal["cpu", "mps", "cuda"] = "cpu"
@@ -160,7 +162,15 @@ class SpectrumConfig(BaseModel):
         return self.old_window
 
     @model_validator(mode="after")
-    def validate_frequency_limits(self) -> "SpectrumConfig":
+    def validate_spectrum_request(self) -> "SpectrumConfig":
         if self.f_max is not None and self.f_min >= self.f_max:
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
+
+        orders = [1, 2, 3, 4] if self.orders == "all" else self.orders
+        if self.f_min < 0 and 3 in orders:
+            raise ValueError(
+                "Third-order spectra cannot be requested with f_min < 0. "
+                "Use f_min=0 and s3_calc='1/2' for the third-order negative-frequency convention."
+            )
+
         return self

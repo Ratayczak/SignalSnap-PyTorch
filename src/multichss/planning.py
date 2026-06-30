@@ -214,16 +214,8 @@ def build_runtime_config(
     if window_points <= 0:
         raise ValueError("Calculated window_points must be greater than zero.")
 
-    # Check for negatives frequencies and f_min
+    # Resolve orders='all' to [1, 2, 3, 4]
     orders = [1, 2, 3, 4] if spectrum_config.orders == "all" else list(spectrum_config.orders)
-    if spectrum_config.f_min < 0 and 3 in orders:
-        raise ValueError(
-            "For negative frequencies in order 3 use s3_calc='1/2' and positive frequencies.\n"
-            "Example: f_min=0, f_max=5, s3_calc='1/2'"
-        )
-
-    if not orders:
-        raise ValueError("No spectrum orders remain after applying runtime constraints.")
 
     # Check if enough data is available and try to lower the window count per cumulant/spectrum
     # estimate if needed
