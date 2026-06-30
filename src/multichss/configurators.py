@@ -52,7 +52,11 @@ class CrossConfig(BaseModel):
     @model_validator(mode="after")
     def validate_cross_correlations(self) -> CrossConfig:
         for corr in [self.cross_corr_2, self.cross_corr_3, self.cross_corr_4]:
-            if corr is not None and any(len(set(channels)) == 1 for channels in corr):
+            if corr is None:
+                continue
+            if len(corr) != len(set(corr)):
+                raise ValueError("Cross-correlation entries cannot contain duplicates.")
+            if any(len(set(channels)) == 1 for channels in corr):
                 raise ValueError("Cross-correlation entries cannot include auto-correlations.")
 
         return self

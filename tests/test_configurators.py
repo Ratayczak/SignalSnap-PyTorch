@@ -21,3 +21,8 @@ def test_cross_config_allows_repeated_channels_in_cross_correlations():
 def test_cross_config_rejects_auto_correlations_in_cross_correlations():
     with pytest.raises(ValidationError, match="cannot include auto-correlations"):
         CrossConfig(cross_corr_3=[(1, 1, 1)])
+
+
+def test_cross_config_rejects_duplicate_cross_correlation_entries():
+    with pytest.raises(ValidationError, match="cannot contain duplicates"):
+        CrossConfig(cross_corr_3=[(1, 1, 0), (1, 1, 0)])

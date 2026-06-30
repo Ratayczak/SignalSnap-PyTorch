@@ -335,8 +335,6 @@ def build_spectrum_tasks(
             continue
         for channels in channel_groups:
             channels = tuple(channels)
-            if len(channels) != order:
-                raise ValueError(f"Order {order} spectra require {order} channels, got {channels}.")
             for channel in channels:
                 if channel not in runtime_config.selected_channels:
                     raise ValueError(
