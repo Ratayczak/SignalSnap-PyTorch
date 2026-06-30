@@ -2,8 +2,9 @@
 import numpy as np
 import pytest
 
-from multichss.configurators import DataConfig, SpectrumConfig
+from multichss.configurators import CrossConfig, DataConfig, SpectrumConfig
 from multichss.fft import iter_window_slices
+from multichss.pipelines import calculate_spectra
 from multichss.planning import build_runtime_config
 
 
@@ -64,3 +65,23 @@ def test_spectral_estimates_in_runtime_config(
 
     assert runtime.spectral_estimates == expected_estimates
     assert runtime.spectral_estimates <= available_estimates
+
+
+def test_pipeline_processes_runtime_spectral_estimates():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        frequency_points=9,
+        orders=[1, 2],
+        m=4,
+        spectral_estimates_max=3,
+    )
+    cross_config = CrossConfig(auto_corr=True)
+    data_config = DataConfig(data=np.ones(128), dt=1.0)
+
+    runtime = build_runtime_config(spectrum_config, [data_config])
+    result_store = calculate_spectra(spectrum_config, cross_config, [data_config])
+
+    assert runtime.spectral_estimates == 3
+    for result in result_store.results.values():
+        assert result.chunks_processed == runtime.spectral_estimates
