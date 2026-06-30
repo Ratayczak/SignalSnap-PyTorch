@@ -17,6 +17,7 @@ from .utils import S3Calcs, TimeUnits
 
 os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
 SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid")
+ChannelIndex = Annotated[int, Field(ge=0)]
 
 
 class CrossConfig(BaseModel):
@@ -44,9 +45,17 @@ class CrossConfig(BaseModel):
     model_config = SHARED_CONFIG
 
     auto_corr: bool = True
-    cross_corr_2: list[tuple[int, int]] | None = None
-    cross_corr_3: list[tuple[int, int, int]] | None = None
-    cross_corr_4: list[tuple[int, int, int, int]] | None = None
+    cross_corr_2: list[tuple[ChannelIndex, ChannelIndex]] | None = None
+    cross_corr_3: list[tuple[ChannelIndex, ChannelIndex, ChannelIndex]] | None = None
+    cross_corr_4: list[tuple[ChannelIndex, ChannelIndex, ChannelIndex, ChannelIndex]] | None = None
+
+    @model_validator(mode="after")
+    def validate_cross_correlations(self) -> CrossConfig:
+        for corr in [self.cross_corr_2, self.cross_corr_3, self.cross_corr_4]:
+            if corr is not None and any(len(set(channels)) == 1 for channels in corr):
+                raise ValueError("Cross-correlation entries cannot include auto-correlations.")
+
+        return self
 
 
 class DataConfig(BaseModel):
@@ -97,7 +106,7 @@ class PlotConfig(BaseModel):
         return v.resolve()
 
     @model_validator(mode="after")
-    def validate_limits(self) -> "PlotConfig":
+    def validate_limits(self) -> PlotConfig:
         if self.f_min >= self.f_max:
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
         return self
@@ -162,9 +171,12 @@ class SpectrumConfig(BaseModel):
         return self.old_window
 
     @model_validator(mode="after")
-    def validate_spectrum_request(self) -> "SpectrumConfig":
+    def validate_spectrum_request(self) -> SpectrumConfig:
         if self.f_max is not None and self.f_min >= self.f_max:
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
+
+        if self.orders != "all" and len(self.orders) != len(set(self.orders)):
+            raise ValueError("Orders cannot contain duplicates.")
 
         orders = [1, 2, 3, 4] if self.orders == "all" else self.orders
         if self.f_min < 0 and 3 in orders:
