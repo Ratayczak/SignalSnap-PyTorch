@@ -32,8 +32,8 @@ def calculate_spectra(
 
     for chunk_index, (start, end) in enumerate(iter_window_slices(runtime_config)):
         if (
-            runtime_config.spectral_estimates_max is not None
-            and chunk_index >= runtime_config.spectral_estimates_max
+            runtime_config.spectral_estimates is not None
+            and chunk_index >= runtime_config.spectral_estimates
         ):
             break
 

@@ -59,10 +59,8 @@ class RuntimeConfig:
         Torch device used for calculation.
     s3_calc : Literal["1/4", "1/2"]
         Method used for third-order spectrum calculation.
-    spectral_estimates_max : int | None
-        Maximum number of spectral estimates. If ``None``, as many estimates as possible are
-        calculated based on the data. The true number of spectral estimates may be lower if the data
-        does not have enough samples. Must be positive. # TODO
+    spectral_estimates: int
+        Number of spectral estimates.
     old_window : bool
         Compatibility option. If set to ``True``, the approximated confined Gaussian window from the
         old API is used as a window function.
@@ -83,7 +81,7 @@ class RuntimeConfig:
     complex_dtype: torch.dtype
     device: torch.device
     s3_calc: S3Calcs
-    spectral_estimates_max: int | None
+    spectral_estimates: int
     old_window: bool
 
 
@@ -188,8 +186,12 @@ def build_runtime_config(
     selected : list[int] | None, optional
         Data-channel indices to use. If ``None``, all data configurations are selected.
     """
+
+    # Validate and read the channels, number of data points, and the time step from the DataConfigs
     selected_channels = _normalize_selected(data_config_list, selected)
     n_data_points, dt = _validate_data_configs(data_config_list, selected_channels)
+
+    # Validate and resolve the frequency bounds
     f_max_allowed = 1 / (2 * dt)
     f_max = spectrum_config.f_max
 
@@ -205,11 +207,14 @@ def build_runtime_config(
     if spectrum_config.f_min < -f_max_allowed:
         raise ValueError("f_min outside of Nyquist frequency bounds.")
 
+    # Compute how many points must be taken into account in one window to achieve the required
+    # frequency spacing in the given frequency bounds
     window_T = (spectrum_config.frequency_points - 1) / (f_max - spectrum_config.f_min)
     window_points = int(np.round(window_T / dt))
     if window_points <= 0:
         raise ValueError("Calculated window_points must be greater than zero.")
 
+    # Check for negatives frequencies and f_min
     orders = [1, 2, 3, 4] if spectrum_config.orders == "all" else list(spectrum_config.orders)
     if spectrum_config.f_min < 0 and 3 in orders:
         raise ValueError(
@@ -220,6 +225,8 @@ def build_runtime_config(
     if not orders:
         raise ValueError("No spectrum orders remain after applying runtime constraints.")
 
+    # Check if enough data is available and try to lower the window count per cumulant/spectrum
+    # estimate if needed
     required_points = window_points * spectrum_config.m + window_points // 2
     if not required_points < n_data_points:
         m = (n_data_points - window_points // 2) // window_points
@@ -232,6 +239,7 @@ def build_runtime_config(
     else:
         m = spectrum_config.m
 
+    # get the frequency axis
     n_windows = int(np.floor(n_data_points / (m * window_points)))
     use_full_fft = spectrum_config.f_min < 0
     if use_full_fft:
@@ -243,6 +251,7 @@ def build_runtime_config(
     f_max_idx = int(np.sum(freq_all <= f_max))
     f_min_idx = int(np.sum(freq_all < spectrum_config.f_min))
 
+    # determine the data types based on the given precision
     if spectrum_config.precision == "single":
         real_dtype = torch.float32
         complex_dtype = torch.complex64
@@ -256,6 +265,20 @@ def build_runtime_config(
         else:
             real_dtype = torch.float64
             complex_dtype = torch.complex128
+
+    # Determine the number of spectral estimates
+    chunk_size = m * window_points
+    half_shift = window_points // 2
+
+    unshifted_estimates = n_data_points // chunk_size
+    shifted_estimates = max(0, (n_data_points - half_shift) // chunk_size)
+
+    available_estimates = unshifted_estimates + shifted_estimates
+
+    if spectrum_config.spectral_estimates_max is None:
+        spectral_estimates = available_estimates
+    else:
+        spectral_estimates = min(spectrum_config.spectral_estimates_max, available_estimates)
 
     return RuntimeConfig(
         selected_channels=selected_channels,
@@ -273,7 +296,7 @@ def build_runtime_config(
         complex_dtype=complex_dtype,
         device=torch.device(spectrum_config.device),
         s3_calc=spectrum_config.s3_calc,
-        spectral_estimates_max=spectrum_config.spectral_estimates_max,
+        spectral_estimates=spectral_estimates,
         old_window=spectrum_config.old_window,
     )
 
@@ -359,7 +382,7 @@ def initialize_result_store(
     SpectrumResultStore
         Store containing one initialized :class:`SpectrumResult` per task.
     """
-    
+
     store = SpectrumResultStore()
     for task in tasks:
         store.add(SpectrumResult(order=task.order, channels=task.channels))
