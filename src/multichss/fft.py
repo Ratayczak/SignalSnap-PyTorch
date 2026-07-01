@@ -177,8 +177,8 @@ def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
     """Return the window slice indices."""
 
     chunk_size = runtime.window_points * runtime.m
-
-    for window_index in range(runtime.n_windows):
+    n_windows = runtime.n_data_points // chunk_size
+    for window_index in range(n_windows):
         base = window_index * chunk_size
         for shift in (0, runtime.window_points // 2):
             start = base + shift

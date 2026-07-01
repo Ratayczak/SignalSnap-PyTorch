@@ -40,8 +40,6 @@ class RuntimeConfig:
         is too short. Must be positive.
     n_data_points : int
         Number of samples in each selected data channel.
-    n_windows : int
-        Number of window groups processed by the calculation.
     freq_band : np.ndarray
         Selected frequency axis.
     freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
@@ -71,7 +69,6 @@ class RuntimeConfig:
     window_points: int
     m: int
     n_data_points: int
-    n_windows: int
     freq_band: np.ndarray
     freq_unit: FrequencyUnits
     f_min_idx: int
@@ -164,7 +161,7 @@ def build_runtime_config(
     """Resolve user configuration into immutable runtime calculation settings.
 
     Validates the selected data channels, derives the frequency axis and frequency-band indices,
-    checks Nyquist-frequency bounds, resolves the effective window size and window count, and
+    checks Nyquist-frequency bounds, resolves the effective window size, and
     selects torch dtypes and device settings used by the spectrum calculation.
 
     Parameters
@@ -223,7 +220,6 @@ def build_runtime_config(
         m = spectrum_config.m
 
     # get the frequency axis
-    n_windows = int(np.floor(n_data_points / (m * window_points)))
     use_full_fft = spectrum_config.f_min < 0
     if use_full_fft:
         freq_all = np.fft.fftfreq(window_points, dt)
@@ -270,7 +266,6 @@ def build_runtime_config(
         window_points=window_points,
         m=m,
         n_data_points=n_data_points,
-        n_windows=n_windows,
         freq_band=freq_all[f_min_idx:f_max_idx],
         freq_unit=unit_conversion_time_to_freq(t_unit),
         f_min_idx=f_min_idx,
