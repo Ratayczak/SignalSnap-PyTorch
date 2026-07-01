@@ -58,6 +58,10 @@ class RuntimeConfig:
         Method used for third-order spectrum calculation.
     spectral_estimates: int
         Number of spectral estimates.
+    interlacing : bool = True
+        Compute additional spectral estimates for windows shifted by half a window size, to
+        compensate the low weight of data points produced by the window function near the original
+        window edges.
     old_window : bool
         Compatibility option. If set to ``True``, the approximated confined Gaussian window from the
         old API is used as a window function.
@@ -79,6 +83,7 @@ class RuntimeConfig:
     device: torch.device
     s3_calc: S3Calcs
     spectral_estimates: int
+    interlacing: bool
     old_window: bool
 
 
@@ -250,7 +255,9 @@ def build_runtime_config(
     half_shift = window_points // 2
 
     unshifted_estimates = n_data_points // chunk_size
-    shifted_estimates = max(0, (n_data_points - half_shift) // chunk_size)
+    shifted_estimates = (
+        max(0, (n_data_points - half_shift) // chunk_size) if spectrum_config.interlacing else 0
+    )
 
     available_estimates = unshifted_estimates + shifted_estimates
 
@@ -276,6 +283,7 @@ def build_runtime_config(
         device=torch.device(spectrum_config.device),
         s3_calc=spectrum_config.s3_calc,
         spectral_estimates=spectral_estimates,
+        interlacing=spectrum_config.interlacing,
         old_window=spectrum_config.old_window,
     )
 

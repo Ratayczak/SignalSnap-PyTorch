@@ -67,6 +67,46 @@ def test_spectral_estimates_in_runtime_config(
     assert runtime.spectral_estimates <= available_estimates
 
 
+@pytest.mark.parametrize(
+    ("interlacing", "expected_slices", "expected_spectral_estimates"),
+    [
+        pytest.param(
+            True,
+            [(0, 64), (8, 72), (64, 128), (72, 136)],
+            4,
+            id="interlacing-enabled",
+        ),
+        pytest.param(
+            False,
+            [(0, 64), (64, 128)],
+            2,
+            id="interlacing-disabled",
+        ),
+    ],
+)
+def test_window_slices_respect_interlacing(
+    interlacing,
+    expected_slices,
+    expected_spectral_estimates,
+):
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        frequency_points=9,
+        orders=[1, 2],
+        m=4,
+        spectral_estimates_max=None,
+        interlacing=interlacing,
+    )
+    data_config = DataConfig(data=np.ones(136), dt=1.0)
+
+    runtime = build_runtime_config(spectrum_config, [data_config])
+
+    assert runtime.interlacing is interlacing
+    assert runtime.spectral_estimates == expected_spectral_estimates
+    assert list(iter_window_slices(runtime)) == expected_slices
+
+
 def test_pipeline_processes_runtime_spectral_estimates():
     spectrum_config = SpectrumConfig(
         f_min=0.0,
@@ -83,5 +123,26 @@ def test_pipeline_processes_runtime_spectral_estimates():
     result_store = calculate_spectra(spectrum_config, cross_config, [data_config])
 
     assert runtime.spectral_estimates == 3
+    for result in result_store.results.values():
+        assert result.chunks_processed == runtime.spectral_estimates
+
+
+def test_pipeline_processes_runtime_spectral_estimates_without_interlacing():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        frequency_points=9,
+        orders=[1, 2],
+        m=4,
+        spectral_estimates_max=None,
+        interlacing=False,
+    )
+    cross_config = CrossConfig(auto_corr=True)
+    data_config = DataConfig(data=np.ones(136), dt=1.0)
+
+    runtime = build_runtime_config(spectrum_config, [data_config])
+    result_store = calculate_spectra(spectrum_config, cross_config, [data_config])
+
+    assert runtime.spectral_estimates == 2
     for result in result_store.results.values():
         assert result.chunks_processed == runtime.spectral_estimates

@@ -180,7 +180,8 @@ def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
     n_windows = runtime.n_data_points // chunk_size
     for window_index in range(n_windows):
         base = window_index * chunk_size
-        for shift in (0, runtime.window_points // 2):
+        shifts = (0, runtime.window_points // 2) if runtime.interlacing else (0,)
+        for shift in shifts:
             start = base + shift
             end = start + chunk_size
             if end <= runtime.n_data_points:

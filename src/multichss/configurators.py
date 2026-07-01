@@ -184,6 +184,10 @@ class SpectrumConfig(BaseModel):
         Maximum number of spectral estimates. If ``None``, as many estimates as possible are
         calculated based on the data. The true number of spectral estimates may be lower if the data
         does not have enough samples. Must be positive.
+    interlacing : bool = True
+        Compute additional spectral estimates for windows shifted by half a window size, to
+        compensate the low weight of data points produced by the window function near the original
+        window edges.
     old_window : bool = False
         Compatibility option. If set to ``True``, the approximated confined Gaussian window from
         the old API is used as a window function.
@@ -202,6 +206,7 @@ class SpectrumConfig(BaseModel):
     device: Literal["cpu", "mps", "cuda"] = "cpu"
     precision: Literal["auto", "single", "double"] = "auto"
     spectral_estimates_max: Annotated[int, Field(gt=0)] | None = int(1e6)
+    interlacing: bool = True
     old_window: bool = False
 
     @property
