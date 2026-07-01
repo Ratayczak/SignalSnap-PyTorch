@@ -118,7 +118,7 @@ def _normalize_selected(
 
     if not selected:
         raise ValueError("At least one data channel must be selected.")
-    
+
     if len(selected) != len(set(selected)):
         raise ValueError("Selected data channels cannot contain duplicates.")
 
