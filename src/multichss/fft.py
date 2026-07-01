@@ -8,14 +8,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from torch import Tensor
 
-if TYPE_CHECKING:
-    from .planning import RuntimeConfig
+from .planning import RuntimeConfig
 
 
 ### old code from previous api

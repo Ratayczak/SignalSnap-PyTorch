@@ -8,15 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
 
 from .cumulants import a_w3_gen, c1, c2, c3, c4, calc_a_w3, index_generation_to_aw_3
-
-if TYPE_CHECKING:
-    from .planning import RuntimeConfig, SpectrumTask
+from .planning import RuntimeConfig, SpectrumTask
 
 
 @dataclass(slots=True)

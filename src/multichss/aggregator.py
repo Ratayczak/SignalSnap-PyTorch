@@ -7,15 +7,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import torch
+from torch import Tensor
 
-if TYPE_CHECKING:
-    from .results import SpectrumResult
+from .results import SpectrumResult
 
 
-def accumulate_spectrum(result: SpectrumResult, single_spectrum: torch.Tensor) -> None:
+def accumulate_spectrum(result: SpectrumResult, single_spectrum: Tensor) -> None:
     """Accumulate one single-window spectrum into a result object.
 
     Updates the running spectrum sum and running real and imaginary squared sums
