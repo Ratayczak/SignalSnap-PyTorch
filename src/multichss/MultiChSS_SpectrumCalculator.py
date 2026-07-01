@@ -1,17 +1,15 @@
+"""Deprecated legacy implementation kept for reference.
+
+New code should use ``multichss.calculate_spectra`` and the modular pipeline in ``planning``,
+``fft``, ``spectra``, ``aggregator``, and ``results`` instead.
+"""
+
 # This file is part of SignalSnap (PyTorch): Signal Analysis In Python Made Easy
 # Copyright (c) 2024 and later, Armin Ghorbanietemed, Markus Sifft and Daniel Hägele.
 #
 # This software is provided under the terms of the 3-Clause BSD License.
 # For details, see the LICENSE file in the root of this repository or
 # https://opensource.org/licenses/BSD-3-Clause
-
-
-## 
-# !!
-# THIS FILE IS DEPRECIATED AND NO LONGER USED BY THE NEW API. IT IS ONLY
-# KEPT FOR REFERENCE
-# !!
-##
 
 
 import h5py

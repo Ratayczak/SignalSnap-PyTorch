@@ -1,3 +1,5 @@
+"""Legacy plotting helpers for the deprecated SpectrumCalculator API."""
+
 # This file is part of SignalSnap (PyTorch): Signal Analysis In Python Made Easy
 # Copyright (c) 2024 and later, Armin Ghorbanietemed, Markus Sifft and Daniel Hägele.
 #
