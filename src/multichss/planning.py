@@ -8,16 +8,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
+from .configurators import CrossConfig, DataConfig, SpectrumConfig
 from .results import SpectrumResult, SpectrumResultStore
-from .utils import S3Calcs
-
-if TYPE_CHECKING:
-    from .configurators import CrossConfig, DataConfig, SpectrumConfig
+from .utils import FrequencyUnits, S3Calcs, TimeUnits, unit_conversion_time_to_freq
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +44,8 @@ class RuntimeConfig:
         Number of window groups processed by the calculation.
     freq_band : np.ndarray
         Selected frequency axis.
+    freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
+        Unit of the frequency axis.
     f_min_idx, f_max_idx : int
         Slice indices selecting the configured frequency band.
     use_full_fft : bool
@@ -74,6 +73,7 @@ class RuntimeConfig:
     n_data_points: int
     n_windows: int
     freq_band: np.ndarray
+    freq_unit: FrequencyUnits
     f_min_idx: int
     f_max_idx: int
     use_full_fft: bool
@@ -135,7 +135,7 @@ def _normalize_selected(
 
 def _validate_data_configs(
     data_config_list: list[DataConfig], selected: tuple[int, ...]
-) -> tuple[int, float]:
+) -> tuple[int, float, TimeUnits]:
     """Validate selected data and return ``(n_data_points, dt)``."""
 
     if not data_config_list:
@@ -153,7 +153,7 @@ def _validate_data_configs(
         if data_config.dt != first_config.dt or data_config.t_unit != first_config.t_unit:
             raise ValueError("Selected data channels must use the same dt and t_unit.")
 
-    return first_config.data.shape[0], first_config.dt
+    return first_config.data.shape[0], first_config.dt, first_config.t_unit
 
 
 def build_runtime_config(
@@ -180,7 +180,7 @@ def build_runtime_config(
 
     # Validate and read the channels, number of data points, and the time step from the DataConfigs
     selected_channels = _normalize_selected(data_config_list, selected)
-    n_data_points, dt = _validate_data_configs(data_config_list, selected_channels)
+    n_data_points, dt, t_unit = _validate_data_configs(data_config_list, selected_channels)
 
     # Validate and resolve the frequency bounds
     f_max_allowed = 1 / (2 * dt)
@@ -272,6 +272,7 @@ def build_runtime_config(
         n_data_points=n_data_points,
         n_windows=n_windows,
         freq_band=freq_all[f_min_idx:f_max_idx],
+        freq_unit=unit_conversion_time_to_freq(t_unit),
         f_min_idx=f_min_idx,
         f_max_idx=f_max_idx,
         use_full_fft=use_full_fft,

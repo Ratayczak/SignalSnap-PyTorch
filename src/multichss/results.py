@@ -11,10 +11,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
+from torch import Tensor
+
+from .utils import FrequencyUnits
 
 if TYPE_CHECKING:
     from .planning import RuntimeConfig
-    from torch import Tensor
+    
 
 
 @dataclass(slots=True)
@@ -24,7 +27,7 @@ class SpectrumResult:
     Stores the configuration metadata, accumulated hardware states, error buffers, and final
     computed results for a specific higher-order auto- or cross-spectrum calculation.
 
-    Parameters
+    Attributes
     ----------
     order : int
         The order of the polyspectrum (e.g., 2 for power spectrum, 3 for bispectrum, 4 for 
@@ -33,12 +36,11 @@ class SpectrumResult:
         The indices identifying which channels are part of this calculation. For example, `(0,)`
         indicates an auto-spectrum on channel 0, while `(0, 1)` indicates a cross-spectrum between 
         channels 0 and 1.
-
-    Attributes
-    ----------
     freq : np.ndarray | tuple[np.ndarray, np.ndarray] | None
         The frequency axes associated with the spectrum. Single 1D array for a power spectrum, or a
         tuple of two 1D arrays for higher-order polyspectra.
+    freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
+        Unit of the frequency axis.
     spectrum : np.ndarray | None
         The final normalized spectral values transferred back to the CPU.
     spectrum_error : np.ndarray | None
@@ -57,6 +59,7 @@ class SpectrumResult:
     channels: tuple[int, ...]
 
     freq: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None
+    freq_unit: FrequencyUnits | None = None
     spectrum: np.ndarray | None = None
     spectrum_error: np.ndarray | None = None
 
@@ -68,24 +71,27 @@ class SpectrumResult:
     def reset_state(self):
         """Clears accumulators to prepare for a fresh calculation."""
         self.freq = None
+        self.freq_unit = None
         self.spectrum = None
         self.spectrum_error = None
         self.spectrum_accumulator = None
         self.error_accumulator_x_squared = None
         self.chunks_processed = 0
 
-    def initialize_arrays(self, freq_band: np.ndarray, runtime: RuntimeConfig) -> None:
+    def initialize_arrays(self, runtime: RuntimeConfig) -> None:
         order = self.order
-        f_size = freq_band.shape[0]
+        f_size = runtime.freq_band.shape[0]
 
         if order == 3:
             half_size = f_size // 2
-            self.freq = freq_band[:half_size]
+            self.freq = runtime.freq_band[:half_size]
 
             if runtime.s3_calc == "1/2":
                 self.freq = np.concatenate((-self.freq[:0:-1], self.freq))
         else:
-            self.freq = freq_band
+            self.freq = runtime.freq_band
+
+        self.freq_unit = runtime.freq_unit
 
 
 @dataclass(slots=True)
@@ -126,7 +132,5 @@ class SpectrumResultStore:
             result.reset_state()
 
     def initialize_arrays(self, runtime: RuntimeConfig) -> None:
-        freq_band = runtime.freq_band
-
         for result in self.results.values():
-            result.initialize_arrays(freq_band, runtime)
+            result.initialize_arrays(runtime)
