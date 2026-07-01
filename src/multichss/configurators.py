@@ -27,20 +27,17 @@ class CrossConfig(BaseModel):
 
     Attributes
     ----------
-        auto_corr: bool
-            Determines whether single-channel (auto-correlation) spectra will be calculated.
-        cross_corr_2: list[tuple[int, int]] | None
-            Specifies which multi-channel (cross-correlation) spectra will be calculated at order 2.
-            Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel
-            index.
-        cross_corr_3: list[tuple[int, int, int]] | None
-            Specifies which multi-channel (cross-correlation) spectra will be calculated at order 3.
-            Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel
-            index.
-        cross_corr_4: list[tuple[int, int, int, int]] | None
-            Specifies which multi-channel (cross-correlation) spectra will be calculated at order 4.
-            Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel
-            index.
+    auto_corr : bool
+        Determines whether single-channel (auto-correlation) spectra will be calculated.
+    cross_corr_2 : list[tuple[int, int]] | None
+        Specifies which multi-channel (cross-correlation) spectra will be calculated at order 2.
+        Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel index.
+    cross_corr_3 : list[tuple[int, int, int]] | None
+        Specifies which multi-channel (cross-correlation) spectra will be calculated at order 3.
+        Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel index.
+    cross_corr_4 : list[tuple[int, int, int, int]] | None
+        Specifies which multi-channel (cross-correlation) spectra will be calculated at order 4.
+        Each tuple represents one cross-correlation spectrum. Each tuple entry is a channel index.
     """
 
     model_config = SHARED_CONFIG
@@ -66,14 +63,26 @@ class CrossConfig(BaseModel):
 class DataConfig(BaseModel):
     """Configuration for data used in polyspectra calculations.
 
+    These settings are later resolved together with :class:`SpectrumConfig` into a
+    :class:`~multichss.planning.RuntimeConfig`.
+
+    Together with ``df`` calculated based on parameters in :class:`SpectrumConfig`, ``dt`` will be
+    used to determine the number of data points (``window_points``) used for each Fourier transform::
+
+        window_points = 1 / (dt * df)
+
+    and to determine the Nyquist frequency::
+
+        f_nyquist = 1 / (2 * dt)
+
     Attributes
     ----------
-        data: ArrayLike with a shape attribute
-            The recorded signal data (e.g. a NumPy array).
-        dt: float
-            The time interval between two consecutive data points. Must be positive.
-        t_unit: Literal["s", "ms", "us", "ns", "ps"]
-            Unit of the time step. Defaults to "s".
+    data : ArrayLike with a shape attribute
+        The recorded (real) signal data.
+    dt : float
+        The time interval between two consecutive data points. Must be positive.
+    t_unit : Literal["s", "ms", "us", "ns", "ps"]
+        Unit of the time step. Defaults to ``"s"``.
     """
 
     model_config = SHARED_CONFIG
@@ -136,40 +145,48 @@ class PlotConfig(BaseModel):
 class SpectrumConfig(BaseModel):
     """Spectrum configuration for polyspectra calculations.
 
-    ``SpectrumConfig`` describes what the user asks the calculation to use: frequency bounds, number
-    of frequency points, spectrum orders, window count per spectral estimate, backend torch device,
-    and compatibility options. These settings are later resolved together with ``DataConfig`` into a
-    ``RuntimeConfig``.
+    :class:`SpectrumConfig` describes what the user asks the calculation to use: frequency bounds,
+    number of frequency points, spectrum orders, window count per spectral estimate, backend torch
+    device, and compatibility options. These settings are later resolved together with
+    :class:`DataConfig` into a :class:`~multichss.planning.RuntimeConfig`.
+
+    ``f_min``, ``f_max``, and ``frequency_points`` will be used to determine the frequency spacing::
+
+        df = (f_max - f_min) / (frequency_points - 1)
+
+    Together with ``dt`` from :class:`DataConfig`, ``df`` will be used to determine the number of
+    data points (``window_points``) used for each Fourier transform::
+
+        window_points = 1 / (dt * df)
 
     Attributes
     ----------
-        f_min : float = 0.0
-            Lower frequency bound. If omitted, zero is used.
-        f_max : float | None = None
-            Upper frequency bound. If omitted, the maximal allowed frequency is used.
-        frequency_points : int = 100
-            Number of frequency points in the specified frequency range. Must be positive.
-        orders : Literal["all"] | list[int] = "all"
-            Spectrum orders (between 1 and 4) to be calculated. ``all`` means orders
-            ``[1, 2, 3, 4]``.
-        m : int = 10
-            Number of windows used per spectral estimate. This may be reduced at runtime if the
-            signal is too short. Must be positive.
-        s3_calc : Literal["1/4", "1/2"] = "1/4"
-            Method used for third-order spectrum calculation.
-        device : Literal["cpu", "mps", "cuda"]  = "cpu"
-            Torch device requested for calculation.
-        precision: Literal["auto", "single", "double"] = "auto"
-            Floating point precision. ``single`` will result in ``float32`` and ``complex64``.
-            ``double`` will result in ``float64`` and ``complex128``. ``auto`` will choose
-            ``single`` if device is ``mps`` and ``double`` otherwise.
-        spectral_estimates_max : int | None = int(1e6)
-            Maximum number of spectral estimates. If ``None``, as many estimates as possible are
-            calculated based on the data. The true number of spectral estimates may be lower if the
-            data doesnot have enough samples. Must be positive.
-        old_window : bool = False
-            Compatibility option. If set to ``True``, the approximated confined Gaussian window from
-            the old API is used as a window function.
+    f_min : float = 0.0
+        Lower frequency bound. If omitted, zero is used.
+    f_max : float | None = None
+        Upper frequency bound. If omitted, the maximal allowed frequency is used.
+    frequency_points : int = 100
+        Number of frequency points in the specified frequency range. Must be positive.
+    orders : Literal["all"] | list[int] = "all"
+        Spectrum orders (between 1 and 4) to be calculated. ``all`` means orders ``[1, 2, 3, 4]``.
+    m : int = 10
+        Number of windows used per spectral estimate. This may be reduced at runtime if the signal
+        is too short. Must be positive.
+    s3_calc : Literal["1/4", "1/2"] = "1/4"
+        Method used for third-order spectrum calculation.
+    device : Literal["cpu", "mps", "cuda"]  = "cpu"
+        Torch device requested for calculation.
+    precision : Literal["auto", "single", "double"] = "auto"
+        Floating point precision. ``single`` will result in ``float32`` and ``complex64``.
+        ``double`` will result in ``float64`` and ``complex128``. ``auto`` will choose ``single`` if
+        device is ``mps`` and ``double`` otherwise.
+    spectral_estimates_max : int | None = int(1e6)
+        Maximum number of spectral estimates. If ``None``, as many estimates as possible are
+        calculated based on the data. The true number of spectral estimates may be lower if the data
+        does not have enough samples. Must be positive.
+    old_window : bool = False
+        Compatibility option. If set to ``True``, the approximated confined Gaussian window from
+        the old API is used as a window function.
     """
 
     model_config = SHARED_CONFIG
