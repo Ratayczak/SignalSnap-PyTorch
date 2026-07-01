@@ -138,7 +138,7 @@ def _normalize_selected(
 def _validate_data_configs(
     data_config_list: list[DataConfig], selected: tuple[int, ...]
 ) -> tuple[int, float, TimeUnits]:
-    """Validate selected data and return ``(n_data_points, dt)``."""
+    """Validate selected data and return ``(n_data_points, dt, t_unit)``."""
 
     if not data_config_list:
         raise ValueError("At least one DataConfig is required.")

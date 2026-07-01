@@ -20,6 +20,28 @@ def calculate_spectra(
     data_config_list: list[DataConfig],
     selected: list[int] | None = None,
 ):
+    """Calculate requested auto- and cross-polyspectra for one or more data channels.
+
+    Builds the runtime configuration, expands the requested spectrum tasks, iterates over windowed
+    signal chunks, computes Fourier coefficients, accumulates spectra, and finalizes mean spectra
+    and standard-error estimates.
+
+    Parameters
+    ----------
+    spectrum_config : :class:`SpectrumConfig`
+        Frequency, order, windowing, precision, and device options.
+    cross_config : :class:`CrossConfig`
+        Auto- and cross-correlation spectrum selections.
+    data_config_list : list[:class:`DataConfig`]
+        Input signal channels and sampling metadata.
+    selected : list[int] | None, optional
+        Channel indices to include. If ``None``, all channels are used.
+
+    Returns
+    -------
+    SpectrumResultStore
+        Finalized spectra indexed by ``(channels, order)``.
+    """
     runtime_config = build_runtime_config(
         spectrum_config=spectrum_config, data_config_list=data_config_list, selected=selected
     )

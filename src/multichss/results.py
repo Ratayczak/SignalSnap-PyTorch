@@ -36,9 +36,11 @@ class SpectrumResult:
         The indices identifying which channels are part of this calculation. For example, `(0,)`
         indicates an auto-spectrum on channel 0, while `(0, 1)` indicates a cross-spectrum between 
         channels 0 and 1.
-    freq : np.ndarray | tuple[np.ndarray, np.ndarray] | None
-        The frequency axes associated with the spectrum. Single 1D array for a power spectrum, or a
-        tuple of two 1D arrays for higher-order polyspectra.
+    freq : np.ndarray | None
+        Frequency axis associated with the spectrum. For orders 1, 2, and 4 this is the selected
+        frequency band. For third-order spectra with ``s3_calc="1/4"``, this is the nonnegative axis
+        used for both dimensions. For ``s3_calc="1/2"``, this is the mirrored x-axis; the 
+        nonnegative y-axis is obtained as ``freq[freq.size // 2:]``.
     freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
         Unit of the frequency axis.
     spectrum : np.ndarray | None
@@ -52,13 +54,13 @@ class SpectrumResult:
         Running total accumulation buffer of the real and imaginary parts of the spectra squared on
         the active torch device.
     chunks_processed : int
-        The total number of individual signal windows integrated into `spectrum_accumulator`.
+        The total number of individual spectral estimates integrated into `spectrum_accumulator`.
     """
 
     order: int
     channels: tuple[int, ...]
 
-    freq: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None
+    freq: np.ndarray | None = None
     freq_unit: FrequencyUnits | None = None
     spectrum: np.ndarray | None = None
     spectrum_error: np.ndarray | None = None
@@ -79,6 +81,7 @@ class SpectrumResult:
         self.chunks_processed = 0
 
     def initialize_arrays(self, runtime: RuntimeConfig) -> None:
+        """Initialize frequency axis and units from the resolved runtime configuration."""
         order = self.order
         f_size = runtime.freq_band.shape[0]
 
@@ -132,5 +135,6 @@ class SpectrumResultStore:
             result.reset_state()
 
     def initialize_arrays(self, runtime: RuntimeConfig) -> None:
+        """Initialize frequency axes and units for every stored spectrum result."""
         for result in self.results.values():
             result.initialize_arrays(runtime)

@@ -109,6 +109,28 @@ class DataConfig(BaseModel):
 
 
 class PlotConfig(BaseModel):
+    """Configuration for plotting calculated polyspectra.
+
+    Attributes
+    ----------
+    f_min, f_max : float
+        Frequency range displayed in plots.
+    display_orders : list[int]
+        Spectrum orders to display.
+    significance : int
+        Number of error estimates used to mark insignificant regions.
+    arcsinh_scale : tuple[bool, float]
+        Whether to apply arcsinh scaling and the relative scale factor to use.
+    plot_format : list[Literal["re", "im"]]
+        Spectrum components to plot.
+    insignif_transparency : float
+        Overlay opacity for values below the configured significance threshold.
+    output : Literal["show", "save"]
+        Whether plots are shown interactively or saved.
+    output_folder : DirectoryPath
+        Destination folder used when ``output="save"``.
+    """
+    
     model_config = SHARED_CONFIG
 
     f_min: float

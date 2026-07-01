@@ -133,13 +133,33 @@ def acG_window_func(
 
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
-    """Copy np.array to torch.device using the correct data type."""
+    """Convert a NumPy array to a torch tensor using the runtime dtype and device.
+
+    The input shape is preserved. In the main calculation pipeline this is typically called with a
+    reshaped signal chunk of shape ``(m, N, 1)``.
+    """
 
     return torch.as_tensor(array, dtype=runtime.real_dtype, device=runtime.device)
 
 
 def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor:
-    """Compute the FFT as specified in DOI:10.1016/j.dsp.2026.105893."""
+    """Window a signal chunk and compute its Fourier coefficients.
+
+    Parameters
+    ----------
+    chunk : Tensor
+        Real-valued signal chunk with shape ``(m, N, 1)``.
+    window : Tensor
+        Window tensor with shape ``(m, N, 1)``.
+    runtime : RuntimeConfig
+        Runtime settings defining FFT mode, sample spacing, and dtypes.
+
+    Returns
+    -------
+    Tensor
+        Complex Fourier coefficients scaled by ``runtime.dt``. The shape is ``(m, N, 1)`` when
+        ``runtime.use_full_fft`` is true, otherwise ``(m, N // 2 + 1, 1)`` for the real FFT.
+    """
 
     weighted_chunk = window * chunk
 
@@ -153,7 +173,15 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
 
 
 def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
-    """Return window for m chunks in the correct shape."""
+    """Build the window tensors used for each spectral estimate.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor]
+        ``single_window`` has shape ``(N,)`` where ``N = runtime.window_points``.
+        ``repeated_window`` has shape ``(m, N, 1)`` where ``m = runtime.m`` and is shaped to
+        multiply directly with reshaped signal chunks.
+    """
 
     if runtime.old_window:
         single_window = _old_cg_window(
@@ -174,7 +202,12 @@ def prepare_windows(runtime: RuntimeConfig) -> tuple[Tensor, Tensor]:
 
 
 def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
-    """Return the window slice indices."""
+    """Return the window slice indices.
+    
+    Each yielded ``(start, end)`` selects ``m * N`` samples from a one-dimensional data channel,
+    where ``m = runtime.m`` and ``N = runtime.window_points``. With interlacing enabled, additional
+    slices shifted by ``N // 2`` are yielded when they still fit inside the signal.
+    """
 
     chunk_size = runtime.window_points * runtime.m
     n_windows = runtime.n_data_points // chunk_size
@@ -189,7 +222,19 @@ def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int]]:
 
 
 def reshape_window_chunk(chunk: np.ndarray, runtime: RuntimeConfig) -> np.ndarray:
-    """Reshape each chunk to m windows."""
+    """Reshape one flat signal slice into the window batch used by the FFT.
+
+    Parameters
+    ----------
+    chunk : np.ndarray
+        One-dimensional signal slice with shape ``(m * N,)``, where ``m = runtime.m`` and
+        ``N = runtime.window_points``.
+
+    Returns
+    -------
+    np.ndarray
+        Reshaped chunk with shape ``(m, N, 1)``.
+    """
 
     expected_size = runtime.window_points * runtime.m
 

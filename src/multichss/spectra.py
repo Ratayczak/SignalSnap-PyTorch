@@ -18,11 +18,13 @@ from .planning import RuntimeConfig, SpectrumTask
 
 @dataclass(slots=True)
 class ThirdOrderCache:
+    """Reusable tensors needed to assemble third-order Fourier coefficient products."""
     a_w3_init: Tensor
     indices: Tensor
 
 
 def build_third_order_cache(runtime: RuntimeConfig) -> ThirdOrderCache:
+    """Precompute third-order index and work tensors for the active runtime configuration."""
     return ThirdOrderCache(
         a_w3_init=a_w3_gen(
             runtime.s3_calc,
@@ -42,6 +44,22 @@ def compute_single_spectrum(
     runtime: RuntimeConfig,
     third_order_cache: ThirdOrderCache | None = None,
 ) -> Tensor:
+    """Compute one normalized spectrum for a single task from channel Fourier coefficients.
+
+    Dispatches to the cumulant implementation for orders 1 through 4 and applies the matching window
+    normalization.
+    
+    ``coeffs_by_channel`` maps each channel index to FFT coefficients with shape ``(m, K, 1)``,
+    where ``K = N`` for full FFTs and ``K = N // 2 + 1`` for real FFTs. The selected frequency band
+    has length ``F = runtime.f_max_idx - runtime.f_min_idx``.
+
+    Returns a conjugated, window-normalized spectrum. Output shape depends on order: order 1 returns
+    ``(1,)``, order 2 returns ``(F,)``, order 3 returns ``(H, H)`` for ``s3_calc="1/4"`` or
+    ``(H, 2 * H - 1)`` for ``s3_calc="1/2"`` with ``H = runtime.f_max_idx // 2``, and order 4 returns
+     ``(F, F)``.
+
+    Third-order shapes assume the calculation starts at ``runtime.f_min_idx == 0``.
+    """
     order = task.order
     channels = task.channels
     f_min_idx = runtime.f_min_idx

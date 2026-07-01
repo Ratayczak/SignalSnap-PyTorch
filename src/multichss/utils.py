@@ -18,10 +18,12 @@ S3Calcs: TypeAlias = Literal["1/4", "1/2"]
 
 
 def data_config_dic(data_config_list: Iterable["DataConfig"]) -> dict[Any, "DataConfig"]:
+    """Return a lookup mapping each data object to its DataConfig."""
     return {config.data: config for config in data_config_list}
 
 
 def unit_conversion_time_to_freq(t_unit: TimeUnits) -> FrequencyUnits:
+    """Return the frequency unit corresponding to a time-step unit."""
     mapping: dict[TimeUnits, FrequencyUnits] = {
         "s": "Hz",
         "ms": "kHz",
