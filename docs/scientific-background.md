@@ -13,8 +13,7 @@ SignalSnap uses the definition of higher-order spectra $S_z^{(n)}$ introduced by
 [Brillinger](https://doi.org/10.1214/aoms/1177699896):
 
 $$
-2\pi\,\delta(\omega_1 + \cdots + \omega_n)\,
-S_z^{(n)}(\omega_1, \ldots, \omega_{n-1})
+2\pi\delta(\omega_1 + \cdots + \omega_n)S_z^{(n)}(\omega_1, \ldots, \omega_{n-1})
 = C_n\bigl(z(\omega_1), \ldots, z(\omega_n)\bigr),
 $$
 
@@ -22,8 +21,7 @@ where $C_n$ is a higher-order multivariate cumulant. For multiple, real, station
 $z_1$, ..., $z_n$, this generalizes to cross-polyspectra:
 
 $$
-2\pi\,\delta(\omega_1 + \cdots + \omega_n)\,
-S_{z_1,\ldots,z_n}^{(n)}(\omega_1, \ldots, \omega_{n-1})
+2\pi\delta(\omega_1 + \cdots + \omega_n)S_{z_1,\ldots,z_n}^{(n)}(\omega_1, \ldots, \omega_{n-1})
 = C_n\bigl(z_1(\omega_1), \ldots, z_n(\omega_n)\bigr).
 $$
 
@@ -78,8 +76,8 @@ S_{z_1,z_2,z_3,z_4}^{(4)}(\omega_k, \omega_l, \omega_p) \approx \frac{N C_4(a_k,
 $$
 
 $a_k$ denotes the Fourier coefficients of the first channel, $b_k$ the coefficients of the second
-channel, and so on. The $C_1(\ldots), \ldots, C_4(\ldots)$ must be estimated from finite data.
-SignalSnap implements unbiased, finite-sample, multivariate cumulant estimators derived by
+channel, and so on. The cumulants $C_1(\ldots), \ldots, C_4(\ldots)$ must be estimated from finite
+data. SignalSnap implements unbiased, finite-sample, multivariate cumulant estimators derived by
 [Schefczik and Hägele](https://arxiv.org/abs/1904.12154):
 
 $$
@@ -88,14 +86,14 @@ c_2(x, y) = & \frac{m}{m-1} (\overline{xy} - \overline{x}\,\overline{y}) = \frac
 c_3(x, y, z) = & \frac{m^2}{(m-1)(m-2)}\overline{(x-\overline{x})(y-\overline{y})(z-\overline{z})}\\
 c_4(x, y, z, w) = &\frac{m^2}{(m-1)(m-2)(m-3)} \times \biggl[(m+1) \times \overline{(x-\overline{x})(y-\overline{y})(z-\overline{z})(w-\overline{w})}\\
 &\qquad\qquad\qquad\qquad\quad\qquad{}- (m-1) \times \Bigl(\overline{(x-\overline{x})(y-\overline{y})} \times \overline{(z-\overline{z})(w-\overline{w})}\\
-&\qquad\qquad\qquad\qquad\qquad\qquad\qquad\,\qquad{}+ \overline{(x-\overline{x})(z-\overline{z})} \times \overline{(y-\overline{y})(w-\overline{w})}\\
-&\qquad\qquad\qquad\qquad\qquad\qquad\qquad\,\qquad{}+ \overline{(x-\overline{x})(w-\overline{w})} \times \overline{(y-\overline{y})(z-\overline{z})}\Bigr)\biggr]
+&\qquad\qquad\qquad\qquad\qquad\qquad\qquad\qquad{}+ \overline{(x-\overline{x})(z-\overline{z})} \times \overline{(y-\overline{y})(w-\overline{w})}\\
+&\qquad\qquad\qquad\qquad\qquad\qquad\qquad\qquad{}+ \overline{(x-\overline{x})(w-\overline{w})} \times \overline{(y-\overline{y})(z-\overline{z})}\Bigr)\biggr]
 \end{aligned}
 $$
 
 They take the Fourier-coefficient vectors from `m` different windows and treat them as samples for
 a multivariate k-statistic. Each slice of `m` windows produces one spectral estimate provided by
-the formulas above. The final spectrum is their average, and their variation provides the standard
+the formulas above. The final spectrum is their average, and their variation provides the standardj
 error.
 
 ## Statistical assumptions
