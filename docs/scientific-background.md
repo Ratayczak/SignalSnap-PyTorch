@@ -93,7 +93,7 @@ $$
 
 They take the Fourier-coefficient vectors from `m` different windows and treat them as samples for
 a multivariate k-statistic. Each slice of `m` windows produces one spectral estimate provided by
-the formulas above. The final spectrum is their average, and their variation provides the standardj
+the formulas above. The final spectrum is their average, and their variation provides the standard
 error.
 
 ## Statistical assumptions
