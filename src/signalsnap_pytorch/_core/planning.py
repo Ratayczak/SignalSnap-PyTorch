@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 import torch
+from numpy.typing import NDArray
 
 from ..configurators import DataConfig, SpectrumConfig
 from .data_access import RuntimeChannel, get_sample_count

@@ -15,6 +15,8 @@ from torch import Tensor
 
 from .planning import RuntimeConfig
 
+_CPU_DEVICE = torch.device("cpu")
+
 
 ### ------------------------
 # old code from previous api
@@ -53,7 +55,7 @@ def _old_calc_window(x: Tensor, n_windows: int, l: int, sigma_t: float) -> Tenso
 def _old_cg_window(
     n_windows: int,
     fs: float,
-    torch_device: torch.device = torch.device("cpu"),
+    torch_device: torch.device = _CPU_DEVICE,
     dtype: torch.dtype = torch.float64,
 ) -> Tensor:
     """
@@ -129,7 +131,7 @@ def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:
 def _acg_window(
     N: int,
     sigma_t: float = 0.14,
-    torch_device: torch.device = torch.device("cpu"),
+    torch_device: torch.device = _CPU_DEVICE,
     dtype: torch.dtype = torch.float64,
 ) -> Tensor:
     """

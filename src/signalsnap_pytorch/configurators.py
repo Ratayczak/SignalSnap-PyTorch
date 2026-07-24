@@ -255,9 +255,8 @@ class SpectrumConfig(BaseModel):
     @model_validator(mode="after")
     def validate_limits(self) -> SpectrumConfig:
         """Require the lower frequency bound to precede an explicit upper bound."""
-        if self.f_max is not None:
-            if self.f_min >= self.f_max:
-                raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
+        if self.f_max is not None and self.f_min >= self.f_max:
+            raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
 
         return self
 

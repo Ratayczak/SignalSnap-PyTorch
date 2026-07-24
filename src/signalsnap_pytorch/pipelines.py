@@ -141,7 +141,7 @@ def calculate_spectra(
                         single_spectrum=spectrum,
                         shifted=shifted,
                     )
-                except Exception as exc:
+                except Exception as exc: # noqa: BLE001 -- intentional per-spectrum fault boundary
                     failed_spectra.add(spectrum_channels)
                     warnings.warn(
                         f"Calculation failed for spectrum {spectrum_channels}: "
@@ -159,7 +159,7 @@ def calculate_spectra(
             # Isolate finalization failures so other completed spectra can still be returned.
             try:
                 result = _accumulation.finalize_result(accumulator)
-            except Exception as exc:
+            except Exception as exc: # noqa: BLE001 -- intentional per-spectrum fault boundary
                 warnings.warn(
                     f"Could not finalize spectrum for channels {accumulator.channels}: "
                     f"{type(exc).__name__}: {exc}",

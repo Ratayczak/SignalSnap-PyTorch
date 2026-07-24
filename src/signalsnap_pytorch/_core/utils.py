@@ -7,14 +7,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import Field
 
-TimeUnits: TypeAlias = Literal["s", "ms", "us", "ns", "ps"]
-FrequencyUnits: TypeAlias = Literal["Hz", "kHz", "MHz", "GHz", "THz"]
-ChannelIndex: TypeAlias = Annotated[int, Field(ge=0)]
-PlotComponent: TypeAlias = Literal["re", "im"]
+type TimeUnits = Literal["s", "ms", "us", "ns", "ps"]
+type FrequencyUnits = Literal["Hz", "kHz", "MHz", "GHz", "THz"]
+type ChannelIndex = Annotated[int, Field(ge=0)]
+type PlotComponent = Literal["re", "im"]
 
 
 def unit_conversion_time_to_freq(t_unit: TimeUnits) -> FrequencyUnits:
