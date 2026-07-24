@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
+from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
     build_runtime_config,
@@ -95,6 +96,122 @@ def test_spectral_estimates_in_runtime_config(
 
     assert runtime.m == expected_m
     assert runtime.spectral_estimates == expected_unshifted_estimates
+
+
+def test_runtime_config_propagates_short_term_uncertainty_configuration():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=3,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(channels=(np.ones(256),), dt=1.0)
+
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.uncertainty_estimation == "short_term"
+    assert runtime.m_var == 3
+    assert runtime.spectral_estimates == 4
+
+
+def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=10,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(channels=(np.ones(128),), dt=1.0)
+
+    with pytest.warns(UserWarning, match="using m_var=2 instead"):
+        runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.spectral_estimates == 2
+    assert runtime.m_var == 2
+    assert spectrum_config.m_var == 10
+
+
+def test_runtime_config_applies_estimate_cap_before_reducing_m_var():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=8,
+        spectral_estimates_max=3,
+    )
+    data_config = DataConfig(channels=(np.ones(640),), dt=1.0)
+
+    with pytest.warns(UserWarning, match="using m_var=3 instead"):
+        runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.spectral_estimates == 3
+    assert runtime.m_var == 3
+
+
+def test_runtime_config_does_not_reduce_short_term_m_var_to_one():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=10,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
+
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.spectral_estimates == 1
+    assert runtime.m_var == 10
+
+
+def test_global_runtime_keeps_configured_m_var_when_fewer_estimates_are_available():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="global",
+        m_var=10,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(channels=(np.ones(128),), dt=1.0)
+
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.uncertainty_estimation == "global"
+    assert runtime.spectral_estimates == 2
+    assert runtime.m_var == 10
+
+
+def test_accumulator_store_receives_resolved_uncertainty_configuration():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.0625,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=3,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(channels=(np.ones(256),), dt=1.0)
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    store = initialize_accumulator_store(runtime)
+
+    assert len(tuple(store)) == len(runtime.spectra_channels)
+    for accumulator in store:
+        assert accumulator.uncertainty_estimation == "short_term"
+        assert accumulator.m_var == 3
 
 
 @pytest.mark.parametrize(
@@ -209,6 +326,35 @@ def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_mas
 
     np.testing.assert_array_equal(np.isnan(result.spectrum), ~expected_valid_mask)
     assert np.isfinite(result.spectrum[expected_valid_mask]).all()
+
+
+def test_pipeline_produces_short_term_uncertainty():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.125,
+        m=2,
+        uncertainty_estimation="short_term",
+        m_var=2,
+        spectral_estimates_max=None,
+    )
+    data_config = DataConfig(
+        channels=(np.arange(32, dtype=np.float64),),
+        dt=1.0,
+    )
+
+    result_store = calculate_spectra(
+        data_config,
+        spectrum_config,
+        requested_spectra=[(0,)],
+        show_progress=False,
+    )
+    result = result_store[(0,)]
+
+    assert result.spectrum.shape == (1,)
+    assert result.spectrum_uncertainty is not None
+    assert result.spectrum_uncertainty.shape == result.spectrum.shape
+    assert np.isfinite(result.spectrum_uncertainty).all()
 
 
 def test_resolve_frequencies_rejects_band_without_fft_frequency():

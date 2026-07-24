@@ -10,7 +10,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -45,6 +45,11 @@ class RuntimeConfig:
     m : int
         Number of windows used per spectral estimate. This may be reduced at runtime if the signal
         is too short. Must be positive.
+    uncertainty_estimation : Literal["global", "short_term"]
+        Uncertainty-estimation method.
+    m_var : int
+        Effective number of consecutive spectral estimates per short-term batch. This may be lower
+        than the requested value if insufficient unshifted estimates are available.
     n_data_points : int
         Number of samples in each selected data channel.
     freq_all : np.ndarray
@@ -80,6 +85,8 @@ class RuntimeConfig:
     dt: float
     window_points: int
     m: int
+    uncertainty_estimation: Literal["global", "short_term"]
+    m_var: int
     n_data_points: int
     freq_all: np.ndarray
     freq_band: np.ndarray
@@ -488,6 +495,18 @@ def build_runtime_config(
                 "estimate. Disable interlacing or provide more data."
             )
 
+    # Determine if enough spectral estimates are available for the short-term uncertainty
+    m_var = spectrum_config.m_var
+
+    if spectrum_config.uncertainty_estimation == "short_term" and 2 <= spectral_estimates < m_var:
+        m_var = spectral_estimates
+        warnings.warn(
+            f"Only {spectral_estimates} unshifted spectral estimates are available; "
+            f"using m_var={m_var} instead.",
+            UserWarning,
+            stacklevel=3,
+        )
+
     return RuntimeConfig(
         active_data_channels=active_data_channels,
         spectra_channels=tuple(spectra_channels),
@@ -495,6 +514,8 @@ def build_runtime_config(
         dt=dt,
         window_points=window_points,
         m=m,
+        uncertainty_estimation=spectrum_config.uncertainty_estimation,
+        m_var=m_var,
         n_data_points=n_data_points,
         freq_all=freq_all,
         freq_band=freq_all[band_start_idx:band_end_idx],

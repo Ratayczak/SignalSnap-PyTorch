@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 import pytest
 import torch
@@ -12,12 +14,20 @@ from signalsnap_pytorch._core.accumulation import (
 def make_accumulator(
     channels: tuple[int, ...] = (0, 0),
     frequency_points: int = 2,
+    uncertainty_estimation: Literal["global", "short_term"] = "global",
+    m_var: int = 10,
 ) -> SpectrumAccumulator:
     freq = np.asarray([0.0]) if len(channels) == 1 else np.arange(frequency_points, dtype=float)
-    return SpectrumAccumulator(channels=channels, freq=freq, freq_unit="Hz")
+    return SpectrumAccumulator(
+        channels=channels,
+        freq=freq,
+        freq_unit="Hz",
+        uncertainty_estimation=uncertainty_estimation,
+        m_var=m_var,
+    )
 
 
-def test_accumulate_spectrum_keeps_shifted_and_unshifted_state_separate():
+def test_global_accumulation_keeps_shifted_and_unshifted_state_separate():
     accumulator = make_accumulator()
     unshifted = torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128)
     shifted = torch.tensor([5 + 6j, 7 + 8j], dtype=torch.complex128)
@@ -25,21 +35,32 @@ def test_accumulate_spectrum_keeps_shifted_and_unshifted_state_separate():
     accumulate_spectrum(accumulator, unshifted)
     accumulate_spectrum(accumulator, shifted, shifted=True)
 
-    torch.testing.assert_close(accumulator.spectrum_sum_unshifted, unshifted)
-    torch.testing.assert_close(accumulator.spectrum_sum_shifted, shifted)
+    torch.testing.assert_close(accumulator.unshifted.spectrum_sum, unshifted)
+    torch.testing.assert_close(accumulator.shifted.spectrum_sum, shifted)
     torch.testing.assert_close(
-        accumulator.squared_sum_unshifted,
+        accumulator.unshifted.squared_sum,
         torch.tensor([1 + 4j, 9 + 16j], dtype=torch.complex128),
     )
     torch.testing.assert_close(
-        accumulator.squared_sum_shifted,
+        accumulator.shifted.squared_sum,
         torch.tensor([25 + 36j, 49 + 64j], dtype=torch.complex128),
     )
-    assert accumulator.chunks_unshifted == 1
-    assert accumulator.chunks_shifted == 1
+    assert accumulator.unshifted.count == 1
+    assert accumulator.shifted.count == 1
+
+    for group in (accumulator.unshifted, accumulator.shifted):
+        state = group.short_term
+        assert state.current_count == 0
+        assert state.completed_batches == 0
+        assert state.current_mean_re is None
+        assert state.current_mean_im is None
+        assert state.current_m2_re is None
+        assert state.current_m2_im is None
+        assert state.variance_sum_re is None
+        assert state.variance_sum_im is None
 
 
-def test_finalize_result_calculates_mean_and_componentwise_sem():
+def test_global_finalization_calculates_mean_and_componentwise_sem():
     accumulator = make_accumulator()
     accumulate_spectrum(
         accumulator,
@@ -53,14 +74,14 @@ def test_finalize_result_calculates_mean_and_componentwise_sem():
     result = finalize_result(accumulator)
 
     np.testing.assert_allclose(result.spectrum, np.asarray([2 + 3j, 4 + 6j]))
-    assert result.spectrum_error is not None
-    np.testing.assert_allclose(result.spectrum_error, np.asarray([1 + 1j, 1 + 2j]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 1j, 1 + 2j]))
     assert result.channels == accumulator.channels
     np.testing.assert_array_equal(result.freq, accumulator.freq)
     assert result.freq_unit == accumulator.freq_unit
 
 
-def test_finalize_result_combines_groups_and_uses_larger_componentwise_sem():
+def test_global_finalization_combines_groups_with_componentwise_maximum():
     accumulator = make_accumulator(channels=(0,), frequency_points=1)
 
     for value in (1 + 1j, 3 + 3j):
@@ -76,24 +97,217 @@ def test_finalize_result_combines_groups_and_uses_larger_componentwise_sem():
     result = finalize_result(accumulator)
 
     np.testing.assert_allclose(result.spectrum, np.asarray([7 + 3j]))
-    assert result.spectrum_error is not None
-    np.testing.assert_allclose(result.spectrum_error, np.asarray([2 + 2j]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([2 + 2j]))
 
 
-def test_finalize_result_with_one_estimate_warns_and_returns_no_error():
+def test_global_finalization_with_one_estimate_warns_and_returns_no_uncertainty():
     accumulator = make_accumulator()
     estimate = torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128)
     accumulate_spectrum(accumulator, estimate)
-    assert accumulator.spectrum_sum_unshifted is not None
-    sum_before = accumulator.spectrum_sum_unshifted.clone()
+    assert accumulator.unshifted.spectrum_sum is not None
+    sum_before = accumulator.unshifted.spectrum_sum.clone()
 
     with pytest.warns(RuntimeWarning, match="at least two spectral estimates"):
         result = finalize_result(accumulator)
 
     np.testing.assert_allclose(result.spectrum, estimate.numpy())
-    assert result.spectrum_error is None
-    torch.testing.assert_close(accumulator.spectrum_sum_unshifted, sum_before)
-    assert accumulator.chunks_unshifted == 1
+    assert result.spectrum_uncertainty is None
+    torch.testing.assert_close(accumulator.unshifted.spectrum_sum, sum_before)
+    assert accumulator.unshifted.count == 1
+
+
+def test_short_term_finalization_calculates_one_complete_batch():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=2,
+    )
+
+    for value in (1 + 2j, 3 + 6j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([2 + 4j]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 2j]))
+
+    group = accumulator.unshifted
+    state = group.short_term
+    assert group.squared_sum is None
+    assert group.count == 2
+    assert state.current_count == 0
+    assert state.completed_batches == 1
+    torch.testing.assert_close(
+        state.variance_sum_re,
+        torch.tensor([1.0], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state.variance_sum_im,
+        torch.tensor([4.0], dtype=torch.float64),
+    )
+
+
+def test_short_term_finalization_averages_batch_variances_before_square_root():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=2,
+    )
+
+    for value in (1 + 2j, 3 + 6j, 10 + 1j, 14 + 7j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([7 + 4j]))
+    assert result.spectrum_uncertainty is not None
+    expected_uncertainty = np.sqrt(2.5) + 1j * np.sqrt(6.5)
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([expected_uncertainty]))
+
+    state = accumulator.unshifted.short_term
+    assert state.current_count == 0
+    assert state.completed_batches == 2
+
+
+def test_incomplete_short_term_batch_affects_spectrum_but_not_uncertainty():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=2,
+    )
+
+    for value in (1 + 0j, 3 + 0j, 100 + 0j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([104 / 3]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 0j]))
+
+    state = accumulator.unshifted.short_term
+    assert state.completed_batches == 1
+    assert state.current_count == 1
+
+
+def test_short_term_groups_are_batched_separately_and_combined_componentwise():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=2,
+    )
+
+    for value in (1 + 1j, 3 + 3j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    for value in (10 + 2j, 14 + 8j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+            shifted=True,
+        )
+
+    result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([7 + 3.5j]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([2 + 3j]))
+    assert accumulator.unshifted.short_term.completed_batches == 1
+    assert accumulator.shifted.short_term.completed_batches == 1
+
+
+def test_short_term_finalization_uses_qualified_group_and_count_weighted_spectrum():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=2,
+    )
+
+    for value in (1 + 0j, 3 + 0j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    accumulate_spectrum(
+        accumulator,
+        torch.tensor([10 + 0j], dtype=torch.complex128),
+        shifted=True,
+    )
+
+    result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([14 / 3]))
+    assert result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 0j]))
+    assert accumulator.unshifted.short_term.completed_batches == 1
+    assert accumulator.shifted.short_term.completed_batches == 0
+    assert accumulator.shifted.short_term.current_count == 1
+
+
+def test_short_term_finalization_without_complete_batch_warns_and_returns_no_uncertainty():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=3,
+    )
+
+    for value in (1 + 2j, 3 + 4j):
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    with pytest.warns(RuntimeWarning, match="complete batch"):
+        result = finalize_result(accumulator)
+
+    np.testing.assert_allclose(result.spectrum, np.asarray([2 + 3j]))
+    assert result.spectrum_uncertainty is None
+    assert accumulator.unshifted.short_term.current_count == 2
+    assert accumulator.unshifted.short_term.completed_batches == 0
+
+
+def test_short_term_welford_accumulation_is_stable_for_large_offsets():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=4,
+    )
+    base = 1e12
+
+    for re_offset, im_offset in ((-1, -2), (1, 2), (-1, -2), (1, 2)):
+        value = (base + re_offset) + 1j * (2 * base + im_offset)
+        accumulate_spectrum(
+            accumulator,
+            torch.tensor([value], dtype=torch.complex128),
+        )
+
+    result = finalize_result(accumulator)
+
+    assert result.spectrum_uncertainty is not None
+    expected = np.sqrt(1 / 3) + 1j * np.sqrt(4 / 3)
+    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([expected]), rtol=1e-12)
 
 
 def test_finalize_result_rejects_empty_accumulator():
@@ -104,28 +318,78 @@ def test_finalize_result_rejects_empty_accumulator():
 
 
 @pytest.mark.parametrize(
-    ("spectrum_sum", "squared_sum", "chunks"),
+    ("spectrum_sum", "squared_sum", "count", "message"),
     [
-        pytest.param(None, torch.ones(2, dtype=torch.complex128), 0, id="squares-without-sum"),
-        pytest.param(None, None, 1, id="count-without-sum"),
-        pytest.param(torch.ones(2, dtype=torch.complex128), None, 1, id="sum-without-squares"),
+        pytest.param(
+            None,
+            torch.ones(2, dtype=torch.complex128),
+            0,
+            "inconsistent",
+            id="squares-without-sum",
+        ),
+        pytest.param(None, None, 1, "inconsistent", id="count-without-sum"),
+        pytest.param(
+            torch.ones(2, dtype=torch.complex128),
+            None,
+            1,
+            "squared-sum",
+            id="sum-without-squares",
+        ),
         pytest.param(
             torch.ones(2, dtype=torch.complex128),
             torch.ones(2, dtype=torch.complex128),
             0,
+            "inconsistent",
             id="sum-without-count",
         ),
     ],
 )
-def test_finalize_result_rejects_inconsistent_accumulator_state(
+def test_global_finalization_rejects_inconsistent_group_state(
     spectrum_sum,
     squared_sum,
-    chunks,
+    count,
+    message,
 ):
     accumulator = make_accumulator()
-    accumulator.spectrum_sum_unshifted = spectrum_sum
-    accumulator.squared_sum_unshifted = squared_sum
-    accumulator.chunks_unshifted = chunks
+    accumulator.unshifted.spectrum_sum = spectrum_sum
+    accumulator.unshifted.squared_sum = squared_sum
+    accumulator.unshifted.count = count
 
-    with pytest.raises(RuntimeError, match="accumulator state is inconsistent"):
+    with pytest.raises(RuntimeError, match=message):
+        finalize_result(accumulator)
+
+
+def test_global_finalization_rejects_populated_short_term_state():
+    accumulator = make_accumulator()
+    accumulate_spectrum(
+        accumulator,
+        torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
+    )
+    accumulator.unshifted.short_term.current_count = 1
+
+    with pytest.raises(RuntimeError, match="must remain empty"):
+        finalize_result(accumulator)
+
+
+def test_short_term_finalization_rejects_global_squared_sum():
+    accumulator = make_accumulator(uncertainty_estimation="short_term", m_var=2)
+    accumulate_spectrum(
+        accumulator,
+        torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
+    )
+    accumulator.unshifted.squared_sum = torch.ones(2, dtype=torch.complex128)
+
+    with pytest.raises(RuntimeError, match="must remain empty"):
+        finalize_result(accumulator)
+
+
+def test_short_term_finalization_rejects_inconsistent_batch_count():
+    accumulator = make_accumulator(uncertainty_estimation="short_term", m_var=2)
+    accumulate_spectrum(
+        accumulator,
+        torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
+    )
+    accumulator.unshifted.short_term.current_count = 0
+
+    with pytest.raises(RuntimeError, match="batch count is inconsistent"):
         finalize_result(accumulator)

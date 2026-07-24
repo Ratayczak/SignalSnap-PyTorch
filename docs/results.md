@@ -13,7 +13,7 @@ result.order            # 2
 result.freq             # one-dimensional NumPy frequency axis
 result.freq_unit        # for example, "Hz"
 result.spectrum         # complex NumPy array
-result.spectrum_error   # complex NumPy array, or None
+result.spectrum_uncertainty   # complex NumPy array, or None
 ```
 
 ## Shapes and frequency coordinates
@@ -40,21 +40,25 @@ An order-four value at `[i, j]` belongs to the diagonal slice
 `(frequency[i], -frequency[i], frequency[j], -frequency[j])`. SignalSnap does not currently return
 the full three-dimensional trispectrum.
 
-## Standard errors
+## Uncertainty estimates
 
-`spectrum_error` has the same shape as `spectrum`.
-Its real and imaginary components independently store the standard errors of the corresponding
-spectrum components; the complex values themselves have no statistical interpretation.
+`spectrum_uncertainty` has the same shape as `spectrum`.
+Its real and imaginary components independently store uncertainty estimates for the corresponding
+spectrum components; the complex values themselves have no statistical interpretation. With global
+uncertainty estimation these are standard errors of the mean. With short-term estimation they are
+typical local uncertainties calculated from complete batches of `m_var` estimates.
 
 ```python
-real_sem = result.spectrum_error.real
-imaginary_sem = result.spectrum_error.imag
+real_uncertainty = result.spectrum_uncertainty.real
+imaginary_uncertainty = result.spectrum_uncertainty.imag
 ```
 
 It is `None` unless at least two unshifted estimates are available.
 
-See [Calculation configuration](configuration.md) to learn how the `interlacing` option influences
-the result.
+See [Calculation configuration](configuration.md#uncertainty-estimation) for details. With
+interlacing,
+the component-wise maximum of the available placement-group uncertainties is a conservative bound,
+not the exact standard error of the combined spectrum.
 
 ## Physical units
 

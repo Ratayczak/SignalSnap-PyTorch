@@ -26,7 +26,7 @@ def make_result(channels: tuple[int, ...]) -> SpectrumResult:
 
 
 @pytest.mark.parametrize(
-    ("freq", "spectrum", "spectrum_error", "message"),
+    ("freq", "spectrum", "spectrum_uncertainty", "message"),
     [
         pytest.param(
             np.zeros((2, 2)),
@@ -46,15 +46,15 @@ def make_result(channels: tuple[int, ...]) -> SpectrumResult:
             np.zeros(2),
             np.zeros(2, dtype=complex),
             np.zeros(3, dtype=complex),
-            "Spectrum error must have the same shape",
-            id="error-shape",
+            "Spectrum uncertainty must have the same shape",
+            id="uncertainty-shape",
         ),
     ],
 )
 def test_spectrum_result_rejects_inconsistent_array_shapes(
     freq,
     spectrum,
-    spectrum_error,
+    spectrum_uncertainty,
     message,
 ):
     with pytest.raises(ValueError, match=message):
@@ -63,7 +63,7 @@ def test_spectrum_result_rejects_inconsistent_array_shapes(
             freq=freq,
             freq_unit="Hz",
             spectrum=spectrum,
-            spectrum_error=spectrum_error,
+            spectrum_uncertainty=spectrum_uncertainty,
         )
 
 

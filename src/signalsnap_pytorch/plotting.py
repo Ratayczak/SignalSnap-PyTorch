@@ -46,11 +46,11 @@ class PlotStyle(BaseModel):
         Frequency range displayed in plots. These values only crop the displayed axes and do not
         recalculate or resample the data.
     sigma : float, default=1.0
-        Default standard-error level for second-order uncertainty intervals and the insignificance
-        threshold for higher-order spectra.
+        Default uncertainty level for second-order intervals and the insignificance threshold for
+        higher-order spectra.
     uncertainty_levels : list[float] | None, default=None
-        Positive standard-error levels displayed as uncertainty bands for second-order spectra. If
-        ``None``, a single band at ``sigma`` is displayed. This setting does not affect higher-order
+        Positive uncertainty levels displayed as bands for second-order spectra. If ``None``, a
+        single band at ``sigma`` is displayed. This setting does not affect higher-order
         significance overlays.
     arcsinh_ratio : float | None, default=None
         Relative width of the approximately linear region used for arcsinh display scaling. If
@@ -228,7 +228,7 @@ def _custom_colormap() -> LinearSegmentedColormap:
     return mcolors.LinearSegmentedColormap.from_list("signalsnap_pytorch_spectrum", colors)
 
 
-def _custom_error_colormap(insignificance_alpha: float) -> LinearSegmentedColormap:
+def _custom_uncertainty_colormap(insignificance_alpha: float) -> LinearSegmentedColormap:
     """Create the transparency overlay used to mark insignificant values.
 
     Parameters
@@ -372,7 +372,7 @@ def _format_order_1_rows(rows: list[dict[str, object]]) -> str:
         only the header and separator are returned.
     """
 
-    headers = ["Channels", "Real", "Imag", "Error real", "Error imag"]
+    headers = ["Channels", "Real", "Imag", "Uncertainty real", "Uncertainty imag"]
 
     table = [[str(row.get(header, "")) for header in headers] for row in rows]
 
@@ -401,7 +401,7 @@ def build_order_1_table(result_store: SpectrumResultStore) -> str:
     Returns
     -------
     str
-        Fixed-width table of channel indices, complex spectrum values, and error estimates.
+        Fixed-width table of channel indices, complex spectrum values, and uncertainty estimates.
 
     Warns
     -----
@@ -417,15 +417,17 @@ def build_order_1_table(result_store: SpectrumResultStore) -> str:
     rows = []
     for result in order_1_results:
         value = result.spectrum[0]
-        error = result.spectrum_error[0] if result.spectrum_error is not None else None
+        uncertainty = (
+            result.spectrum_uncertainty[0] if result.spectrum_uncertainty is not None else None
+        )
 
         rows.append(
             {
                 "Channels": result.channels,
                 "Real": value.real,
                 "Imag": value.imag,
-                "Error real": None if error is None else error.real,
-                "Error imag": None if error is None else error.imag,
+                "Uncertainty real": None if uncertainty is None else uncertainty.real,
+                "Uncertainty imag": None if uncertainty is None else uncertainty.imag,
             }
         )
     return _format_order_1_rows(rows)
@@ -437,7 +439,7 @@ def _create_order_2_figure(result: SpectrumResult, plot_style: PlotStyle) -> Fig
     Parameters
     ----------
     result : :class:`SpectrumResult`
-        Order-2 spectrum and optional error estimate to plot.
+        Order-2 spectrum and optional uncertainty estimate to plot.
     plot_style : :class:`PlotStyle`
         Frequency limits, components, scaling, and significance settings for the plot.
 
@@ -470,8 +472,8 @@ def _create_order_2_figure(result: SpectrumResult, plot_style: PlotStyle) -> Fig
 
         ax.plot(result.freq, y, label=f"S{result.order} {component_name}")
 
-        if result.spectrum_error is not None:
-            err = np.abs(_component_data(result.spectrum_error, component))
+        if result.spectrum_uncertainty is not None:
+            uncertainty = np.abs(_component_data(result.spectrum_uncertainty, component))
 
             levels = (
                 plot_style.uncertainty_levels
@@ -484,7 +486,7 @@ def _create_order_2_figure(result: SpectrumResult, plot_style: PlotStyle) -> Fig
             number_of_levels = len(levels)
 
             for index, level in enumerate(levels):
-                interval = level * err
+                interval = level * uncertainty
                 alpha = 0.08 + 0.12 * (index + 1) / number_of_levels
 
                 ax.fill_between(
@@ -513,7 +515,7 @@ def _create_order_3_or_4_figure(result: SpectrumResult, plot_style: PlotStyle) -
     Parameters
     ----------
     result : :class:`SpectrumResult`
-        Order-3 or order-4 spectrum and optional error estimate to plot.
+        Order-3 or order-4 spectrum and optional uncertainty estimate to plot.
     plot_style : :class:`PlotStyle`
         Frequency limits, components, scaling, and significance settings for the plot.
 
@@ -524,7 +526,7 @@ def _create_order_3_or_4_figure(result: SpectrumResult, plot_style: PlotStyle) -
     """
 
     cmap = _custom_colormap()
-    error_cmap = _custom_error_colormap(plot_style.insignificance_alpha)
+    uncertainty_cmap = _custom_uncertainty_colormap(plot_style.insignificance_alpha)
 
     fig, axes = plt.subplots(
         1,
@@ -556,15 +558,15 @@ def _create_order_3_or_4_figure(result: SpectrumResult, plot_style: PlotStyle) -
         # horizontal axis, so transpose to display w1 horizontally and w2 vertically.
         mesh = ax.pcolormesh(x, y, z.transpose(), cmap=cmap, norm=norm, shading="auto")
 
-        if result.spectrum_error is not None:
-            err = np.abs(_component_data(result.spectrum_error, component))
-            insignificant = np.abs(raw_z) < plot_style.sigma * err
+        if result.spectrum_uncertainty is not None:
+            uncertainty = np.abs(_component_data(result.spectrum_uncertainty, component))
+            insignificant = np.abs(raw_z) < plot_style.sigma * uncertainty
             # explanation for transpose, see above.
             ax.pcolormesh(
                 x,
                 y,
                 insignificant.astype(float).transpose(),
-                cmap=error_cmap,
+                cmap=uncertainty_cmap,
                 vmin=0,
                 vmax=1,
                 shading="auto",

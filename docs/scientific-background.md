@@ -114,7 +114,7 @@ stationarity test; that check remains the user's responsibility.
 
 The PyTorch implementation covers the real-signal estimators through the bispectrum and the
 two-dimensional diagonal trispectrum slice. It supports arbitrary channel tuples, window
-normalization, interlacing, and standard errors.
+normalization, interlacing, and uncertainty estimates.
 
 It does not currently provide:
 

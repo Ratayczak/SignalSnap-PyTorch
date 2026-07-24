@@ -29,13 +29,13 @@ def _assert_result_stores_equal(actual_store, expected_store):
             equal_nan=True,
         )
 
-        if expected.spectrum_error is None:
-            assert actual.spectrum_error is None
+        if expected.spectrum_uncertainty is None:
+            assert actual.spectrum_uncertainty is None
         else:
-            assert actual.spectrum_error is not None
+            assert actual.spectrum_uncertainty is not None
             np.testing.assert_allclose(
-                actual.spectrum_error,
-                expected.spectrum_error,
+                actual.spectrum_uncertainty,
+                expected.spectrum_uncertainty,
                 rtol=0.0,
                 atol=0.0,
                 equal_nan=True,

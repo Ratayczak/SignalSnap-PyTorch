@@ -98,12 +98,12 @@ def _build_spectrum_config(name: str, channels, legacy_freqs) -> SpectrumConfig:
 def _calculate_legacy_case(name, reference_file, channels, prepared_data):
     with np.load(reference_file, allow_pickle=True) as benchmark:
         legacy_spectra = benchmark["spectra"].item()
-        legacy_errors = benchmark["error"].item()
+        legacy_uncertainties = benchmark["error"].item()
         legacy_freqs = benchmark["freqs"].item()
 
     spectrum_config = _build_spectrum_config(name, channels, legacy_freqs)
     result_store = calculate_spectra(prepared_data, spectrum_config, requested_spectra=channels)
-    return result_store, legacy_spectra, legacy_errors, legacy_freqs
+    return result_store, legacy_spectra, legacy_uncertainties, legacy_freqs
 
 
 def _legacy_channel_key(name: str, channels: tuple[int, ...]):
@@ -162,10 +162,10 @@ def test_new_api_matches_legacy_spectra(name, reference_file, channels, prepared
         )
 
 
-@pytest.mark.skip(reason="Error calculation was intentionally redesigned in new API")
+@pytest.mark.skip(reason="Uncertainty calculation was intentionally redesigned in new API")
 @pytest.mark.parametrize(("name", "reference_file", "channels"), LEGACY_CASES)
-def test_new_api_errors_match_legacy(name, reference_file, channels, prepared_data):
-    result_store, _, legacy_errors, legacy_freqs = _calculate_legacy_case(
+def test_new_api_uncertainties_match_legacy(name, reference_file, channels, prepared_data):
+    result_store, _, legacy_uncertainties, legacy_freqs = _calculate_legacy_case(
         name, reference_file, channels, prepared_data
     )
 
@@ -173,25 +173,27 @@ def test_new_api_errors_match_legacy(name, reference_file, channels, prepared_da
         order = len(channel_tuple)
         legacy_key = _legacy_channel_key(name, channel_tuple)
         result = result_store[channel_tuple]
-        assert result.spectrum_error is not None
+        assert result.spectrum_uncertainty is not None
         expected_freq = _expected_current_freq(name, legacy_key, order, legacy_freqs)
         np.testing.assert_allclose(result.freq, expected_freq, rtol=0.0, atol=1e-12)
 
-        spectrum_error = np.asarray(result.spectrum_error)
+        spectrum_uncertainty = np.asarray(result.spectrum_uncertainty)
         if order == 3:
-            spectrum_error = spectrum_error.transpose()
+            spectrum_uncertainty = spectrum_uncertainty.transpose()
 
-        actual_error, expected_error = align_legacy_spectrum_region(
-            spectrum_error,
+        actual_uncertainty, expected_uncertainty = align_legacy_spectrum_region(
+            spectrum_uncertainty,
             expected_freq,
-            np.asarray(legacy_errors[legacy_key][order]),
+            np.asarray(legacy_uncertainties[legacy_key][order]),
             np.asarray(legacy_freqs[legacy_key][order]),
             order,
         )
         np.testing.assert_allclose(
-            actual_error,
-            expected_error,
+            actual_uncertainty,
+            expected_uncertainty,
             rtol=1e-6,
             atol=1e-8,
-            err_msg=f"Spectrum error at order {order} for channel {channel_tuple} doesn't match.",
+            err_msg=(
+                f"Spectrum uncertainty at order {order} for channel {channel_tuple} doesn't match."
+            ),
         )

@@ -30,6 +30,8 @@ spectrum_config = SpectrumConfig(
     f_min=-0.10,
     f_max=0.25,
     m=10,
+    uncertainty_estimation="global",
+    m_var=10,
     device="cuda",
     precision="auto",
     spectral_estimates_max=1000,
@@ -42,6 +44,8 @@ spectrum_config = SpectrumConfig(
 | `df` | Requested frequency spacing. If omitted, each FFT window uses 1000 samples. |
 | `f_min`, `f_max` | Requested frequency interval. `f_max=None` uses the Nyquist frequency as an upper bound. `f_min` may be negative. |
 | `m` | Number of FFT windows contributing to each cumulant estimate. |
+| `uncertainty_estimation` | `"global"` for the global standard error, or `"short_term"` for a typical local uncertainty. |
+| `m_var` | Number of consecutive estimates in each short-term uncertainty batch. |
 | `device` | `"cpu"`, `"cuda"`, `"cuda:N"`, `"mps"`, `"xpu"`, or `"xpu:N"`. |
 | `precision` | `"single"`, `"double"`, or device-dependent `"auto"`. |
 | `spectral_estimates_max` | Maximum unshifted estimates, or `None` to use all available data. |
@@ -76,7 +80,7 @@ is omitted, the positive Nyquist frequency is used as an upper bound.
 Each channel is divided into FFT windows of `window_points` samples. One spectral estimate consumes
 `m * window_points` samples: the `m` Fourier-coefficient vectors form the sample used by the
 multivariate k-statistic. Consecutive groups produce repeated spectral estimates, which are averaged
-to obtain the final result and its standard error. See the
+to obtain the final result and its uncertainty estimate. See the
 [Scientific background](scientific-background.md) for a detailed description of the calculation.
 
 ### Choosing `m`
@@ -110,8 +114,20 @@ skipped automatically on other systems.
 may still be smaller when the trace contains insufficient data. Set it to `None` to calculate as
 many estimates as possible.
 
-At least two estimates are needed for a standard-error result. Longer traces usually provide more
-useful error estimates.
+At least two estimates are needed for a global standard-error result. Short-term estimation needs
+at least one complete batch of `m_var` estimates. Longer traces usually provide more useful
+uncertainty estimates.
+
+### Uncertainty estimation
+
+`uncertainty_estimation="global"` reports the component-wise standard error of the mean calculated
+from all estimates in each placement group.
+
+`uncertainty_estimation="short_term"` divides consecutive estimates into complete batches of `m_var`.
+For each batch it calculates the component-wise variance of the batch mean, then averages these
+variances and takes their square root. This is a typical short-term uncertainty and does not shrink
+with the number of completed batches. Incomplete trailing batches contribute to the spectrum but
+not its uncertainty.
 
 ### Interlacing
 
@@ -120,9 +136,9 @@ reduces the low weight assigned to samples near the edges of the original window
 trace must be long enough to contain at least one shifted estimate. `spectral_estimates_max` applies
 only to unshifted estimates.
 
-The final spectrum is averaged over the available unshifted and shifted estimates. Errors are
-calculated separately for the two groups, and the component-wise maximum is reported when each group
-contains at least two estimates. If there are two unshifted but only one shifted estimate, the error
-is taken from the unshifted estimates only.
+The final spectrum is averaged over the available unshifted and shifted estimates. Uncertainties are
+calculated separately for the two groups. If both provide an uncertainty, their component-wise
+maximum is reported as a conservative bound rather than the exact standard error of the combined
+spectrum. If only one group has enough estimates for the configured method, its uncertainty is used.
 
 Next: [Working with results](results.md).

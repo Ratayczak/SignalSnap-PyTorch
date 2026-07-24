@@ -17,7 +17,7 @@ from the original object-oriented API.
 - First- through fourth-order auto- and cross-polyspectra; order four is returned as a diagonal
   two-dimensional slice
 - Unbiased multivariate cumulant estimators
-- Standard-error estimates from repeated spectral estimates
+- Global standard errors and short-term uncertainty estimates from repeated spectral estimates
 - Optional interlaced estimates to reduce window-edge effects
 - Accelerated computing on a variety of GPUs via PyTorch
 - Lazy reading from HDF5 datasets larger than system memory
@@ -135,7 +135,7 @@ The documentation can be found in [`docs/`](docs/README.md):
 | Guide | Contents |
 | --- | --- |
 | [Calculation configuration](docs/configuration.md) | How to use `DataConfig` and `SpectrumConfig` |
-| [Working with results](docs/results.md) | Understand result shapes, errors, units, selection, and partial failures |
+| [Working with results](docs/results.md) | Understand result shapes, uncertainties, units, selection, and partial failures |
 | [Plotting](docs/plotting.md) | Line plots, color maps, significance, saving, and window inspection |
 | [HDF5 input](docs/hdf5.md) | Working with HDF5 files that may exceed memory limits |
 | [Scientific background](docs/scientific-background.md) | Definitions, estimators, assumptions, and current scope |

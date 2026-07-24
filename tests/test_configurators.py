@@ -19,6 +19,31 @@ def test_spectrum_config_defaults_to_automatic_frequency_spacing():
     assert SpectrumConfig().df is None
 
 
+def test_spectrum_config_defaults_to_global_uncertainty_estimation():
+    config = SpectrumConfig()
+
+    assert config.uncertainty_estimation == "global"
+    assert config.m_var == 10
+
+
+def test_spectrum_config_accepts_short_term_uncertainty_estimation():
+    config = SpectrumConfig(uncertainty_estimation="short_term", m_var=4)
+
+    assert config.uncertainty_estimation == "short_term"
+    assert config.m_var == 4
+
+
+def test_spectrum_config_rejects_unknown_uncertainty_estimation():
+    with pytest.raises(ValidationError, match="uncertainty_estimation"):
+        SpectrumConfig(uncertainty_estimation="local")
+
+
+@pytest.mark.parametrize("m_var", [1, 0, -1, 1.5, True])
+def test_spectrum_config_rejects_invalid_m_var(m_var):
+    with pytest.raises(ValidationError, match="m_var"):
+        SpectrumConfig(uncertainty_estimation="short_term", m_var=m_var)
+
+
 def test_spectrum_config_accepts_positive_frequency_spacing():
     assert SpectrumConfig(df=0.125).df == 0.125
 

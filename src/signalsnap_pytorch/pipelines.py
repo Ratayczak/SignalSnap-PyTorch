@@ -33,7 +33,7 @@ def calculate_spectra(
 
     Builds the runtime configuration, expands the requested spectrum tasks, iterates over windowed
     signal chunks, computes Fourier coefficients, accumulates spectra, and finalizes mean spectra
-    and standard-error estimates.
+    and uncertainty estimates.
 
     Per-spectrum calculation and finalization failures emit a RuntimeWarning and the corresponding
     result is omitted.
@@ -150,7 +150,7 @@ def calculate_spectra(
                         stacklevel=2,
                     )
 
-        # Finalize accumulated spectra and their error estimates.
+        # Finalize accumulated spectra and their uncertainty estimates.
         result_store = SpectrumResultStore()
         for accumulator in accumulator_store:
             if accumulator.channels in failed_spectra:

@@ -6,7 +6,7 @@ multi-channel time series.
 ## Guides
 
 - [Calculation configuration](configuration.md): how to use `DataConfig` and `SpectrumConfig`.
-- [Working with results](results.md): understand result shapes, errors, units, selection, and
+- [Working with results](results.md): understand result shapes, uncertainties, units, selection, and
   partial failures.
 - [Plotting your results](plotting.md): display spectra and uncertainties and inspect the first FFT
   window.

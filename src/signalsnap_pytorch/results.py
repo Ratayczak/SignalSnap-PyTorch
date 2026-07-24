@@ -41,16 +41,22 @@ class SpectrumResult:
         The final normalized spectral values transferred back to the CPU. For ``F = len(freq)``, the
         result shapes are ``(1,)`` for first-order, ``(F,)`` for second-order, and ``(F, F)`` for
         third- and fourth-order results.
-    spectrum_error : np.ndarray | None
-        The final calculated standard error of the mean (SEM) values transferred back to the CPU.
-        ``spectrum_error`` has the same shape as ``spectrum``. Its real and imaginary components
-        independently store the standard errors of the corresponding spectrum components; the
-        complex values themselves have no statistical interpretation. At least two estimates are
-        needed to compute an error; this is ``None`` otherwise. If interlacing was enabled, this is
-        the component-wise maximum of the unshifted and shifted spectrum error, where standard
-        errors are computed separately for unshifted and shifted groups. A group contributes only
-        when it contains at least two estimates. If neither group qualifies, this is ``None``; if
-        only the unshifted group qualifies, its error is used.
+    spectrum_uncertainty : np.ndarray | None
+        The calculated component-wise spectrum uncertainty transferred back to the CPU.
+        ``spectrum_uncertainty`` has the same shape as ``spectrum``. Its real and imaginary
+        components independently store uncertainties for the corresponding spectrum components;
+        the complex value itself has no statistical interpretation.
+
+        With global uncertainty estimation, each placement-group (i.e., unshifted or shifted)
+        uncertainty is the standard error of the mean calculated from all estimates in that group.
+        With short-term uncertainty estimation, consecutive estimates are divided into complete
+        batches of ``m_var`` estimates. Batch variance-of-mean estimates are averaged and their
+        component-wise square root is reported. Incomplete trailing batches do not contribute to
+        the uncertainty.
+
+        Shifted and unshifted placement groups are evaluated separately. If both provide an
+        uncertainty, their component-wise maximum is reported. If only one group qualifies, its
+        uncertainty is used. If neither qualifies, this value is ``None``.
     """
 
     channels: tuple[int, ...]
@@ -58,7 +64,7 @@ class SpectrumResult:
     freq: np.ndarray
     freq_unit: _FrequencyUnits
     spectrum: np.ndarray
-    spectrum_error: np.ndarray | None = None
+    spectrum_uncertainty: np.ndarray | None = None
 
     @property
     def order(self) -> int:
@@ -88,8 +94,11 @@ class SpectrumResult:
                 f"{self.spectrum.shape}; expected {expected_shape}."
             )
 
-        if self.spectrum_error is not None and self.spectrum_error.shape != expected_shape:
-            raise ValueError("Spectrum error must have the same shape as the spectrum.")
+        if (
+            self.spectrum_uncertainty is not None
+            and self.spectrum_uncertainty.shape != expected_shape
+        ):
+            raise ValueError("Spectrum uncertainty must have the same shape as the spectrum.")
 
 
 @dataclass(slots=True)
@@ -99,8 +108,8 @@ class SpectrumResultStore:
     Stores one :class:`SpectrumResult` per channel tuple. Results are indexed by ``channels``, where
     ``channels`` is a tuple of data-channel indices.
 
-    This class owns collection-level bookkeeping only. Numerical accumulation, error estimation, and
-    finalization are handled elsewhere.
+    This class owns collection-level bookkeeping only. Numerical accumulation, uncertainty
+    estimation, and finalization are handled elsewhere.
 
     Attributes
     ----------

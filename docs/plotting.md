@@ -65,24 +65,25 @@ spectrum_figure = create_spectrum_figure(results[(0, 1)], plot_style)
 | --- | --- |
 | `f_min`, `f_max` | Displayed limits. Crop the displayed axes without recalculating or resampling the spectrum. Applied to both axes for orders three and four. |
 | `plot_format` | Components to draw: `["re"]`, `["im"]`, or `["re", "im"]`. |
-| `sigma` | Standard-error multiplier; defaults to `1`. |
+| `sigma` | Uncertainty multiplier; defaults to `1`. |
 | `uncertainty_levels` | Positive band multipliers for order-two plots, such as `[1, 2, 3]`. |
 | `arcsinh_ratio` | Positive fraction controlling the approximately linear region of the arcsinh scaling; `None` uses linear scaling. |
 | `insignificance_alpha` | Opacity from `0` to `1` of the white insignificance overlay. |
 
 ### Order-two uncertainty bands
 
-When `spectrum_error` is available, order-two plots show shaded multiples of the component-wise
-standard error. If `uncertainty_levels` is set, it takes precedence over `sigma` for these bands.
+When `spectrum_uncertainty` is available, order-two plots show shaded multiples of the component-wise
+uncertainty estimate. If `uncertainty_levels` is set, it takes precedence over `sigma` for these
+bands.
 
 ### Higher-order significance
 
 Orders three and four use one color-map subplot per selected component and a symmetric color range
-centered on zero. When errors are available, points satisfying
+centered on zero. When uncertainties are available, points satisfying
 
 ```text
-abs(real(spectrum)) < sigma * abs(real(spectrum_error))
-abs(imag(spectrum)) < sigma * abs(imag(spectrum_error))
+abs(real(spectrum)) < sigma * abs(real(spectrum_uncertainty))
+abs(imag(spectrum)) < sigma * abs(imag(spectrum_uncertainty))
 ```
 
 receive a white overlay with opacity `insignificance_alpha`. Invalid values, including unsupported

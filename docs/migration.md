@@ -65,7 +65,7 @@ Retrieve results by the same tuple:
 ```python
 cross_spectrum = results[(0, 1)]
 values = cross_spectrum.spectrum
-errors = cross_spectrum.spectrum_error
+uncertainties = cross_spectrum.spectrum_uncertainty
 frequencies = cross_spectrum.freq
 ```
 

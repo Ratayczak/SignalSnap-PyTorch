@@ -214,6 +214,16 @@ class SpectrumConfig(BaseModel):
     m : int = 10
         Number of windows used per spectral estimate. This may be reduced at runtime if the signal
         is too short. Must be at least as high as the highest requested order. Must be positive.
+    uncertainty_estimation : Literal["global", "short_term"] = "global"
+        Method used to estimate spectrum uncertainty. ``"global"`` computes the standard error of
+        the mean from every spectral estimate. ``"short_term"`` divides consecutive estimates into
+        complete batches of ``m_var``, calculates a variance-of-mean estimate for each batch,
+        averages those variances, and takes their component-wise square root. Incomplete trailing
+        batches contribute to the final spectrum but not its uncertainty.
+    m_var : int = 10
+        Number of consecutive spectral estimates in each short-term uncertainty batch. Must be at
+        least two. Ignored when ``uncertainty_estimation="global"``. If fewer unshifted estimates
+        are available, this value may be reduced at runtime.
     device : str = "cpu"
         Torch device requested for calculation. Can be ``"cpu"``, ``"cuda"``, ``"cuda:N"``,
         ``"mps"``, ``"xpu"``, or ``"xpu:N"``.
@@ -231,9 +241,9 @@ class SpectrumConfig(BaseModel):
     interlacing : bool = False
         Compute additional spectral estimates for windows shifted by half a window size, to
         compensate the low weight of data points produced by the window function near the original
-        window edges. Error estimates are calculated separately for unshifted and shifted spectra;
-        when both are available, the reported error is the component-wise maximum of the two
-        standard-error arrays.
+        window edges. Uncertainty estimates are calculated separately for unshifted and shifted
+        spectra; when both are available, the reported uncertainty is the component-wise maximum of
+        the two placement-group uncertainty arrays.
     old_window : bool = False
         Compatibility option to reproduce legacy results. If set to ``True``, the old window
         function from the old API is used as a window function.
@@ -246,6 +256,8 @@ class SpectrumConfig(BaseModel):
     f_min: float = 0.0
     f_max: float | None = None
     m: Annotated[int, Field(gt=0)] = 10
+    uncertainty_estimation: Literal["global", "short_term"] = "global"
+    m_var: Annotated[int, Field(ge=2)] = 10
     device: str = "cpu"
     precision: Literal["auto", "single", "double"] = "auto"
     spectral_estimates_max: Annotated[int, Field(gt=0)] | None = int(1e6)

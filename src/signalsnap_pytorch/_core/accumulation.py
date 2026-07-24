@@ -10,7 +10,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import torch
@@ -24,11 +24,68 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class ShortTermUncertaintyState:
+    """Tracks the calculation of Welford's online variance algorithm.
+
+    Attributes
+    ----------
+    current_count : int = 0
+        Number of estimates incorporated into the current incomplete batch.
+        Reset to zero whenever a batch is completed.
+    current_mean_re, current_mean_im : Tensor | None = None
+        Running component-wise means for the current batch.
+    current_m2_re, current_m2_im : Tensor | None = None
+        Welford sums of squared deviations for the current batch.
+    variance_sum_re, variance_sum_im : Tensor | None = None
+        Sums of the real and imaginary variance-of-mean estimates from all completed batches.
+    completed_batches : int = 0
+        Number of complete short-term batches.
+    """
+
+    current_count: int = 0
+
+    current_mean_re: Tensor | None = None
+    current_mean_im: Tensor | None = None
+    current_m2_re: Tensor | None = None
+    current_m2_im: Tensor | None = None
+
+    variance_sum_re: Tensor | None = None
+    variance_sum_im: Tensor | None = None
+
+    completed_batches: int = 0
+
+
+@dataclass(slots=True)
+class GroupAccumulator:
+    """Accumulator for the group of either unshifted or shifted spectral estimates.
+
+    Attributes
+    ----------
+    spectrum_sum : Tensor | None = None
+        Running total sum of the calculated spectra on the active torch device.
+    count : int = 0
+        Number of accumulated spectral estimates.
+    squared_sum : Tensor | None = None
+        Running total squared sum of the real and imaginary parts of the calculated spectra on the
+        active torch device. Real and imaginary parts are squared separately.
+    short_term : :class:`ShortTermUncertaintyState`
+        State used to construct short-term uncertainty estimates. It remains empty in global mode.
+    """
+
+    spectrum_sum: Tensor | None = None
+    count: int = 0
+
+    squared_sum: Tensor | None = None
+
+    short_term: ShortTermUncertaintyState = field(default_factory=ShortTermUncertaintyState)
+
+
+@dataclass(slots=True)
 class SpectrumAccumulator:
     """Data container for the accumulation of spectral estimates.
 
-    Stores the configuration metadata, accumulated hardware states, and error buffers for a specific
-    higher-order auto- or cross-spectrum calculation.
+    Stores the configuration metadata, accumulated hardware states, and uncertainty buffers for a
+    specific higher-order auto- or cross-spectrum calculation.
 
     Attributes
     ----------
@@ -40,38 +97,27 @@ class SpectrumAccumulator:
         Frequency axis associated with the spectrum.
     freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
         Unit of the frequency axis.
-    spectrum_sum_unshifted : torch.Tensor | None
-        Running total sum of the unshifted calculated spectra on the active torch device.
-    spectrum_sum_shifted : torch.Tensor | None
-        Running total sum of the shifted calculated spectra on the active torch device. Only used
-        when interlacing is enabled.
-    squared_sum_unshifted : torch.Tensor | None
-        Running total squared sum of the real and imaginary parts of the unshifted spectra on the
-        active torch device. Real and imaginary parts are squared separately.
-    squared_sum_shifted : torch.Tensor | None
-        Running total squared sum of the real and imaginary parts of the shifted spectra on the
-        active torch device. Real and imaginary parts are squared separately. Only used when
-        interlacing is enabled.
-    chunks_unshifted : int
-        The total number of individual unshifted spectral estimates integrated into
-        ``spectrum_sum_unshifted``.
-    chunks_shifted : int
-        The total number of individual shifted spectral estimates integrated into
-        ``spectrum_sum_shifted``. When interlacing is enabled, this count never exceeds
-        ``chunks_unshifted``.
+    uncertainty_estimation : Literal["global", "short_term"]
+        "global": estimate the standard error based on all spectral estimates. "short_term":
+        estimate a typical local uncertainty for ``m_var`` spectral estimates at a time. At the end
+        all variance-of-mean estimates are averaged before taking the square root.
+    m_var : int
+        Number of spectral estimates per short-term uncertainty batch used at runtime.
+    unshifted : :class:`GroupAccumulator`
+        Accumulator for the unshifted spectral estimates.
+    shifted : :class:`GroupAccumulator`
+        Accumulator for the shifted spectral estimates.
     """
 
     channels: tuple[int, ...]
     freq: np.ndarray
     freq_unit: FrequencyUnits
 
-    spectrum_sum_unshifted: Tensor | None = None
-    spectrum_sum_shifted: Tensor | None = None
-    squared_sum_unshifted: Tensor | None = None
-    squared_sum_shifted: Tensor | None = None
+    uncertainty_estimation: Literal["global", "short_term"]
+    m_var: int
 
-    chunks_unshifted: int = 0
-    chunks_shifted: int = 0
+    unshifted: GroupAccumulator = field(default_factory=GroupAccumulator)
+    shifted: GroupAccumulator = field(default_factory=GroupAccumulator)
 
     @property
     def order(self) -> int:
@@ -86,8 +132,8 @@ class SpectrumAccumulatorStore:
     Stores one :class:`SpectrumAccumulator` per channel tuple. Accumulators are indexed by
     ``channels``, where ``channels`` is a tuple of data-channel indices.
 
-    This class owns collection-level bookkeeping only. Numerical accumulation, error estimation, and
-    finalization are handled elsewhere.
+    This class owns collection-level bookkeeping only. Numerical accumulation, uncertainty
+    estimation, and finalization are handled elsewhere.
 
     Attributes
     ----------
@@ -138,8 +184,102 @@ def initialize_accumulator_store(runtime: RuntimeConfig) -> SpectrumAccumulatorS
     store = SpectrumAccumulatorStore()
     for channels in runtime.spectra_channels:
         freq = np.asarray([0.0]) if len(channels) == 1 else runtime.freq_band
-        store.add(SpectrumAccumulator(channels, freq=freq, freq_unit=runtime.freq_unit))
+        store.add(
+            SpectrumAccumulator(
+                channels,
+                freq=freq,
+                freq_unit=runtime.freq_unit,
+                uncertainty_estimation=runtime.uncertainty_estimation,
+                m_var=runtime.m_var,
+            )
+        )
     return store
+
+
+def _get_group_accumulator(accumulator: SpectrumAccumulator, shifted: bool) -> GroupAccumulator:
+    """Helper to return the specified :class:`GroupAccumulator`. This keeps branching out of the
+    code.
+    """
+
+    return accumulator.shifted if shifted else accumulator.unshifted
+
+
+def _accumulate_global_uncertainty(accumulator: GroupAccumulator, spectrum: Tensor) -> None:
+    """Accumulate the squared sum of :class:`GroupAccumulator`. Real and imaginary squared sums are
+    encoded as one complex number, which should not be interpreted as a complex number.
+    """
+
+    squared = torch.complex(torch.square(spectrum.real), torch.square(spectrum.imag))
+
+    if accumulator.squared_sum is None:
+        accumulator.squared_sum = squared
+    else:
+        accumulator.squared_sum += squared
+
+
+def _complete_short_term_batch(state: ShortTermUncertaintyState, m_var: int) -> None:
+    """Calculate the variance-of-mean for one completed uncertainty batch."""
+
+    assert state.current_m2_re is not None
+    assert state.current_m2_im is not None
+
+    # divide by (n-1) to obtain variance and divide by n to obtain the variance-of-mean
+    denominator = m_var * (m_var - 1)
+
+    variance_re = state.current_m2_re / denominator
+    variance_im = state.current_m2_im / denominator
+
+    if state.variance_sum_re is None:
+        state.variance_sum_re = variance_re.clone()
+        state.variance_sum_im = variance_im.clone()
+    else:
+        assert state.variance_sum_im is not None
+        state.variance_sum_re += variance_re
+        state.variance_sum_im += variance_im
+
+    state.completed_batches += 1
+    state.current_count = 0
+
+
+def _accumulate_short_term_uncertainty(
+    state: ShortTermUncertaintyState, spectrum: Tensor, m_var: int
+) -> None:
+    """One step in Welford's online variance algorithm."""
+
+    state.current_count += 1
+    count = state.current_count
+
+    if count == 1:
+        if state.current_mean_re is None:
+            state.current_mean_re = spectrum.real.clone()
+            state.current_mean_im = spectrum.imag.clone()
+            state.current_m2_re = torch.zeros_like(spectrum.real)
+            state.current_m2_im = torch.zeros_like(spectrum.imag)
+        else:
+            assert state.current_mean_im is not None
+            assert state.current_m2_re is not None
+            assert state.current_m2_im is not None
+
+            state.current_mean_re.copy_(spectrum.real)
+            state.current_mean_im.copy_(spectrum.imag)
+            state.current_m2_re.zero_()
+            state.current_m2_im.zero_()
+    else:
+        assert state.current_mean_re is not None
+        assert state.current_m2_re is not None
+        assert state.current_mean_im is not None
+        assert state.current_m2_im is not None
+
+        delta_re = spectrum.real - state.current_mean_re
+        state.current_mean_re += delta_re / count
+        state.current_m2_re += delta_re * (spectrum.real - state.current_mean_re)
+
+        delta_im = spectrum.imag - state.current_mean_im
+        state.current_mean_im += delta_im / count
+        state.current_m2_im += delta_im * (spectrum.imag - state.current_mean_im)
+
+    if count == m_var:
+        _complete_short_term_batch(state, m_var)
 
 
 def accumulate_spectrum(
@@ -147,10 +287,9 @@ def accumulate_spectrum(
 ) -> None:
     """Accumulate one spectral estimate into the :class:`SpectrumAccumulator`.
 
-    Adds the spectral estimate to the running sum and stores running sums of squared
-    real and imaginary components used later to estimate the standard error of the mean. Spectral
-    estimates and their squared components are accumulated separately for shifted and unshifted
-    data.
+    Adds the spectral estimate to the running sum and updates either global squared sums or
+    short-term Welford states. Spectral estimates and their squared components are accumulated
+    separately for shifted and unshifted data.
 
     Parameters
     ----------
@@ -162,121 +301,217 @@ def accumulate_spectrum(
         Store the estimate in the shifted interlacing group instead of the unshifted group.
     """
 
-    if not shifted:
-        if accumulator.spectrum_sum_unshifted is None:
-            accumulator.spectrum_sum_unshifted = single_spectrum.clone()
-        else:
-            accumulator.spectrum_sum_unshifted += single_spectrum
+    group = _get_group_accumulator(accumulator, shifted)
 
-        if accumulator.squared_sum_unshifted is None:
-            accumulator.squared_sum_unshifted = torch.complex(
-                torch.square(single_spectrum.real), torch.square(single_spectrum.imag)
-            )
-        else:
-            accumulator.squared_sum_unshifted += torch.complex(
-                torch.square(single_spectrum.real), torch.square(single_spectrum.imag)
-            )
-
-        accumulator.chunks_unshifted += 1
-
+    if group.spectrum_sum is None:
+        group.spectrum_sum = single_spectrum.clone()
     else:
-        if accumulator.spectrum_sum_shifted is None:
-            accumulator.spectrum_sum_shifted = single_spectrum.clone()
-        else:
-            accumulator.spectrum_sum_shifted += single_spectrum
+        group.spectrum_sum += single_spectrum
 
-        if accumulator.squared_sum_shifted is None:
-            accumulator.squared_sum_shifted = torch.complex(
-                torch.square(single_spectrum.real), torch.square(single_spectrum.imag)
-            )
-        else:
-            accumulator.squared_sum_shifted += torch.complex(
-                torch.square(single_spectrum.real), torch.square(single_spectrum.imag)
-            )
+    group.count += 1
 
-        accumulator.chunks_shifted += 1
+    if accumulator.uncertainty_estimation == "global":
+        _accumulate_global_uncertainty(group, single_spectrum)
+    elif accumulator.uncertainty_estimation == "short_term":
+        _accumulate_short_term_uncertainty(group.short_term, single_spectrum, accumulator.m_var)
+    else:
+        raise RuntimeError(
+            f"Unknown uncertainty-estimation method {accumulator.uncertainty_estimation!r}."
+        )
 
 
 def _check_accumulator_group(
-    spectrum_sum: Tensor | None,
-    squared_sum: Tensor | None,
-    chunks: int,
-) -> tuple[Tensor, Tensor, int] | None:
+    group: GroupAccumulator, *, uncertainty_estimation: Literal["global", "short_term"], m_var: int
+) -> GroupAccumulator | None:
     """Validate one shifted or unshifted accumulator group.
 
-    Returns ``None`` for a consistently empty group and the validated state otherwise.
+    Returns ``None`` for a consistently empty group and the validated group otherwise.
 
     Raises
     ------
     RuntimeError
-        If the sum, squared sum, and count do not describe a consistent group.
+        If the group state is inconsistent with its configured uncertainty-estimation method.
     """
-    if spectrum_sum is None:
-        if squared_sum is not None or chunks != 0:
-            raise RuntimeError("Spectrum accumulator state is inconsistent.")
+    if uncertainty_estimation not in {"global", "short_term"}:
+        raise RuntimeError(f"Unknown uncertainty-estimation method {uncertainty_estimation!r}.")
+
+    if uncertainty_estimation == "short_term" and m_var < 2:
+        raise RuntimeError("Short-term uncertainty estimation requires m_var >= 2.")
+
+    st_state = group.short_term
+
+    welford_tensors = (
+        st_state.current_mean_re,
+        st_state.current_mean_im,
+        st_state.current_m2_re,
+        st_state.current_m2_im,
+    )
+    variance_tensors = (st_state.variance_sum_re, st_state.variance_sum_im)
+    short_term_tensors = welford_tensors + variance_tensors
+
+    # Validate an empty group.
+    if group.spectrum_sum is None:
+        if (
+            group.count != 0
+            or group.squared_sum is not None
+            or st_state.current_count != 0
+            or st_state.completed_batches != 0
+            or any(tensor is not None for tensor in short_term_tensors)
+        ):
+            raise RuntimeError("Spectrum accumulator group is inconsistent.")
+
         return None
 
-    if squared_sum is None or chunks <= 0:
-        raise RuntimeError("A spectrum accumulator state is inconsistent.")
+    # Validate state shared by both uncertainty-estimation methods.
+    if group.count <= 0:
+        raise RuntimeError("Spectrum accumulator group is inconsistent.")
 
-    return spectrum_sum, squared_sum, chunks
+    expected_shape = group.spectrum_sum.shape
 
+    if uncertainty_estimation == "global":
+        if group.squared_sum is None:
+            raise RuntimeError("Global uncertainty accumulator has no squared-sum state.")
 
-def _finalize_accumulator_group(
-    spectrum_sum: Tensor,
-    squared_sum: Tensor,
-    chunks_processed: int,
-) -> tuple[Tensor, Tensor | None]:
-    """Compute the mean and component-wise standard error for one placement group.
+        if group.squared_sum.shape != expected_shape:
+            raise RuntimeError("Global squared-sum shape does not match the spectrum-sum shape.")
 
-    The real and imaginary components are treated independently. The returned error is ``None``
-    when fewer than two estimates are available.
+        if (
+            st_state.current_count != 0
+            or st_state.completed_batches != 0
+            or any(tensor is not None for tensor in short_term_tensors)
+        ):
+            raise RuntimeError("Short-term state must remain empty in global uncertainty mode.")
 
-    Parameters
-    ----------
-    spectrum_sum : Tensor
-        Sum of the complex spectral estimates.
-    squared_sum : Tensor
-        Complex tensor whose real and imaginary components contain the respective sums of squares.
-    chunks_processed : int
-        Number of estimates represented by both sums.
+        return group
 
-    Returns
-    -------
-    tuple[Tensor, Tensor | None]
-        Group mean and its component-wise standard error.
-    """
-    mean = spectrum_sum / chunks_processed
+    # Short-term mode must not populate the global squared-sum state.
+    if group.squared_sum is not None:
+        raise RuntimeError("Global squared-sum state must remain empty in short-term mode.")
 
-    if chunks_processed < 2:
-        return mean, None
+    expected_batches = group.count // m_var
+    expected_remainder = group.count % m_var
 
-    mean_squared = squared_sum / chunks_processed
-    variance = (chunks_processed / (chunks_processed - 1)) * (
-        mean_squared
-        - torch.complex(
-            torch.square(mean.real),
-            torch.square(mean.imag),
+    if st_state.completed_batches != expected_batches:
+        raise RuntimeError(
+            "Completed short-term batch count is inconsistent with the "
+            "number of accumulated spectra."
         )
+
+    if st_state.current_count != expected_remainder:
+        raise RuntimeError(
+            "Current short-term batch count is inconsistent with the number of accumulated spectra."
+        )
+
+    # A populated short-term group always retains its Welford buffers,
+    # including after a batch has just been completed.
+    if any(tensor is None for tensor in welford_tensors):
+        raise RuntimeError("Populated short-term state is missing Welford buffers.")
+
+    for tensor in welford_tensors:
+        assert tensor is not None
+        if tensor.shape != expected_shape:
+            raise RuntimeError(
+                "Short-term Welford-buffer shape does not match the spectrum-sum shape."
+            )
+
+    if st_state.completed_batches == 0:
+        if any(tensor is not None for tensor in variance_tensors):
+            raise RuntimeError("Short-term variance sums exist without a completed batch.")
+    else:
+        if any(tensor is None for tensor in variance_tensors):
+            raise RuntimeError("Completed short-term batches have no variance-sum state.")
+
+        for tensor in variance_tensors:
+            assert tensor is not None
+            if tensor.shape != expected_shape:
+                raise RuntimeError(
+                    "Short-term variance-sum shape does not match the spectrum-sum shape."
+                )
+
+    return group
+
+
+def _finalize_global_uncertainty(
+    group: GroupAccumulator,
+) -> Tensor | None:
+    """Calculate the component-wise global standard error for one group."""
+    if group.count < 2:
+        return None
+
+    if group.spectrum_sum is None or group.squared_sum is None:
+        raise RuntimeError("Global uncertainty accumulator is inconsistent.")
+
+    mean = group.spectrum_sum / group.count
+    mean_squared = group.squared_sum / group.count
+
+    variance = (group.count / (group.count - 1)) * (
+        mean_squared - torch.complex(torch.square(mean.real), torch.square(mean.imag))
     )
 
     var_re = torch.clamp_min(variance.real, 0.0)
     var_im = torch.clamp_min(variance.imag, 0.0)
 
-    error = torch.complex(
-        torch.sqrt(var_re / chunks_processed),
-        torch.sqrt(var_im / chunks_processed),
+    return torch.complex(torch.sqrt(var_re / group.count), torch.sqrt(var_im / group.count))
+
+
+def _finalize_short_term_uncertainty(
+    state: ShortTermUncertaintyState,
+) -> Tensor | None:
+    """Calculate the component-wise short-term uncertainty from completed batches."""
+    if state.completed_batches == 0:
+        return None
+
+    if state.variance_sum_re is None or state.variance_sum_im is None:
+        raise RuntimeError("Short-term uncertainty accumulator is inconsistent.")
+
+    mean_variance_re = state.variance_sum_re / state.completed_batches
+    mean_variance_im = state.variance_sum_im / state.completed_batches
+
+    return torch.complex(
+        torch.sqrt(torch.clamp_min(mean_variance_re, 0.0)),
+        torch.sqrt(torch.clamp_min(mean_variance_im, 0.0)),
     )
 
-    return mean, error
+
+def _finalize_group_uncertainty(
+    group: GroupAccumulator,
+    uncertainty_estimation: Literal["global", "short_term"],
+) -> Tensor | None:
+    """Finalize one group's configured uncertainty estimate."""
+    if uncertainty_estimation == "global":
+        return _finalize_global_uncertainty(group)
+
+    if uncertainty_estimation == "short_term":
+        return _finalize_short_term_uncertainty(group.short_term)
+
+    raise RuntimeError(f"Unknown uncertainty-estimation method {uncertainty_estimation!r}.")
+
+
+def _combine_group_uncertainties(uncertainties: list[Tensor]) -> Tensor | None:
+    """Combine placement uncertainties using their component-wise maximum."""
+    if not uncertainties:
+        return None
+
+    if len(uncertainties) == 1:
+        return uncertainties[0]
+
+    uncertainty_re = uncertainties[0].real
+    uncertainty_im = uncertainties[0].imag
+
+    for uncertainty in uncertainties[1:]:
+        uncertainty_re = torch.maximum(uncertainty_re, uncertainty.real)
+        uncertainty_im = torch.maximum(uncertainty_im, uncertainty.imag)
+
+    return torch.complex(uncertainty_re, uncertainty_im)
 
 
 def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
     """Create a CPU-backed result from accumulated spectral estimates.
 
-    Shifted and unshifted estimates are combined into one count-weighted mean. Standard errors are
-    computed within each placement group; when both groups provide an error, their real and
-    imaginary components are combined using the component-wise maximum.
+    Shifted and unshifted estimates are combined into one count-weighted
+    spectrum. Uncertainties are calculated separately for each placement
+    group using the configured method. If both groups provide an uncertainty,
+    their component-wise maximum is reported.
 
     Parameters
     ----------
@@ -286,23 +521,25 @@ def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
     Returns
     -------
     SpectrumResult
-        Final mean, frequency metadata, and optional component-wise standard error as NumPy arrays.
+        Final spectrum, frequency metadata, and optional component-wise
+        uncertainty estimate.
 
     Warns
     -----
     RuntimeWarning
-        If no placement group contains at least two estimates and no error can be calculated.
+        If neither placement group contains enough estimates for the
+        configured uncertainty-estimation method.
 
     Raises
     ------
     RuntimeError
-        If no unshifted spectra were accumulated or an accumulator group is inconsistent.
+        If no unshifted spectra were accumulated or an accumulator group
+        is inconsistent.
     """
-
     unshifted_group = _check_accumulator_group(
-        accumulator.spectrum_sum_unshifted,
-        accumulator.squared_sum_unshifted,
-        accumulator.chunks_unshifted,
+        accumulator.unshifted,
+        uncertainty_estimation=accumulator.uncertainty_estimation,
+        m_var=accumulator.m_var,
     )
 
     if unshifted_group is None:
@@ -310,56 +547,67 @@ def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
             f"Cannot finalize channels {accumulator.channels}: no spectra were accumulated."
         )
 
-    groups = [unshifted_group]
+    groups: list[GroupAccumulator] = [unshifted_group]
 
     shifted_group = _check_accumulator_group(
-        accumulator.spectrum_sum_shifted,
-        accumulator.squared_sum_shifted,
-        accumulator.chunks_shifted,
+        accumulator.shifted,
+        uncertainty_estimation=accumulator.uncertainty_estimation,
+        m_var=accumulator.m_var,
     )
+
     if shifted_group is not None:
         groups.append(shifted_group)
 
-    total_chunks = 0
-    total_spectrum = groups[0][0].clone().zero_()
+    if unshifted_group.spectrum_sum is None:
+        raise RuntimeError("Unshifted spectrum accumulator is inconsistent.")
 
-    errors: list[Tensor] = []
+    total_spectrum = unshifted_group.spectrum_sum.clone()
+    total_count = unshifted_group.count
 
-    for spectrum_sum, squared_sum, chunks_processed in groups:
-        total_spectrum += spectrum_sum
-        total_chunks += chunks_processed
+    for group in groups[1:]:
+        if group.spectrum_sum is None:
+            raise RuntimeError("Spectrum accumulator group is inconsistent.")
 
-        _, error = _finalize_accumulator_group(
-            spectrum_sum=spectrum_sum, squared_sum=squared_sum, chunks_processed=chunks_processed
+        total_spectrum += group.spectrum_sum
+        total_count += group.count
+
+    spectrum = (total_spectrum / total_count).cpu().resolve_conj().numpy()
+
+    uncertainties: list[Tensor] = []
+
+    for group in groups:
+        uncertainty = _finalize_group_uncertainty(
+            group, accumulator.uncertainty_estimation
         )
-        if error is not None:
-            errors.append(error)
 
-    spectrum = (total_spectrum / total_chunks).cpu().resolve_conj().numpy()
+        if uncertainty is not None:
+            uncertainties.append(uncertainty)
 
-    if not errors:
-        spectrum_error = None
-        warnings.warn(
-            "Need at least two spectral estimates for an error estimation.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-    elif len(errors) == 1:
-        spectrum_error = errors[0].cpu().resolve_conj().numpy()
+    combined_uncertainty = _combine_group_uncertainties(uncertainties)
+
+    if combined_uncertainty is None:
+        spectrum_uncertainty = None
+
+        if accumulator.uncertainty_estimation == "global":
+            message = (
+                "Need at least two spectral estimates in one placement "
+                "group for global uncertainty estimation."
+            )
+        else:
+            message = (
+                f"Need at least one complete batch of m_var="
+                f"{accumulator.m_var} spectral estimates in one placement "
+                "group for short-term uncertainty estimation."
+            )
+
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
     else:
-        error_re = errors[0].real
-        error_im = errors[0].imag
-
-        for error in errors[1:]:
-            error_re = torch.maximum(error_re, error.real)
-            error_im = torch.maximum(error_im, error.imag)
-
-        spectrum_error = torch.complex(error_re, error_im).cpu().resolve_conj().numpy()
+        spectrum_uncertainty = combined_uncertainty.cpu().resolve_conj().numpy()
 
     return SpectrumResult(
         channels=accumulator.channels,
         freq=accumulator.freq,
         freq_unit=accumulator.freq_unit,
         spectrum=spectrum,
-        spectrum_error=spectrum_error,
+        spectrum_uncertainty=spectrum_uncertainty,
     )

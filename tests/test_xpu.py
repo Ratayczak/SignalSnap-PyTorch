@@ -52,11 +52,11 @@ def test_xpu_spectra_match_cpu_in_single_precision():
             atol=2e-5,
             equal_nan=True,
         )
-        assert xpu_result.spectrum_error is not None
-        assert cpu_result.spectrum_error is not None
+        assert xpu_result.spectrum_uncertainty is not None
+        assert cpu_result.spectrum_uncertainty is not None
         np.testing.assert_allclose(
-            xpu_result.spectrum_error,
-            cpu_result.spectrum_error,
+            xpu_result.spectrum_uncertainty,
+            cpu_result.spectrum_uncertainty,
             rtol=2e-4,
             atol=2e-5,
             equal_nan=True,
