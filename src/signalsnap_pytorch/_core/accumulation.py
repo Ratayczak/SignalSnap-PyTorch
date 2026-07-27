@@ -33,9 +33,11 @@ class ShortTermUncertaintyState:
         Number of estimates incorporated into the current incomplete batch.
         Reset to zero whenever a batch is completed.
     current_mean_re, current_mean_im : Tensor | None = None
-        Running component-wise means for the current batch.
+        Running component-wise means for the current batch. When ``current_count`` is zero,
+        populated buffers retain the means of the most recently completed batch.
     current_m2_re, current_m2_im : Tensor | None = None
-        Welford sums of squared deviations for the current batch.
+        Sums of squared deviations for the current batch. When ``current_count`` is zero,
+        populated buffers retain the values of the most recently completed batch.
     variance_sum_re, variance_sum_im : Tensor | None = None
         Sums of the real and imaginary variance-of-mean estimates from all completed batches.
     completed_batches : int = 0
@@ -223,6 +225,21 @@ def _accumulate_global_uncertainty(
         accumulator.squared_sum += squared_sum
 
 
+def _batch_mean_m2(values: Tensor, *, dim: int = 0) -> tuple[Tensor, Tensor]:
+    """Return component-wise mean and M2 over one dimension."""
+
+    count = values.shape[dim]
+
+    if values.device.type == "cpu":
+        mean = values.mean(dim=dim)
+        deviations = values - mean.unsqueeze(dim)
+        m2 = torch.square(deviations).sum(dim=dim)
+        return mean, m2
+
+    variance, mean = torch.var_mean(values, dim=dim, correction=0)
+    return mean, variance * count
+
+
 def _complete_short_term_batch(state: ShortTermUncertaintyState, m_var: int) -> None:
     """Calculate the variance-of-mean for one completed uncertainty batch."""
 
@@ -247,45 +264,116 @@ def _complete_short_term_batch(state: ShortTermUncertaintyState, m_var: int) -> 
     state.current_count = 0
 
 
-def _accumulate_short_term_uncertainty(
-    state: ShortTermUncertaintyState, spectrum: Tensor, m_var: int
+def _merge_short_term_segment(
+    state: ShortTermUncertaintyState,
+    spectral_estimates: Tensor,
+    m_var: int,
 ) -> None:
-    """One step in Welford's online variance algorithm."""
+    segment_count = spectral_estimates.shape[0]
 
-    state.current_count += 1
-    count = state.current_count
+    if segment_count == 0:
+        return
 
-    if count == 1:
+    if state.current_count + segment_count > m_var:
+        raise RuntimeError("Short-term segment exceeds the current m_var batch.")
+
+    segment_mean_re, segment_m2_re = _batch_mean_m2(spectral_estimates.real)
+    segment_mean_im, segment_m2_im = _batch_mean_m2(spectral_estimates.imag)
+
+    previous_count = state.current_count
+    combined_count = previous_count + segment_count
+
+    if previous_count == 0:
         if state.current_mean_re is None:
-            state.current_mean_re = spectrum.real.clone()
-            state.current_mean_im = spectrum.imag.clone()
-            state.current_m2_re = torch.zeros_like(spectrum.real)
-            state.current_m2_im = torch.zeros_like(spectrum.imag)
+            state.current_mean_re = segment_mean_re.clone()
+            state.current_mean_im = segment_mean_im.clone()
+            state.current_m2_re = segment_m2_re.clone()
+            state.current_m2_im = segment_m2_im.clone()
         else:
             assert state.current_mean_im is not None
             assert state.current_m2_re is not None
             assert state.current_m2_im is not None
 
-            state.current_mean_re.copy_(spectrum.real)
-            state.current_mean_im.copy_(spectrum.imag)
-            state.current_m2_re.zero_()
-            state.current_m2_im.zero_()
+            state.current_mean_re.copy_(segment_mean_re)
+            state.current_mean_im.copy_(segment_mean_im)
+            state.current_m2_re.copy_(segment_m2_re)
+            state.current_m2_im.copy_(segment_m2_im)
     else:
         assert state.current_mean_re is not None
-        assert state.current_m2_re is not None
         assert state.current_mean_im is not None
+        assert state.current_m2_re is not None
         assert state.current_m2_im is not None
 
-        delta_re = spectrum.real - state.current_mean_re
-        state.current_mean_re += delta_re / count
-        state.current_m2_re += delta_re * (spectrum.real - state.current_mean_re)
+        correction = previous_count * segment_count / combined_count
+        weight = segment_count / combined_count
 
-        delta_im = spectrum.imag - state.current_mean_im
-        state.current_mean_im += delta_im / count
-        state.current_m2_im += delta_im * (spectrum.imag - state.current_mean_im)
+        delta_re = segment_mean_re - state.current_mean_re
+        state.current_mean_re += delta_re * weight
+        state.current_m2_re += segment_m2_re + torch.square(delta_re) * correction
 
-    if count == m_var:
+        delta_im = segment_mean_im - state.current_mean_im
+        state.current_mean_im += delta_im * weight
+        state.current_m2_im += segment_m2_im + torch.square(delta_im) * correction
+
+    state.current_count = combined_count
+
+    if combined_count == m_var:
         _complete_short_term_batch(state, m_var)
+
+
+def _accumulate_complete_short_term_batches(
+    state: ShortTermUncertaintyState,
+    spectral_estimates: Tensor,
+    m_var: int,
+) -> None:
+    group_count = spectral_estimates.shape[0] // m_var
+
+    if group_count == 0:
+        return
+
+    grouped = spectral_estimates.reshape(group_count, m_var, *spectral_estimates.shape[1:])
+
+    mean_re, m2_re = _batch_mean_m2(grouped.real, dim=1)
+    mean_im, m2_im = _batch_mean_m2(grouped.imag, dim=1)
+
+    # M2 / (m_var - 1) is the sample variance. Dividing once more by m_var gives the variance of the
+    # mean.
+    denominator = m_var * (m_var - 1)
+    variance_sum_re = (m2_re / denominator).sum(dim=0)
+    variance_sum_im = (m2_im / denominator).sum(dim=0)
+
+    if state.variance_sum_re is None:
+        state.variance_sum_re = variance_sum_re.clone()
+        state.variance_sum_im = variance_sum_im.clone()
+    else:
+        assert state.variance_sum_im is not None
+        state.variance_sum_re += variance_sum_re
+        state.variance_sum_im += variance_sum_im
+
+    state.completed_batches += group_count
+    state.current_count = 0
+
+    # Preserve valid Welford buffers. _check_accumulator_group expects
+    # these to exist after any estimates have been accumulated.
+    last_mean_re = mean_re[-1]
+    last_mean_im = mean_im[-1]
+    last_m2_re = m2_re[-1]
+    last_m2_im = m2_im[-1]
+
+    if state.current_mean_re is None:
+        state.current_mean_re = last_mean_re.clone()
+        state.current_mean_im = last_mean_im.clone()
+        state.current_m2_re = last_m2_re.clone()
+        state.current_m2_im = last_m2_im.clone()
+    else:
+        assert state.current_mean_im is not None
+        assert state.current_m2_re is not None
+        assert state.current_m2_im is not None
+
+        state.current_mean_re.copy_(last_mean_re)
+        state.current_mean_im.copy_(last_mean_im)
+        state.current_m2_re.copy_(last_m2_re)
+        state.current_m2_im.copy_(last_m2_im)
 
 
 def _accumulate_short_term_uncertainty_batch(
@@ -293,9 +381,38 @@ def _accumulate_short_term_uncertainty_batch(
     spectral_estimates: Tensor,
     m_var: int,
 ) -> None:
-    """Accumulate a calculation batch in estimate order using Welford's algorithm."""
-    for spectral_estimate in spectral_estimates:
-        _accumulate_short_term_uncertainty(state, spectral_estimate, m_var)
+    """Accumulate complete groups vectorially and merge partial groups with Welford state."""
+    cursor = 0
+    estimate_count = spectral_estimates.shape[0]
+
+    # 1. Complete an existing incomplete uncertainty group.
+    if state.current_count > 0:
+        available = m_var - state.current_count
+        prefix_count = min(available, estimate_count)
+
+        _merge_short_term_segment(state, spectral_estimates[:prefix_count], m_var)
+        cursor += prefix_count
+
+        # The incoming batch was entirely consumed without completing
+        # the current uncertainty group.
+        if cursor == estimate_count:
+            return
+
+    # 2. Process all complete uncertainty groups simultaneously.
+    remaining = estimate_count - cursor
+    complete_count = (remaining // m_var) * m_var
+
+    if complete_count > 0:
+        _accumulate_complete_short_term_batches(
+            state,
+            spectral_estimates[cursor : cursor + complete_count],
+            m_var,
+        )
+        cursor += complete_count
+
+    # 3. Store the trailing incomplete uncertainty group.
+    if cursor < estimate_count:
+        _merge_short_term_segment(state, spectral_estimates[cursor:], m_var)
 
 
 def accumulate_spectral_estimates(

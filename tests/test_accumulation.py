@@ -6,6 +6,7 @@ import torch
 
 from signalsnap_pytorch._core.accumulation import (
     SpectrumAccumulator,
+    _batch_mean_m2,
     accumulate_spectral_estimates,
     finalize_result,
 )
@@ -175,6 +176,37 @@ def test_global_batch_accumulates_sums_and_componentwise_squared_sums():
         ),
     )
     assert accumulator.unshifted.count == 2
+
+
+def test_batch_mean_m2_cpu_uses_two_pass_reduction(monkeypatch):
+    values = torch.tensor(
+        [
+            [[1.0, 3.0], [5.0, 7.0], [9.0, 11.0]],
+            [[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]],
+        ],
+        dtype=torch.float64,
+    )
+
+    def reject_var_mean(*args, **kwargs):
+        raise AssertionError("The CPU path must not call torch.var_mean.")
+
+    monkeypatch.setattr(torch, "var_mean", reject_var_mean)
+
+    mean, m2 = _batch_mean_m2(values, dim=1)
+
+    expected_mean = torch.tensor([[5.0, 7.0], [6.0, 8.0]], dtype=torch.float64)
+    expected_m2 = torch.full((2, 2), 32.0, dtype=torch.float64)
+    torch.testing.assert_close(mean, expected_mean)
+    torch.testing.assert_close(m2, expected_m2)
+
+
+def test_batch_mean_m2_non_cpu_path_honors_reduction_dimension():
+    values = torch.empty((2, 3, 4), device="meta")
+
+    mean, m2 = _batch_mean_m2(values, dim=1)
+
+    assert mean.shape == (2, 4)
+    assert m2.shape == (2, 4)
 
 
 def test_batched_accumulation_rejects_an_empty_batch():
@@ -417,7 +449,73 @@ def test_short_term_finalization_without_complete_batch_warns_and_returns_no_unc
     assert accumulator.unshifted.short_term.completed_batches == 0
 
 
-def test_short_term_welford_accumulation_is_stable_for_large_offsets():
+def test_short_term_batch_handles_prefix_complete_groups_and_suffix():
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="short_term",
+        m_var=3,
+    )
+    estimates = torch.tensor(
+        [
+            1 + 2j,
+            2 + 4j,
+            4 + 8j,
+            10 + 1j,
+            14 + 3j,
+            20 + 7j,
+            30 + 5j,
+            35 + 9j,
+            41 + 15j,
+            50 + 6j,
+            58 + 12j,
+            68 + 20j,
+            100 + 30j,
+        ],
+        dtype=torch.complex128,
+    ).unsqueeze(1)
+
+    # The second call first completes the existing group, then processes
+    # three complete groups and finally retains one estimate as a suffix.
+    accumulate_spectral_estimates(accumulator, estimates[:2])
+    accumulate_spectral_estimates(accumulator, estimates[2:])
+
+    state = accumulator.unshifted.short_term
+    complete_groups = estimates[:12].reshape(4, 3, 1)
+    expected_variance_sum_re = (
+        complete_groups.real.var(dim=1, correction=1) / 3
+    ).sum(dim=0)
+    expected_variance_sum_im = (
+        complete_groups.imag.var(dim=1, correction=1) / 3
+    ).sum(dim=0)
+
+    assert accumulator.unshifted.count == 13
+    assert state.completed_batches == 4
+    assert state.current_count == 1
+    torch.testing.assert_close(state.variance_sum_re, expected_variance_sum_re)
+    torch.testing.assert_close(state.variance_sum_im, expected_variance_sum_im)
+    torch.testing.assert_close(state.current_mean_re, estimates[-1].real)
+    torch.testing.assert_close(state.current_mean_im, estimates[-1].imag)
+    torch.testing.assert_close(state.current_m2_re, torch.zeros(1, dtype=torch.float64))
+    torch.testing.assert_close(state.current_m2_im, torch.zeros(1, dtype=torch.float64))
+
+
+@pytest.mark.parametrize(
+    ("batch_slices", "rtol"),
+    [
+        pytest.param(((0, 4),), 1e-12, id="vectorized-complete-group"),
+        pytest.param(((0, 3), (3, 4)), 2e-5, id="parallel-welford-merge"),
+        pytest.param(
+            ((0, 1), (1, 2), (2, 3), (3, 4)),
+            2e-5,
+            id="singleton-segments",
+        ),
+    ],
+)
+def test_short_term_welford_accumulation_is_stable_for_large_offsets(
+    batch_slices,
+    rtol,
+):
     accumulator = make_accumulator(
         channels=(0,),
         frequency_points=1,
@@ -425,19 +523,28 @@ def test_short_term_welford_accumulation_is_stable_for_large_offsets():
         m_var=4,
     )
     base = 1e12
+    estimates = torch.tensor(
+        [
+            [(base - 1) + 1j * (2 * base - 2)],
+            [(base + 1) + 1j * (2 * base + 2)],
+            [(base - 1) + 1j * (2 * base - 2)],
+            [(base + 1) + 1j * (2 * base + 2)],
+        ],
+        dtype=torch.complex128,
+    )
 
-    for re_offset, im_offset in ((-1, -2), (1, 2), (-1, -2), (1, 2)):
-        value = (base + re_offset) + 1j * (2 * base + im_offset)
-        accumulate_spectrum(
-            accumulator,
-            torch.tensor([value], dtype=torch.complex128),
-        )
+    for start, stop in batch_slices:
+        accumulate_spectral_estimates(accumulator, estimates[start:stop])
 
     result = finalize_result(accumulator)
 
     assert result.spectrum_uncertainty is not None
     expected = np.sqrt(1 / 3) + 1j * np.sqrt(4 / 3)
-    np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([expected]), rtol=1e-12)
+    np.testing.assert_allclose(
+        result.spectrum_uncertainty,
+        np.asarray([expected]),
+        rtol=rtol,
+    )
 
 
 def test_finalize_result_rejects_empty_accumulator():

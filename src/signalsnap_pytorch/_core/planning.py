@@ -72,7 +72,8 @@ class RuntimeConfig:
         when enough data is available.
     spectral_estimates_per_batch: int
         Number of spectral estimates calculated in parallel. This will speed up the calculation but
-        increase the memory demands on the specified torch device.
+        increase the memory demands on the specified torch device. In short-term mode, a batch that
+        can hold at least one complete uncertainty group is reduced to a multiple of ``m_var``.
     interlacing : bool
         Compute additional spectral estimates for windows shifted by half a window size, to
         compensate the low weight of data points produced by the window function near the original
@@ -511,6 +512,12 @@ def build_runtime_config(
             stacklevel=3,
         )
 
+    # Align calculation batches with complete short-term uncertainty groups when possible.
+    batch_size = spectrum_config.spectral_estimates_per_batch
+
+    if spectrum_config.uncertainty_estimation == "short_term" and batch_size >= m_var:
+        batch_size -= batch_size % m_var
+
     return RuntimeConfig(
         active_data_channels=active_data_channels,
         spectra_channels=tuple(spectra_channels),
@@ -530,7 +537,7 @@ def build_runtime_config(
         complex_dtype=complex_dtype,
         device=device,
         spectral_estimates=spectral_estimates,
-        spectral_estimates_per_batch=spectrum_config.spectral_estimates_per_batch,
+        spectral_estimates_per_batch=batch_size,
         interlacing=spectrum_config.interlacing,
         old_window=spectrum_config.old_window,
     )

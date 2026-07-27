@@ -120,6 +120,62 @@ def test_runtime_config_propagates_short_term_uncertainty_configuration():
     assert runtime.spectral_estimates_per_batch == 2
 
 
+@pytest.mark.parametrize(
+    (
+        "uncertainty_estimation",
+        "configured_batch_size",
+        "expected_batch_size",
+    ),
+    [
+        pytest.param("short_term", 8, 6, id="short-term-rounded-down"),
+        pytest.param("short_term", 6, 6, id="short-term-already-aligned"),
+        pytest.param("short_term", 2, 2, id="short-term-smaller-than-m-var"),
+        pytest.param("global", 8, 8, id="global-unchanged"),
+    ],
+)
+def test_runtime_config_aligns_short_term_batch_size_with_m_var(
+    uncertainty_estimation,
+    configured_batch_size,
+    expected_batch_size,
+):
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.125,
+        m=4,
+        uncertainty_estimation=uncertainty_estimation,
+        m_var=3,
+        spectral_estimates_max=8,
+        spectral_estimates_per_batch=configured_batch_size,
+    )
+    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.spectral_estimates_per_batch == expected_batch_size
+    assert spectrum_config.spectral_estimates_per_batch == configured_batch_size
+
+
+def test_runtime_config_aligns_batch_size_with_reduced_m_var():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.125,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=10,
+        spectral_estimates_max=3,
+        spectral_estimates_per_batch=8,
+    )
+    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+
+    with pytest.warns(UserWarning, match="using m_var=3 instead"):
+        runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+
+    assert runtime.m_var == 3
+    assert runtime.spectral_estimates_per_batch == 6
+
+
 def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
     spectrum_config = SpectrumConfig(
         f_min=0.0,
@@ -317,6 +373,29 @@ def test_window_slices_respect_interlacing(
     assert runtime.interlacing is interlacing
     assert runtime.spectral_estimates == expected_spectral_estimates
     assert list(iter_window_slices(runtime)) == expected_slices
+
+
+def test_short_term_batch_alignment_is_applied_separately_to_each_placement():
+    spectrum_config = SpectrumConfig(
+        f_min=0.0,
+        f_max=0.5,
+        df=0.125,
+        m=4,
+        uncertainty_estimation="short_term",
+        m_var=3,
+        spectral_estimates_max=8,
+        spectral_estimates_per_batch=8,
+        interlacing=True,
+    )
+    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+
+    runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+    slices = list(iter_window_slices(runtime))
+
+    assert [estimate_count for _, _, estimate_count, _ in slices] == [6, 2, 6, 2]
+    assert [shifted for _, _, _, shifted in slices] == [False, False, True, True]
+    assert sum(estimate_count for _, _, estimate_count, shifted in slices if not shifted) == 8
+    assert sum(estimate_count for _, _, estimate_count, shifted in slices if shifted) == 8
 
 
 def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_masked():

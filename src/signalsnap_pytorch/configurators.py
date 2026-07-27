@@ -239,9 +239,11 @@ class SpectrumConfig(BaseModel):
         less than the number of unshifted estimates if the final shifted windows do not fit. Must be
         positive.
     spectral_estimates_per_batch : int = 1
-        Number of spectral estimates calculated in parallel. This will speed up the calculation but
-        increase the memory demands on the specified torch device. The final calculation batch may
-        contain fewer estimates. Must be a positive integer.
+        Maximum number of spectral estimates calculated in parallel. This will speed up the
+        calculation but increase the memory demands on the specified torch device. The final
+        calculation batch may contain fewer estimates. In short-term mode, a batch that can hold at
+        least one complete uncertainty group is reduced to a multiple of ``m_var``. Must be a
+        positive integer.
     interlacing : bool = False
         Compute additional spectral estimates for windows shifted by half a window size, to
         compensate the low weight of data points produced by the window function near the original
