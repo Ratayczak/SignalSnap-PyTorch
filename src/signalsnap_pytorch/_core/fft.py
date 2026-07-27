@@ -172,7 +172,7 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
     Parameters
     ----------
     chunk : Tensor
-        Real-valued signal chunk with shape ``(m, N)``.
+        Real-valued signal chunk with shape ``(B, m, N)``.
     window : Tensor
         Window tensor with shape ``(N,)``.
     runtime : RuntimeConfig
@@ -181,11 +181,11 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
     Returns
     -------
     Tensor
-        Shifted complex Fourier coefficients scaled by ``runtime.dt``, with shape ``(m, N)``.
+        Shifted complex Fourier coefficients scaled by ``runtime.dt``, with shape ``(B, m, N)``.
     """
 
-    coeffs = torch.fft.ifft(window * chunk, dim=1, norm="forward")
-    coeffs = torch.fft.fftshift(coeffs, dim=1)
+    coeffs = torch.fft.ifft(window * chunk, dim=-1, norm="forward")
+    coeffs = torch.fft.fftshift(coeffs, dim=-1)
 
     return coeffs * runtime.dt
 
@@ -230,41 +230,47 @@ def prepare_window(runtime: RuntimeConfig) -> WindowBuffer:
     )
 
 
-def reshape_window_chunk(chunk: np.ndarray, runtime: RuntimeConfig) -> np.ndarray:
+def reshape_window_chunk(
+    chunk: np.ndarray,
+    runtime: RuntimeConfig,
+    estimate_count: int,
+) -> np.ndarray:
     """Reshape one flat signal slice into the window batch used by the FFT.
 
     Parameters
     ----------
     chunk : np.ndarray
-        One-dimensional signal slice with shape ``(m * N,)``, where ``m = runtime.m`` and
-        ``N = runtime.window_points``.
+        One-dimensional signal slice with shape ``(B * m * N,)``, where ``B=estimate_count``,
+        ``m = runtime.m`` and ``N = runtime.window_points``.
     runtime : RuntimeConfig
         Resolved window count and window length.
+    estimate_count : int
+        Number of spectral estimates represented by ``chunk``.
 
     Returns
     -------
     np.ndarray
-        Reshaped chunk with shape ``(m, N)``.
+        Reshaped chunk with shape ``(B, m, N)``.
 
     Raises
     ------
     ValueError
-        If ``chunk`` does not contain exactly ``m * N`` samples.
+        If ``chunk`` does not contain exactly ``B * m * N`` samples.
     """
 
-    expected_size = runtime.window_points * runtime.m
+    expected_size = estimate_count * runtime.window_points * runtime.m
 
     if chunk.shape[0] != expected_size:
         raise ValueError(f"Expected chunk with {expected_size} samples, got {chunk.shape[0]}.")
 
-    return chunk.reshape(runtime.m, runtime.window_points)
+    return chunk.reshape(estimate_count, runtime.m, runtime.window_points)
 
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:
     """Convert a NumPy array to a torch tensor using the runtime dtype and device.
 
     The input shape is preserved. In the main calculation pipeline this is typically called with a
-    reshaped signal chunk of shape ``(m, N)``.
+    reshaped signal chunk of shape ``(B, m, N)``.
 
     Parameters
     ----------

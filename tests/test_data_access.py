@@ -275,9 +275,8 @@ def test_open_channels_rejects_invalid_hdf5_selection(hdf5_file, selection, exce
         dt=1.0,
     )
 
-    with pytest.raises(exception, match=message):
-        with _open_all_channels(config):
-            pass
+    with pytest.raises(exception, match=message), _open_all_channels(config):
+        pass
 
 
 def test_open_channels_rejects_missing_dataset(hdf5_file):
@@ -287,9 +286,8 @@ def test_open_channels_rejects_missing_dataset(hdf5_file):
         dt=1.0,
     )
 
-    with pytest.raises(KeyError, match="does not exist"):
-        with _open_all_channels(config):
-            pass
+    with pytest.raises(KeyError, match="does not exist"), _open_all_channels(config):
+        pass
 
 
 def test_open_channels_rejects_missing_file(tmp_path):
@@ -304,9 +302,8 @@ def test_open_channels_rejects_missing_file(tmp_path):
         dt=1.0,
     )
 
-    with pytest.raises(OSError):
-        with _open_all_channels(config):
-            pass
+    with pytest.raises(OSError), _open_all_channels(config):
+        pass
 
 
 def test_open_channels_rejects_group_instead_of_dataset(tmp_path):
@@ -318,9 +315,8 @@ def test_open_channels_rejects_group_instead_of_dataset(tmp_path):
         dt=1.0,
     )
 
-    with pytest.raises(TypeError, match="is not a dataset"):
-        with _open_all_channels(config):
-            pass
+    with pytest.raises(TypeError, match="is not a dataset"), _open_all_channels(config):
+        pass
 
 
 @pytest.mark.parametrize(
@@ -339,9 +335,8 @@ def test_open_channels_rejects_unsupported_dataset_dtype(tmp_path, values, messa
         dt=1.0,
     )
 
-    with pytest.raises(TypeError, match=message):
-        with _open_all_channels(config):
-            pass
+    with pytest.raises(TypeError, match=message), _open_all_channels(config):
+        pass
 
 
 def test_boolean_hdf5_dataset_is_supported(tmp_path):

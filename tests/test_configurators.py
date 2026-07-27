@@ -26,6 +26,31 @@ def test_spectrum_config_defaults_to_global_uncertainty_estimation():
     assert config.m_var == 10
 
 
+def test_spectrum_config_defaults_to_one_spectral_estimate_per_batch():
+    assert SpectrumConfig().spectral_estimates_per_batch == 1
+
+
+def test_spectrum_config_accepts_multiple_spectral_estimates_per_batch():
+    assert SpectrumConfig(spectral_estimates_per_batch=4).spectral_estimates_per_batch == 4
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "expected_error"),
+    [
+        pytest.param(0, ValidationError, id="zero"),
+        pytest.param(-1, ValidationError, id="negative"),
+        pytest.param(1.5, ValidationError, id="non-integer"),
+        pytest.param(True, TypeError, id="boolean"),
+    ],
+)
+def test_spectrum_config_rejects_invalid_spectral_estimates_per_batch(
+    batch_size,
+    expected_error,
+):
+    with pytest.raises(expected_error, match="spectral_estimates_per_batch"):
+        SpectrumConfig(spectral_estimates_per_batch=batch_size)
+
+
 def test_spectrum_config_accepts_short_term_uncertainty_estimation():
     config = SpectrumConfig(uncertainty_estimation="short_term", m_var=4)
 

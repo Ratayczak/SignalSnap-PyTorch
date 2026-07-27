@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
-from tests._helpers import align_legacy_spectrum_region
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, align_legacy_spectrum_region
 
 AUTO_CHANNELS = [
     (0,),
@@ -67,6 +67,7 @@ def _build_spectrum_config(name: str, channels, legacy_freqs) -> SpectrumConfig:
             f_max=float(legacy_s3_freq[-1]),
             device="cpu",
             df=legacy_s3_freq[1] - legacy_s3_freq[0],
+            spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
             interlacing=True,
             old_window=True,
         )
@@ -77,6 +78,7 @@ def _build_spectrum_config(name: str, channels, legacy_freqs) -> SpectrumConfig:
             f_max=0.25,
             device="cpu",
             df=0.5 / 99,
+            spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
             interlacing=True,
             old_window=True,
         )
@@ -88,6 +90,7 @@ def _build_spectrum_config(name: str, channels, legacy_freqs) -> SpectrumConfig:
             f_max=float(legacy_s3_freq[-1]),
             device="cpu",
             df=legacy_s3_freq[1] - legacy_s3_freq[0],
+            spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
             interlacing=True,
             old_window=True,
         )

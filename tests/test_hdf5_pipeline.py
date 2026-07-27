@@ -2,7 +2,7 @@ import h5py
 import numpy as np
 
 from signalsnap_pytorch import DataConfig, HDF5Channel, SpectrumConfig, calculate_spectra
-
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
 
 REQUESTED_SPECTRA = [
     (0,),
@@ -85,6 +85,7 @@ def test_hdf5_and_mixed_channels_match_eager_array_pipeline(tmp_path):
         df=0.625,
         m=4,
         spectral_estimates_max=3,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
         interlacing=True,
     )
 
@@ -120,6 +121,7 @@ def test_pipeline_does_not_open_unrequested_hdf5_channel(tmp_path):
         f_max=0.5,
         df=0.125,
         m=4,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     )
 
     result_store = calculate_spectra(

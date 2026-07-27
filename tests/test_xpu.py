@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
-
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
 
 _XPU_AVAILABLE = getattr(torch, "xpu", None) is not None and torch.xpu.is_available()
 
@@ -24,6 +24,7 @@ def test_xpu_spectra_match_cpu_in_single_precision():
         "m": 5,
         "precision": "single",
         "spectral_estimates_max": 3,
+        "spectral_estimates_per_batch": TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     }
     cpu_results = calculate_spectra(
         data_config,

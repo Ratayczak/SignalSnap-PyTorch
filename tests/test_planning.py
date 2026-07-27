@@ -8,12 +8,13 @@ from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
 from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
+    _resolve_device,
     build_runtime_config,
     iter_window_slices,
     resolve_channels,
     resolve_frequencies,
-    _resolve_device,
 )
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
 
 auto_spectra = [(0,), (0, 0)]
 
@@ -106,6 +107,7 @@ def test_runtime_config_propagates_short_term_uncertainty_configuration():
         m=4,
         uncertainty_estimation="short_term",
         m_var=3,
+        spectral_estimates_per_batch=2,
         spectral_estimates_max=None,
     )
     data_config = DataConfig(channels=(np.ones(256),), dt=1.0)
@@ -115,6 +117,7 @@ def test_runtime_config_propagates_short_term_uncertainty_configuration():
     assert runtime.uncertainty_estimation == "short_term"
     assert runtime.m_var == 3
     assert runtime.spectral_estimates == 4
+    assert runtime.spectral_estimates_per_batch == 2
 
 
 def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
@@ -220,6 +223,7 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
         "frequency_points",
         "f_max",
         "m",
+        "spectral_estimates_per_batch",
         "interlacing",
         "expected_slices",
         "expected_spectral_estimates",
@@ -230,8 +234,9 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
             9,
             0.5,
             4,
+            2,
             True,
-            [(0, 64, False), (64, 128, False), (8, 72, True), (72, 136, True)],
+            [(0, 128, 2, False), (8, 136, 2, True)],
             2,
             id="even-window-interlacing-enabled",
         ),
@@ -240,8 +245,9 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
             9,
             0.5,
             4,
+            3,
             False,
-            [(0, 64, False), (64, 128, False)],
+            [(0, 128, 2, False)],
             2,
             id="even-window-interlacing-disabled",
         ),
@@ -250,8 +256,9 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
             6,
             1 / 3,
             3,
+            2,
             True,
-            [(0, 45, False), (45, 90, False), (7, 52, True)],
+            [(0, 90, 2, False), (7, 52, 1, True)],
             2,
             id="odd-window-before-second-shifted-estimate",
         ),
@@ -260,10 +267,26 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
             6,
             1 / 3,
             3,
+            3,
             True,
-            [(0, 45, False), (45, 90, False), (7, 52, True), (52, 97, True)],
+            [(0, 90, 2, False), (7, 97, 2, True)],
             2,
             id="odd-window-at-second-shifted-estimate",
+        ),
+        pytest.param(
+            320,
+            9,
+            0.5,
+            4,
+            2,
+            False,
+            [
+                (0, 128, 2, False),
+                (128, 256, 2, False),
+                (256, 320, 1, False),
+            ],
+            5,
+            id="incomplete-final-batch",
         ),
     ],
 )
@@ -272,6 +295,7 @@ def test_window_slices_respect_interlacing(
     frequency_points,
     f_max,
     m,
+    spectral_estimates_per_batch,
     interlacing,
     expected_slices,
     expected_spectral_estimates,
@@ -282,6 +306,7 @@ def test_window_slices_respect_interlacing(
         f_max=f_max,
         df=df,
         m=m,
+        spectral_estimates_per_batch=spectral_estimates_per_batch,
         spectral_estimates_max=None,
         interlacing=interlacing,
     )
@@ -301,6 +326,7 @@ def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_mas
         df=0.125,
         m=4,
         spectral_estimates_max=1,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     )
     data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
 
@@ -336,6 +362,7 @@ def test_pipeline_produces_short_term_uncertainty():
         m=2,
         uncertainty_estimation="short_term",
         m_var=2,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
         spectral_estimates_max=None,
     )
     data_config = DataConfig(

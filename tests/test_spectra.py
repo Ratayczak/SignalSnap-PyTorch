@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
-from signalsnap_pytorch import pipelines
+from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra, pipelines
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
 
 
 def test_c1_returns_correct_mean():
@@ -19,6 +19,7 @@ def test_c1_returns_correct_mean():
         f_max=2,
         device="cpu",
         df=0.1,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     )
 
     result = calculate_spectra(data_config, spectrum_config, requested_spectra=[(0,)])[(0,)]
@@ -34,6 +35,7 @@ def test_c1_returns_mean_when_selected_band_excludes_dc():
         f_max=2,
         device="cpu",
         df=0.5,
+        spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     )
 
     result = calculate_spectra(data_config, spectrum_config, requested_spectra=[(0,)])[(0,)]
@@ -48,10 +50,21 @@ def test_calculate_spectra_reports_progress(
     monkeypatch, interlacing, expected_total, show_progress
 ):
     progress_call = {}
+    progress_updates = []
 
-    def recording_progress(iterable, **kwargs):
+    class RecordingProgress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def update(self, estimate_count):
+            progress_updates.append(estimate_count)
+
+    def recording_progress(**kwargs):
         progress_call.update(kwargs)
-        return iterable
+        return RecordingProgress()
 
     monkeypatch.setattr(pipelines, "tqdm", recording_progress)
 
@@ -63,6 +76,7 @@ def test_calculate_spectra_reports_progress(
         df=0.125,
         m=2,
         spectral_estimates_max=2,
+        spectral_estimates_per_batch=2,
         interlacing=interlacing,
     )
 
@@ -76,6 +90,8 @@ def test_calculate_spectra_reports_progress(
     assert progress_call == {
         "total": expected_total,
         "desc": "Calculating spectra",
-        "unit": " estimates",
+        "unit": "estimate",
         "disable": not show_progress,
     }
+    assert progress_updates == ([2, 2] if interlacing else [2])
+    assert sum(progress_updates) == expected_total

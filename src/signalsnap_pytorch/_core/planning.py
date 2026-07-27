@@ -70,6 +70,9 @@ class RuntimeConfig:
         Number of unshifted spectral estimates processed by the base calculation. If
         ``interlacing=True``, up to the same number of additional shifted estimates are calculated
         when enough data is available.
+    spectral_estimates_per_batch: int
+        Number of spectral estimates calculated in parallel. This will speed up the calculation but
+        increase the memory demands on the specified torch device.
     interlacing : bool
         Compute additional spectral estimates for windows shifted by half a window size, to
         compensate the low weight of data points produced by the window function near the original
@@ -97,6 +100,7 @@ class RuntimeConfig:
     complex_dtype: torch.dtype
     device: torch.device
     spectral_estimates: int
+    spectral_estimates_per_batch: int
     interlacing: bool
     old_window: bool
 
@@ -526,47 +530,14 @@ def build_runtime_config(
         complex_dtype=complex_dtype,
         device=device,
         spectral_estimates=spectral_estimates,
+        spectral_estimates_per_batch=spectrum_config.spectral_estimates_per_batch,
         interlacing=spectrum_config.interlacing,
         old_window=spectrum_config.old_window,
     )
 
 
-def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int, bool]]:
-    """Return the window slice indices.
-
-    Each yielded ``(start, end, shifted)`` selects ``m * N`` samples from a one-dimensional data
-    channel, where ``m = runtime.m`` and ``N = runtime.window_points``. With interlacing enabled,
-    additional slices shifted by ``N // 2`` are yielded when they still fit inside the signal.
-
-    Parameters
-    ----------
-    runtime : RuntimeConfig
-        Resolved window size, estimate limit, data length, and interlacing setting.
-
-    Yields
-    ------
-    tuple[int, int, bool]
-        Half-open sample bounds and whether the slice belongs to the shifted placement group.
-    """
-
-    chunk_size = runtime.window_points * runtime.m
-
-    for chunk_index in range(runtime.spectral_estimates):
-        start = chunk_index * chunk_size
-        end = start + chunk_size
-        yield start, end, False
-
-    if runtime.interlacing:
-        shift = runtime.window_points // 2
-        shifted_estimates = window_slice_count(runtime) - runtime.spectral_estimates
-        for chunk_index in range(shifted_estimates):
-            start = chunk_index * chunk_size + shift
-            end = start + chunk_size
-            yield start, end, True
-
-
 def window_slice_count(runtime: RuntimeConfig) -> int:
-    """Return the total number of unshifted and shifted spectral-estimate slices.
+    """Return the total number of unshifted and shifted spectral estimates.
 
     The shifted count is limited both by available data and by the resolved unshifted estimate
     count, which already incorporates ``spectral_estimates_max``.
@@ -579,3 +550,53 @@ def window_slice_count(runtime: RuntimeConfig) -> int:
     chunk_size = runtime.window_points * runtime.m
     available_shifted = max(0, (runtime.n_data_points - runtime.window_points // 2) // chunk_size)
     return total + min(runtime.spectral_estimates, available_shifted)
+
+
+def iter_window_slices(runtime: RuntimeConfig) -> Iterator[tuple[int, int, int, bool]]:
+    """Return the window slice indices.
+
+    Each yielded ``(start, end, estimate_count, shifted)`` selects ``B * m * N`` samples from a
+    one-dimensional data channel, where ``B = estimate_count``, ``m = runtime.m``, and
+    ``N = runtime.window_points``. With interlacing enabled, additional slices shifted by ``N // 2``
+    are yielded when they still fit inside the signal.
+
+    Parameters
+    ----------
+    runtime : RuntimeConfig
+        Resolved window size, estimate limit, data length, and interlacing setting.
+
+    Yields
+    ------
+    tuple[int, int, int, bool]
+        Half-open sample bounds, estimate count, and whether the slice belongs to the shifted
+        placement group.
+    """
+
+    estimate_size = runtime.window_points * runtime.m
+    batch_capacity = runtime.spectral_estimates_per_batch
+
+    def iter_placement(
+        estimate_count: int, offset: int, shifted: bool
+    ) -> Iterator[tuple[int, int, int, bool]]:
+        for first_estimate in range(0, estimate_count, batch_capacity):
+            current_batch_size = min(batch_capacity, estimate_count - first_estimate)
+
+            start = offset + first_estimate * estimate_size
+            end = start + current_batch_size * estimate_size
+
+            yield start, end, current_batch_size, shifted
+
+    yield from iter_placement(runtime.spectral_estimates, offset=0, shifted=False)
+
+    if runtime.interlacing:
+        available_shifted = max(
+            0,
+            (runtime.n_data_points - runtime.window_points // 2) // estimate_size,
+        )
+        shifted_estimates = min(runtime.spectral_estimates, available_shifted)
+
+        yield from iter_placement(
+            shifted_estimates,
+            offset=runtime.window_points // 2,
+            shifted=True,
+        )

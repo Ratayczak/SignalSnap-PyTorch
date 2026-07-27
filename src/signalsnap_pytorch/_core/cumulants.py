@@ -39,43 +39,41 @@ def build_s3_target_indices(axis_indices: Tensor, fft_freq_count: int) -> tuple[
     return safe_indices, valid_mask
 
 
-def gather_s3_third_factor(coeffs: Tensor, target_indices: Tensor, m: int) -> Tensor:
+def gather_s3_third_factor(coeffs: Tensor, target_indices: Tensor) -> Tensor:
     """Gather coefficients at ``w3 = -(w1 + w2)`` for a third-order cumulant.
 
     Parameters
     ----------
     coeffs : Tensor
-        Full shifted Fourier coefficients with shape ``(m, N)``.
+        Full shifted Fourier coefficients with shape ``(B, m, N)``.
     target_indices : Tensor
         Target-bin grid with shape ``(F, F)``.
-    m : int
-        Number of leading windows to gather.
 
     Returns
     -------
     Tensor
-        Gathered coefficients with shape ``(m, F, F)``.
+        Gathered coefficients with shape ``(B, m, F, F)``.
     """
-    return coeffs[:m, target_indices]
+    return coeffs[:, :, target_indices]
 
 
 def _mean_outer(m: int, a: Tensor, b: Tensor) -> Tensor:
-    """Compute an average outer product over the leading window axis.
+    """Compute an average outer product over the window axis.
 
     Parameters
     ----------
     m : int
-        Number of windows represented by the leading tensor dimension.
+        Number of windows represented by the second tensor dimension.
     a, b : Tensor
-        Input tensors with shape ``(m, F)``.
+        Input tensors with shape ``(B, m, F)``.
 
     Returns
     -------
     Tensor
-        Tensor with shape ``(F, F)`` whose entry ``[f, g]`` is
-        ``sum_i(a[i, f] * b[i, g]) / m``.
+        Tensor with shape ``(B, F, F)`` whose entry ``[:, f, g]`` is
+        ``sum_i(a[:, i, f] * b[:, i, g]) / m``.
     """
-    return torch.einsum("mf,mg->fg", a, b) / m
+    return torch.einsum("bmf,bmg->bfg", a, b) / m
 
 
 def c2_factorized(m: int, centered_x: Tensor, centered_y: Tensor) -> Tensor:
@@ -88,15 +86,15 @@ def c2_factorized(m: int, centered_x: Tensor, centered_y: Tensor) -> Tensor:
     m : int
         Number of windows in the estimate. Must exceed one.
     centered_x, centered_y : Tensor
-        Centered Fourier coefficients with shape ``(m, F)``.
+        Centered Fourier coefficients with shape ``(B, m, F)``.
 
     Returns
     -------
     Tensor
-        Cumulant estimate with shape ``(F,)``.
+        Cumulant estimate with shape ``(B, F)``.
     """
 
-    s2 = m / (m - 1) * torch.mean(centered_x * centered_y, dim=0)
+    s2 = m / (m - 1) * torch.mean(centered_x * centered_y, dim=1)
     return s2
 
 
@@ -110,20 +108,20 @@ def c3_factorized(m: int, centered_x: Tensor, centered_y: Tensor, centered_z: Te
     m : int
         Number of windows in the estimate. Must exceed two.
     centered_x, centered_y : Tensor
-        Centered Fourier coefficients with shape ``(m, F)``.
+        Centered Fourier coefficients with shape ``(B, m, F)``.
     centered_z : Tensor
-        Centered third-frequency coefficients with shape ``(m, F, F)``.
+        Centered third-frequency coefficients with shape ``(B, m, F, F)``.
 
     Returns
     -------
     Tensor
-        Cumulant estimate with shape ``(F, F)``.
+        Cumulant estimate with shape ``(B, F, F)``.
     """
 
     s3 = (
         m**2
         / ((m - 1) * (m - 2))
-        * torch.mean(centered_x[:, :, None] * centered_y[:, None, :] * centered_z, dim=0)
+        * torch.mean(centered_x[:, :, :, None] * centered_y[:, :, None, :] * centered_z, dim=1)
     )
     return s3
 
@@ -147,17 +145,18 @@ def c4_factorized(
     m : int
         Number of windows in the estimate. Must exceed three.
     centered_x, centered_y, centered_z, centered_w : Tensor
-        Centered Fourier coefficients with shape ``(m, F)``. The ``x`` and ``y`` factors vary along
-        the first output-frequency dimension; ``z`` and ``w`` vary along the second.
+        Centered Fourier coefficients with shape ``(B, m, F)``. The ``x`` and ``y`` factors vary
+        along the first frequency axis; ``z`` and ``w`` vary along the second frequency axis.
 
     Returns
     -------
     Tensor
-        Cumulant estimate with shape ``(F, F)``.
+        Cumulant estimate with shape ``(B, F, F)``.
     """
 
     centered_xy = centered_x * centered_y
     centered_zw = centered_z * centered_w
+
     s4 = (
         m**2
         / ((m - 1) * (m - 2) * (m - 3))
@@ -165,7 +164,7 @@ def c4_factorized(
             (m + 1) * _mean_outer(m, centered_xy, centered_zw)
             - (m - 1)
             * (
-                torch.outer(centered_xy.mean(dim=0), centered_zw.mean(dim=0))
+                torch.einsum("bf,bg->bfg", centered_xy.mean(dim=1), centered_zw.mean(dim=1))
                 + _mean_outer(m, centered_x, centered_z) * _mean_outer(m, centered_y, centered_w)
                 + _mean_outer(m, centered_x, centered_w) * _mean_outer(m, centered_y, centered_z)
             )

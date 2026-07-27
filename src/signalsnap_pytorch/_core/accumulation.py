@@ -204,17 +204,23 @@ def _get_group_accumulator(accumulator: SpectrumAccumulator, shifted: bool) -> G
     return accumulator.shifted if shifted else accumulator.unshifted
 
 
-def _accumulate_global_uncertainty(accumulator: GroupAccumulator, spectrum: Tensor) -> None:
+def _accumulate_global_uncertainty(
+    accumulator: GroupAccumulator,
+    spectral_estimates: Tensor,
+) -> None:
     """Accumulate the squared sum of :class:`GroupAccumulator`. Real and imaginary squared sums are
     encoded as one complex number, which should not be interpreted as a complex number.
     """
 
-    squared = torch.complex(torch.square(spectrum.real), torch.square(spectrum.imag))
+    squared_sum = torch.complex(
+        torch.square(spectral_estimates.real).sum(dim=0),
+        torch.square(spectral_estimates.imag).sum(dim=0),
+    )
 
     if accumulator.squared_sum is None:
-        accumulator.squared_sum = squared
+        accumulator.squared_sum = squared_sum
     else:
-        accumulator.squared_sum += squared
+        accumulator.squared_sum += squared_sum
 
 
 def _complete_short_term_batch(state: ShortTermUncertaintyState, m_var: int) -> None:
@@ -282,12 +288,22 @@ def _accumulate_short_term_uncertainty(
         _complete_short_term_batch(state, m_var)
 
 
-def accumulate_spectrum(
-    accumulator: SpectrumAccumulator, single_spectrum: Tensor, shifted: bool = False
+def _accumulate_short_term_uncertainty_batch(
+    state: ShortTermUncertaintyState,
+    spectral_estimates: Tensor,
+    m_var: int,
 ) -> None:
-    """Accumulate one spectral estimate into the :class:`SpectrumAccumulator`.
+    """Accumulate a calculation batch in estimate order using Welford's algorithm."""
+    for spectral_estimate in spectral_estimates:
+        _accumulate_short_term_uncertainty(state, spectral_estimate, m_var)
 
-    Adds the spectral estimate to the running sum and updates either global squared sums or
+
+def accumulate_spectral_estimates(
+    accumulator: SpectrumAccumulator, spectral_estimates: Tensor, shifted: bool = False
+) -> None:
+    """Accumulate a batch of spectral estimates into the :class:`SpectrumAccumulator`.
+
+    Adds the spectral estimates to the running sum and updates either global squared sums or
     short-term Welford states. Spectral estimates and their squared components are accumulated
     separately for shifted and unshifted data.
 
@@ -295,25 +311,52 @@ def accumulate_spectrum(
     ----------
     accumulator : SpectrumAccumulator
         Mutable accumulation state for one requested spectrum.
-    single_spectrum : Tensor
-        One spectral estimate. Its shape must match prior estimates accumulated into the same group.
+    spectral_estimates : Tensor
+        One or more spectral estimates with a leading batch dimension. The remaining dimensions
+        must match the result shape for ``accumulator.order``.
     shifted : bool, default=False
-        Store the estimate in the shifted interlacing group instead of the unshifted group.
+        Store the estimates in the shifted interlacing group instead of the unshifted group.
     """
 
+    if spectral_estimates.ndim < 2:
+        raise ValueError("Spectral estimates must include a leading batch dimension.")
+
+    if accumulator.order == 1:
+        expected_shape = (1,)
+    elif accumulator.order == 2:
+        expected_shape = (len(accumulator.freq),)
+    else:
+        expected_shape = (len(accumulator.freq), len(accumulator.freq))
+
+    if spectral_estimates.shape[0] == 0:
+        raise ValueError("Cannot accumulate an empty batch of spectral estimates.")
+
+    if spectral_estimates.shape[1:] != expected_shape:
+        raise ValueError(
+            f"Order-{accumulator.order} spectral estimates have per-estimate shape "
+            f"{spectral_estimates.shape[1:]}; expected {expected_shape}."
+        )
+
     group = _get_group_accumulator(accumulator, shifted)
+    estimate_count = spectral_estimates.shape[0]
+
+    batch_sum = spectral_estimates.sum(dim=0)
 
     if group.spectrum_sum is None:
-        group.spectrum_sum = single_spectrum.clone()
+        group.spectrum_sum = batch_sum.clone()
     else:
-        group.spectrum_sum += single_spectrum
+        group.spectrum_sum += batch_sum
 
-    group.count += 1
+    group.count += estimate_count
 
     if accumulator.uncertainty_estimation == "global":
-        _accumulate_global_uncertainty(group, single_spectrum)
+        _accumulate_global_uncertainty(group, spectral_estimates)
     elif accumulator.uncertainty_estimation == "short_term":
-        _accumulate_short_term_uncertainty(group.short_term, single_spectrum, accumulator.m_var)
+        _accumulate_short_term_uncertainty_batch(
+            group.short_term,
+            spectral_estimates,
+            accumulator.m_var,
+        )
     else:
         raise RuntimeError(
             f"Unknown uncertainty-estimation method {accumulator.uncertainty_estimation!r}."
@@ -576,9 +619,7 @@ def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
     uncertainties: list[Tensor] = []
 
     for group in groups:
-        uncertainty = _finalize_group_uncertainty(
-            group, accumulator.uncertainty_estimation
-        )
+        uncertainty = _finalize_group_uncertainty(group, accumulator.uncertainty_estimation)
 
         if uncertainty is not None:
             uncertainties.append(uncertainty)

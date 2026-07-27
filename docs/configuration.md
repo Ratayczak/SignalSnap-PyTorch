@@ -35,6 +35,7 @@ spectrum_config = SpectrumConfig(
     device="cuda",
     precision="auto",
     spectral_estimates_max=1000,
+    spectral_estimates_per_batch=8,
     interlacing=True,
 )
 ```
@@ -49,6 +50,7 @@ spectrum_config = SpectrumConfig(
 | `device` | `"cpu"`, `"cuda"`, `"cuda:N"`, `"mps"`, `"xpu"`, or `"xpu:N"`. |
 | `precision` | `"single"`, `"double"`, or device-dependent `"auto"`. |
 | `spectral_estimates_max` | Maximum unshifted estimates, or `None` to use all available data. |
+| `spectral_estimates_per_batch` | Number of independent spectral estimates calculated in parallel. |
 | `interlacing` | Also calculate estimates shifted by half a window. |
 | `old_window` | Compatibility option: uses the approximate confined Gaussian window from the original API. Intended only for reproducing results from the original API. |
 
@@ -117,6 +119,17 @@ many estimates as possible.
 At least two estimates are needed for a global standard-error result. Short-term estimation needs
 at least one complete batch of `m_var` estimates. Longer traces usually provide more useful
 uncertainty estimates.
+
+### Batching spectral estimates
+
+`spectral_estimates_per_batch` controls how many independent spectral estimates are calculated in
+parallel. Increasing it can reduce calculation time, especially on accelerators, while increasing
+device-memory use. The final calculation batch may contain fewer estimates when the available
+estimate count is not divisible by the configured batch size.
+
+This setting changes only computational batching. Each spectral estimate still contains `m` FFT
+windows, and short-term uncertainty batches are still defined independently by `m_var`. The default
+value is `1`.
 
 ### Uncertainty estimation
 

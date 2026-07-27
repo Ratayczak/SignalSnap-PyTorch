@@ -48,7 +48,7 @@ class ThirdOrderFactor:
     Attributes
     ----------
     centered_a_w3 : Tensor
-        Centered Fourier coefficients with shape ``(m, F, F)`` gathered at the implied third
+        Centered Fourier coefficients with shape ``(B, m, F, F)`` gathered at the implied third
         frequencies.
     valid_mask : Tensor
         Boolean validity mask with shape ``(F, F)``.
@@ -60,7 +60,7 @@ class ThirdOrderFactor:
 
 @dataclass(slots=True)
 class IntermediateSliceBuffer:
-    """Stores precomputed intermediate results used in :func:`compute_single_spectrum`.
+    """Stores precomputed intermediate results used in :func:`compute_spectral_estimates`.
 
     Attributes
     ----------
@@ -72,7 +72,7 @@ class IntermediateSliceBuffer:
     fft_freq_count : int
         Length of the full Fourier coefficients.
     coeffs_by_channel : dict[int, Tensor]
-        Shifted full Fourier coefficients by channel, each with shape ``(m, N)``.
+        Shifted full Fourier coefficients by channel, each with shape ``(B, m, N)``.
     third_order_cache : :class:`ThirdOrderIndexCache` | None
         Indices of the third frequency for the corresponding frequency axis.
     """
@@ -100,11 +100,13 @@ class IntermediateSliceBuffer:
         Returns
         -------
         Tensor
-            Tensor with shape ``(m, F)`` centered over the window axis.
+            Tensor with shape ``(B, m, F)`` centered over the window axis.
         """
         if channel not in self._centered_coeffs_by_channel_band:
-            coeffs = self.coeffs_by_channel[channel][:, self.band_start_idx : self.band_end_idx]
-            self._centered_coeffs_by_channel_band[channel] = coeffs - torch.mean(coeffs, dim=0)
+            coeffs = self.coeffs_by_channel[channel][..., self.band_start_idx : self.band_end_idx]
+            self._centered_coeffs_by_channel_band[channel] = coeffs - coeffs.mean(
+                dim=1, keepdim=True
+            )
 
         if conjugated:
             return torch.conj(self._centered_coeffs_by_channel_band[channel])
@@ -132,11 +134,11 @@ class IntermediateSliceBuffer:
         if channel not in self._centered_c3_third_factor_by_channel:
             if self.third_order_cache is None:
                 raise ValueError("Third-order spectra require third_order_cache.")
+
+            coeffs = self.coeffs_by_channel[channel]
             centered_a_w3 = gather_s3_third_factor(
-                self.coeffs_by_channel[channel]
-                - torch.mean(self.coeffs_by_channel[channel], dim=0),
+                coeffs - coeffs.mean(dim=1, keepdim=True),
                 self.third_order_cache.target_indices,
-                self.m,
             )
             self._centered_c3_third_factor_by_channel[channel] = ThirdOrderFactor(
                 centered_a_w3=centered_a_w3,
@@ -173,14 +175,14 @@ def build_intermediate_slice_buffer(
     coeffs_by_channel: dict[int, Tensor],
     third_order_cache: ThirdOrderIndexCache | None,
 ) -> IntermediateSliceBuffer:
-    """Create the reusable intermediate buffer for one spectral-estimate slice.
+    """Create the reusable intermediate buffer for one calculation batch.
 
     Parameters
     ----------
     runtime : RuntimeConfig
         Resolved band indices, FFT length, and window count.
     coeffs_by_channel : dict[int, Tensor]
-        Shifted full Fourier coefficients with shape ``(m, N)`` for each active channel.
+        Shifted full Fourier coefficients with shape ``(B, m, N)`` for each active channel.
     third_order_cache : ThirdOrderIndexCache | None
         Shared third-order index mapping, required when an order-three spectrum is requested.
 
@@ -199,13 +201,13 @@ def build_intermediate_slice_buffer(
     )
 
 
-def compute_single_spectrum(
+def compute_spectral_estimates(
     channels: tuple[int, ...],
     intermediate_buffer: IntermediateSliceBuffer,
     window_buffer: WindowBuffer,
     runtime: RuntimeConfig,
 ) -> Tensor:
-    """Compute one normalized spectrum from channel Fourier coefficients.
+    """Compute normalized spectral estimates from channel Fourier coefficients.
 
     Dispatches to the cumulant implementation for orders 1 through 4 and applies the matching window
     normalization.
@@ -225,9 +227,9 @@ def compute_single_spectrum(
     Returns
     -------
     Tensor
-        Single spectral estimate for the specified spectrum. Output shape depends on order: order 1
-        returns ``(1,)``, order 2 returns ``(F,)``, and orders 3 and 4 return ``(F, F)``, where
-        ``F`` is the selected-band length. Invalid third-order points, where
+        Spectral estimates for the specified spectrum. Output shape depends on order: order 1
+        returns ``(B, 1)``, order 2 returns ``(B, F)``, and orders 3 and 4 return ``(B, F, F)``,
+        where ``F`` is the selected-band length. Invalid third-order points, where
         ``w3 = -(w1 + w2)`` lies outside the shifted FFT support, are filled with ``NaN``.
 
     Raises
@@ -239,11 +241,11 @@ def compute_single_spectrum(
 
     if order == 1:
         a_w = intermediate_buffer.coeffs_by_channel[channels[0]]
-        dc_index = a_w.shape[1] // 2
-        single_cumulant = torch.mean(a_w[:, dc_index], dim=0).reshape(1)
+        dc_index = a_w.shape[-1] // 2
+        cumulants = a_w[:, :, dc_index].mean(dim=1, keepdim=True)
 
     elif order == 2:
-        single_cumulant = c2_factorized(
+        cumulants = c2_factorized(
             runtime.m,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
@@ -252,18 +254,18 @@ def compute_single_spectrum(
     elif order == 3:
         prepared = intermediate_buffer.centered_c3_third_factor_by_channel(channels[2])
 
-        single_cumulant = c3_factorized(
+        cumulants = c3_factorized(
             runtime.m,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1]),
             prepared.centered_a_w3,
         )
 
-        nan_value = torch.full_like(single_cumulant, complex(float("nan"), 0.0))
-        single_cumulant = torch.where(prepared.valid_mask, single_cumulant, nan_value)
+        nan_value = torch.full_like(cumulants, complex(float("nan"), 0.0))
+        cumulants = torch.where(prepared.valid_mask, cumulants, nan_value)
 
     elif order == 4:
-        single_cumulant = c4_factorized(
+        cumulants = c4_factorized(
             runtime.m,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
@@ -273,4 +275,4 @@ def compute_single_spectrum(
     else:
         raise ValueError(f"Unsupported spectrum order: {order}.")
 
-    return single_cumulant / window_buffer.norm(order)
+    return cumulants / window_buffer.norm(order)

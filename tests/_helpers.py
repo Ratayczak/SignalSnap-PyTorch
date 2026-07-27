@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
+# The largest order-4 regression case peaks near 42 MiB on CUDA at this size while avoiding most
+# per-estimate loop overhead.
+TEST_SPECTRAL_ESTIMATES_PER_BATCH = 32
+
 
 def indices_for_freqs(actual_freq: np.ndarray, expected_freq: np.ndarray) -> np.ndarray:
     """Return indices locating every expected frequency exactly once on an actual axis."""

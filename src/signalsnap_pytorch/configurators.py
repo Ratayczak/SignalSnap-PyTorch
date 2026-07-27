@@ -238,6 +238,10 @@ class SpectrumConfig(BaseModel):
         additional shifted estimates are calculated. The number of shifted estimates may also be one
         less than the number of unshifted estimates if the final shifted windows do not fit. Must be
         positive.
+    spectral_estimates_per_batch : int = 1
+        Number of spectral estimates calculated in parallel. This will speed up the calculation but
+        increase the memory demands on the specified torch device. The final calculation batch may
+        contain fewer estimates. Must be a positive integer.
     interlacing : bool = False
         Compute additional spectral estimates for windows shifted by half a window size, to
         compensate the low weight of data points produced by the window function near the original
@@ -261,6 +265,7 @@ class SpectrumConfig(BaseModel):
     device: str = "cpu"
     precision: Literal["auto", "single", "double"] = "auto"
     spectral_estimates_max: Annotated[int, Field(gt=0)] | None = int(1e6)
+    spectral_estimates_per_batch: Annotated[int, Field(ge=1)] = 1
     interlacing: bool = False
     old_window: bool = False
 
@@ -271,6 +276,14 @@ class SpectrumConfig(BaseModel):
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
 
         return self
+
+    @field_validator("spectral_estimates_per_batch", mode="before")
+    @classmethod
+    def reject_boolean_spectral_estimates_per_batch(cls, value: Any) -> Any:
+        """Reject Booleans before Pydantic coerces them to integers."""
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("spectral_estimates_per_batch must be a positive integer.")
+        return value
 
     @field_validator("device")
     @classmethod

@@ -6,7 +6,7 @@ import torch
 
 from signalsnap_pytorch._core.accumulation import (
     SpectrumAccumulator,
-    accumulate_spectrum,
+    accumulate_spectral_estimates,
     finalize_result,
 )
 
@@ -24,6 +24,19 @@ def make_accumulator(
         freq_unit="Hz",
         uncertainty_estimation=uncertainty_estimation,
         m_var=m_var,
+    )
+
+
+def accumulate_spectrum(
+    accumulator: SpectrumAccumulator,
+    spectral_estimate: torch.Tensor,
+    shifted: bool = False,
+) -> None:
+    """Test helper that submits one estimate through the batched accumulator API."""
+    accumulate_spectral_estimates(
+        accumulator,
+        spectral_estimate.unsqueeze(0),
+        shifted=shifted,
     )
 
 
@@ -79,6 +92,123 @@ def test_global_finalization_calculates_mean_and_componentwise_sem():
     assert result.channels == accumulator.channels
     np.testing.assert_array_equal(result.freq, accumulator.freq)
     assert result.freq_unit == accumulator.freq_unit
+
+
+@pytest.mark.parametrize(
+    ("uncertainty_estimation", "m_var"),
+    [
+        pytest.param("global", 10, id="global"),
+        pytest.param("short_term", 3, id="short-term-crosses-multiple-boundaries"),
+    ],
+)
+def test_batched_accumulation_matches_single_estimate_accumulation(
+    uncertainty_estimation,
+    m_var,
+):
+    estimates = torch.tensor(
+        [
+            [1 + 2j, 3 + 4j],
+            [2 + 1j, 5 + 8j],
+            [4 + 6j, 7 + 2j],
+            [8 + 3j, 9 + 5j],
+            [3 + 9j, 2 + 6j],
+            [6 + 4j, 1 + 7j],
+            [5 + 8j, 4 + 3j],
+        ],
+        dtype=torch.complex128,
+    )
+    batched = make_accumulator(
+        uncertainty_estimation=uncertainty_estimation,
+        m_var=m_var,
+    )
+    singles = make_accumulator(
+        uncertainty_estimation=uncertainty_estimation,
+        m_var=m_var,
+    )
+
+    # Deliberately use calculation-batch boundaries that do not align with m_var=3.
+    for start, stop in ((0, 2), (2, 6), (6, 7)):
+        accumulate_spectral_estimates(batched, estimates[start:stop])
+
+    for estimate in estimates:
+        accumulate_spectrum(singles, estimate)
+
+    batched_result = finalize_result(batched)
+    singles_result = finalize_result(singles)
+
+    np.testing.assert_allclose(batched_result.spectrum, singles_result.spectrum)
+    assert batched_result.spectrum_uncertainty is not None
+    assert singles_result.spectrum_uncertainty is not None
+    np.testing.assert_allclose(
+        batched_result.spectrum_uncertainty,
+        singles_result.spectrum_uncertainty,
+    )
+    assert batched.unshifted.count == estimates.shape[0]
+
+    if uncertainty_estimation == "short_term":
+        state = batched.unshifted.short_term
+        assert state.completed_batches == 2
+        assert state.current_count == 1
+
+
+def test_global_batch_accumulates_sums_and_componentwise_squared_sums():
+    accumulator = make_accumulator()
+    estimates = torch.tensor(
+        [
+            [1 + 2j, 3 + 4j],
+            [5 + 6j, 7 + 8j],
+        ],
+        dtype=torch.complex128,
+    )
+
+    accumulate_spectral_estimates(accumulator, estimates)
+
+    torch.testing.assert_close(
+        accumulator.unshifted.spectrum_sum,
+        estimates.sum(dim=0),
+    )
+    torch.testing.assert_close(
+        accumulator.unshifted.squared_sum,
+        torch.complex(
+            torch.square(estimates.real).sum(dim=0),
+            torch.square(estimates.imag).sum(dim=0),
+        ),
+    )
+    assert accumulator.unshifted.count == 2
+
+
+def test_batched_accumulation_rejects_an_empty_batch():
+    accumulator = make_accumulator()
+
+    with pytest.raises(ValueError, match="empty batch"):
+        accumulate_spectral_estimates(
+            accumulator,
+            torch.empty((0, 2), dtype=torch.complex128),
+        )
+
+
+@pytest.mark.parametrize(
+    "spectral_estimates",
+    [
+        pytest.param(torch.tensor(1 + 2j), id="scalar"),
+        pytest.param(torch.ones(2, dtype=torch.complex128), id="unbatched-spectrum"),
+    ],
+)
+def test_batched_accumulation_requires_a_leading_batch_dimension(spectral_estimates):
+    accumulator = make_accumulator()
+
+    with pytest.raises(ValueError, match="leading batch dimension"):
+        accumulate_spectral_estimates(accumulator, spectral_estimates)
+
+
+def test_batched_accumulation_rejects_incorrect_per_estimate_shape():
+    accumulator = make_accumulator()
+
+    with pytest.raises(ValueError, match=r"per-estimate shape.*expected"):
+        accumulate_spectral_estimates(
+            accumulator,
+            torch.ones((2, 3), dtype=torch.complex128),
+        )
 
 
 def test_global_finalization_combines_groups_with_componentwise_maximum():
