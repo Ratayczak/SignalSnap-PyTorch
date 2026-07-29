@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -333,7 +333,7 @@ RuntimeChannel = Any | HDF5ChannelState
 def open_channels(
     data_config: DataConfig,
     channel_indices: Iterable[int],
-) -> Iterator[dict[int, RuntimeChannel]]:
+) -> Generator[dict[int, RuntimeChannel], None, None]:
     """Open selected runtime channels and close shared HDF5 files on context exit.
 
     In-memory channels are returned unchanged. HDF5 channels that refer to the same resolved file
