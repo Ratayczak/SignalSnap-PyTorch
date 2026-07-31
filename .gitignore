@@ -18,8 +18,9 @@ build/
 dist/
 *.egg-info/
 
-# Jupyter Notebooks
+# Jupyter Notebooks and Scripts
 .ipynb_checkpoints/
+scripts/*
 
 # VSCode or IDEs
 .vscode/
