@@ -15,7 +15,7 @@ __all__ = [
     "DataConfig",
     "HDF5Channel",
     "SpectrumConfig",
-    "calculate_spectra",
     "SpectrumResult",
     "SpectrumResultStore",
+    "calculate_spectra",
 ]
