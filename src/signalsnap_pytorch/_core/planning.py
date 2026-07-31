@@ -17,7 +17,7 @@ import torch
 from numpy.typing import NDArray
 
 from ..configurators import DataConfig, SampledChannel, SpectrumConfig
-from .data_access import RuntimeChannel, get_sample_count
+from .data_access import RuntimeSource, get_source_length
 from .utils import ChannelIndex, FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
 
@@ -303,7 +303,7 @@ def resolve_channels(
 
 def _get_and_validate_selected_channels(
     data_config: DataConfig,
-    opened_channels: Mapping[int, RuntimeChannel],
+    opened_channels: Mapping[int, RuntimeSource],
 ) -> tuple[tuple[int, ...], int, float, TimeUnits]:
     """Require active sampled channels to have equal lengths and sampling intervals."""
 
@@ -314,7 +314,7 @@ def _get_and_validate_selected_channels(
     if not isinstance(first_config, SampledChannel):
         raise TypeError(f"Active channel {first_channel} is not sampled.")
 
-    first_sample_count = get_sample_count(opened_channels[first_channel])
+    first_sample_count = get_source_length(opened_channels[first_channel])
     dt = first_config.dt
 
     for channel in active_data_channels[1:]:
@@ -329,7 +329,7 @@ def _get_and_validate_selected_channels(
                 f"{first_channel} has dt={dt}."
             )
 
-        sample_count = get_sample_count(opened_channels[channel])
+        sample_count = get_source_length(opened_channels[channel])
 
         if sample_count != first_sample_count:
             raise ValueError(
@@ -408,7 +408,7 @@ def resolve_frequencies(
 
 def build_runtime_config(
     data_config: DataConfig,
-    opened_channels: Mapping[int, RuntimeChannel],
+    opened_channels: Mapping[int, RuntimeSource],
     spectrum_config: SpectrumConfig,
     spectra_channels: tuple[tuple[int, ...], ...],
 ) -> RuntimeConfig:

@@ -103,7 +103,7 @@ def calculate_spectra(
 
                 # Compute Fourier coefficients for each active channel.
                 for channel_index in runtime.active_data_channels:
-                    data = _data_access.read_channel(channels[channel_index], start, end)
+                    data = _data_access.read_source(channels[channel_index], start, end)
                     chunk = _fft.reshape_window_chunk(data, runtime, estimate_count)
                     chunk = _fft.to_device(chunk, runtime)
                     coeffs_by_channel[channel_index] = _fft.compute_fft(

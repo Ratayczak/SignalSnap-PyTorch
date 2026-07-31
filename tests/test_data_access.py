@@ -3,12 +3,12 @@ import numpy as np
 import pytest
 import torch
 
-from signalsnap_pytorch import HDF5Source
+from signalsnap_pytorch import DataConfig, HDF5Source, SampledChannel, TimestampedChannel
 from signalsnap_pytorch._core.data_access import (
     HDF5SourceState,
-    get_sample_count,
+    get_source_length,
     open_channels,
-    read_channel,
+    read_source,
 )
 from tests._helpers import sampled_data_config
 
@@ -17,38 +17,38 @@ def _open_all_channels(config):
     return open_channels(config, range(len(config.channels)))
 
 
-def test_array_sample_count():
-    channel = np.arange(10)
+def test_array_source_length():
+    source = np.arange(10)
 
-    assert get_sample_count(channel) == 10
+    assert get_source_length(source) == 10
 
 
 def test_array_read():
-    channel = np.arange(10)
+    source = np.arange(10)
 
-    result = read_channel(channel, 2, 6)
+    result = read_source(source, 2, 6)
 
     np.testing.assert_array_equal(result, np.array([2, 3, 4, 5]))
     assert result.flags.c_contiguous
 
 
 def test_cpu_tensor_read_matches_numpy_and_detaches_gradients():
-    channel = torch.arange(10, dtype=torch.float64, requires_grad=True)
+    source = torch.arange(10, dtype=torch.float64, requires_grad=True)
 
-    result = read_channel(channel, 2, 6)
+    result = read_source(source, 2, 6)
 
     np.testing.assert_array_equal(result, np.array([2.0, 3.0, 4.0, 5.0]))
     assert result.flags.c_contiguous
 
 
 def test_array_empty_read():
-    result = read_channel(np.arange(10), 4, 4)
+    result = read_source(np.arange(10), 4, 4)
 
     assert result.shape == (0,)
 
 
 def test_array_read_accepts_numpy_integer_bounds():
-    result = read_channel(np.arange(10), np.int64(2), np.int32(6))  # type: ignore
+    result = read_source(np.arange(10), np.int64(2), np.int32(6))  # type: ignore
 
     np.testing.assert_array_equal(result, np.array([2, 3, 4, 5]))
 
@@ -65,9 +65,9 @@ def test_array_read_accepts_numpy_integer_bounds():
         (0, 4.5, TypeError),
     ],
 )
-def test_read_channel_rejects_invalid_range(start, stop, exception):
+def test_read_source_rejects_invalid_range(start, stop, exception):
     with pytest.raises(exception):
-        read_channel(np.arange(10), start, stop)
+        read_source(np.arange(10), start, stop)
 
 
 @pytest.fixture
@@ -80,6 +80,72 @@ def hdf5_file(tmp_path):
         file.create_dataset("/signals", data=values)
 
     return path, values
+
+
+@pytest.mark.parametrize("channel_kind", ["sampled", "timestamped"])
+def test_open_channels_preserves_in_memory_source_for_both_channel_kinds(channel_kind):
+    values = np.arange(6, dtype=np.float64)
+
+    if channel_kind == "sampled":
+        channel = SampledChannel(data=values, dt=0.25)
+    else:
+        channel = TimestampedChannel(timestamps=values)
+
+    config = DataConfig(channels=(channel,))
+
+    with _open_all_channels(config) as sources:
+        assert sources[0] is values
+        assert get_source_length(sources[0]) == values.size
+        np.testing.assert_array_equal(read_source(sources[0], 1, 5), values[1:5])
+
+
+def test_timestamped_hdf5_source_uses_c_order_logical_reads(hdf5_file):
+    path, values = hdf5_file
+    expected = values[:, :, 1].reshape(-1)
+    config = DataConfig(
+        channels=(
+            TimestampedChannel(
+                timestamps=HDF5Source(
+                    file=path,
+                    dataset="/signals",
+                    selection=(slice(None), slice(None), 1),
+                )
+            ),
+        )
+    )
+
+    with _open_all_channels(config) as sources:
+        assert isinstance(sources[0], HDF5SourceState)
+        assert get_source_length(sources[0]) == expected.size
+        actual = read_source(sources[0], 5, 19)
+
+    np.testing.assert_array_equal(actual, expected[5:19])
+
+
+def test_empty_timestamped_hdf5_source_has_zero_logical_length(tmp_path):
+    path = tmp_path / "empty_timestamps.h5"
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset("/timestamps", shape=(0, 4), dtype=np.float64)
+
+    config = DataConfig(
+        channels=(
+            TimestampedChannel(
+                timestamps=HDF5Source(
+                    file=path,
+                    dataset="/timestamps",
+                    selection=(slice(None), slice(None)),
+                )
+            ),
+        )
+    )
+
+    with _open_all_channels(config) as sources:
+        assert get_source_length(sources[0]) == 0
+        actual = read_source(sources[0], 0, 0)
+
+    assert actual.shape == (0,)
+    assert actual.dtype == np.dtype(np.float64)
 
 
 def test_open_channels_builds_hdf5_state(hdf5_file):
@@ -96,7 +162,7 @@ def test_open_channels_builds_hdf5_state(hdf5_file):
         assert len(channels) == 1
         assert isinstance(channels[0], HDF5SourceState)
         assert channels[0].selected_shape == (4, 6)
-        assert get_sample_count(channels[0]) == 24
+        assert get_source_length(channels[0]) == 24
 
 
 @pytest.mark.parametrize(
@@ -116,7 +182,7 @@ def test_flattened_hdf5_reads_match_numpy(hdf5_file, start, stop):
     expected = values[:, :, 1].reshape(-1)[start:stop]
 
     with _open_all_channels(config) as channels:
-        actual = read_channel(channels[0], start, stop)
+        actual = read_source(channels[0], start, stop)
 
     np.testing.assert_array_equal(actual, expected)
     assert actual.flags.c_contiguous
@@ -135,7 +201,7 @@ def test_all_flattened_hdf5_read_ranges_match_numpy(hdf5_file):
     with _open_all_channels(config) as channels:
         for start in range(expected.size + 1):
             for stop in range(start, expected.size + 1):
-                actual = read_channel(channels[0], start, stop)
+                actual = read_source(channels[0], start, stop)
 
                 np.testing.assert_array_equal(actual, expected[start:stop])
                 assert actual.flags.c_contiguous
@@ -158,7 +224,7 @@ def test_hdf5_read_respects_selection_offsets(tmp_path):
     expected = values[2:8, 5:15, 1].reshape(-1)
 
     with _open_all_channels(config) as channels:
-        actual = read_channel(channels[0], 7, 43)
+        actual = read_source(channels[0], 7, 43)
 
     np.testing.assert_array_equal(actual, expected[7:43])
 
@@ -178,7 +244,7 @@ def test_one_dimensional_hdf5_selection_matches_numpy(hdf5_file):
     expected = values[1:4, 2, 1]
 
     with _open_all_channels(config) as channels:
-        actual = read_channel(channels[0], 1, 3)
+        actual = read_source(channels[0], 1, 3)
 
     np.testing.assert_array_equal(actual, expected[1:3])
 
@@ -198,7 +264,7 @@ def test_negative_integer_and_slice_bounds_are_normalized(hdf5_file):
     expected = values[-3:, -5:-1, -1].reshape(-1)
 
     with _open_all_channels(config) as channels:
-        actual = read_channel(channels[0], 2, 10)
+        actual = read_source(channels[0], 2, 10)
 
     np.testing.assert_array_equal(actual, expected[2:10])
 
@@ -222,7 +288,7 @@ def test_open_channels_preserves_array_and_hdf5_source_order(hdf5_file):
         assert channels[0] is array
         assert isinstance(channels[1], HDF5SourceState)
         np.testing.assert_array_equal(
-            read_channel(channels[1], 0, 4), values[:, :, 1].reshape(-1)[:4]
+            read_source(channels[1], 0, 4), values[:, :, 1].reshape(-1)[:4]
         )
 
 
@@ -275,7 +341,6 @@ def test_channels_from_same_file_share_file_handle(hdf5_file):
         ((slice(None), slice(None), 3), IndexError, "out of bounds"),
         ((slice(None), slice(None), -4), IndexError, "out of bounds"),
         ((0, 0, 0), ValueError, "selects a scalar"),
-        ((slice(0, 0), slice(None), 0), ValueError, "selection is empty"),
         ((slice(None), slice(None), slice(None)), ValueError, "at most two"),
     ],
 )
@@ -361,12 +426,12 @@ def test_boolean_hdf5_dataset_is_supported(tmp_path):
     )
 
     with _open_all_channels(config) as channels:
-        actual = read_channel(channels[0], 0, 3)
+        actual = read_source(channels[0], 0, 3)
 
     np.testing.assert_array_equal(actual, values)
 
 
-def test_read_channel_converts_to_native_byte_order(tmp_path):
+def test_read_source_converts_to_native_byte_order(tmp_path):
     path = tmp_path / "big_endian.h5"
 
     with h5py.File(path, "w") as file:
@@ -384,7 +449,7 @@ def test_read_channel_converts_to_native_byte_order(tmp_path):
     )
 
     with _open_all_channels(config) as channels:
-        result = read_channel(channels[0], 2, 6)
+        result = read_source(channels[0], 2, 6)
 
     assert result.dtype.isnative
     np.testing.assert_array_equal(result, [2, 3, 4, 5])
@@ -410,7 +475,7 @@ def test_two_dimensional_hdf5_read_converts_to_native_byte_order(tmp_path):
     expected = values[:, 1, :].reshape(-1)
 
     with _open_all_channels(config) as channels:
-        result = read_channel(channels[0], 1, expected.size - 1)
+        result = read_source(channels[0], 1, expected.size - 1)
 
     assert result.dtype.isnative
     assert result.flags.c_contiguous

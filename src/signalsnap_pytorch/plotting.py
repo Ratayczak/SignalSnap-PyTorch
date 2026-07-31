@@ -336,7 +336,7 @@ def create_first_window_figure(
 
     with _data_access.open_channels(data_config, normalized_channels) as opened_channels:
         for channel in normalized_channels:
-            available_points = _data_access.get_sample_count(opened_channels[channel])
+            available_points = _data_access.get_source_length(opened_channels[channel])
 
             if available_points < window_points:
                 raise ValueError(
@@ -356,8 +356,10 @@ def create_first_window_figure(
 
         for row, channel in enumerate(normalized_channels):
             axis = axes[row, 0]
-            first_window = _data_access.read_channel(
-                opened_channels[channel], start=0, stop=window_points
+            first_window = _data_access.read_source(
+                opened_channels[channel],
+                start=0,
+                stop=window_points,
             )
 
             axis.plot(time, first_window)

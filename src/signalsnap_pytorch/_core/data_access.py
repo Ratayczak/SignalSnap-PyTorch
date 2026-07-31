@@ -60,23 +60,23 @@ class HDF5SourceState:
     selected_shape: tuple[int, ...]
 
     @property
-    def sample_count(self) -> int:
-        """Number of samples in the flattened logical channel."""
+    def length(self) -> int:
+        """Length of the flattened logical source."""
         return math.prod(self.selected_shape)
 
     def read(self, start: int, stop: int) -> np.ndarray:
-        """Read a half-open range from the C-order-flattened logical channel.
+        """Read a half-open range from the C-order-flattened logical source.
 
         Parameters
         ----------
         start, stop : int
-            Validated zero-based bounds in flattened-channel coordinates.
+            Validated zero-based bounds in flattened-source coordinates.
 
         Returns
         -------
         np.ndarray
-            One-dimensional array containing ``stop - start`` samples. The public
-            :func:`read_channel` helper normalizes byte order and contiguity.
+            One-dimensional array containing exactly ``stop - start`` values. The public
+            :func:`read_source` helper normalizes byte order and contiguity.
 
         Raises
         ------
@@ -100,7 +100,7 @@ class HDF5SourceState:
     def _build_dataset_index(
         self, logical_selectors: tuple[int | slice, ...]
     ) -> tuple[int | slice, ...]:
-        """Translate logical-channel selectors back to selectors for the source dataset."""
+        """Translate logical-source selectors back to selectors for the source dataset."""
         if len(logical_selectors) != len(self.selected_shape):
             raise ValueError(
                 f"Expected {len(self.selected_shape)} logical selectors, "
@@ -219,19 +219,19 @@ class HDF5SourceState:
 
 
 def normalize_hdf5_selection(
-    dataset: h5py.Dataset, channel: HDF5Source
+    dataset: h5py.Dataset, source: HDF5Source
 ) -> tuple[tuple[NormalizedSelector, ...], tuple[int, ...]]:
-    """Normalize and validate an HDF5 channel selection against its dataset.
+    """Normalize and validate an HDF5 source selection against its dataset.
 
     Negative integer indices and open slice bounds are resolved against the dataset shape. The
-    selection must leave one or two nonempty dimensions, which form the logical channel before
-    C-order flattening.
+    selection must leave one or two logical dimensions, which form the logical source before
+    C-order flattening. A logical source may be empty.
 
     Parameters
     ----------
     dataset : h5py.Dataset
-        Dataset selected by ``channel.dataset``.
-    channel : HDF5Source
+        Dataset selected by ``source.dataset``.
+    source : HDF5Source
         User selection to normalize.
 
     Returns
@@ -242,7 +242,7 @@ def normalize_hdf5_selection(
     Raises
     ------
     ValueError
-        If the rank differs, the selection is empty or scalar, a slice step is unsupported, or more
+        If the rank differs, the selection is scalar, a slice step is unsupported, or more
         than two dimensions remain unfixed.
     IndexError
         If an integer selector is outside its dataset dimension.
@@ -250,16 +250,16 @@ def normalize_hdf5_selection(
         If a selector is neither an integer nor a slice.
     """
 
-    if len(channel.selection) != dataset.ndim:
+    if len(source.selection) != dataset.ndim:
         raise ValueError(
-            f"Selection for dataset {channel.dataset!r} contains {len(channel.selection)} entries, "
+            f"Selection for dataset {source.dataset!r} contains {len(source.selection)} entries, "
             f"but the dataset has {dataset.ndim} dimensions."
         )
 
     normalized = []
     selected_shape = []
 
-    for axis, (dimension_size, selector) in enumerate(zip(dataset.shape, channel.selection)):
+    for axis, (dimension_size, selector) in enumerate(zip(dataset.shape, source.selection)):
         if isinstance(selector, int) and not isinstance(selector, bool):
             index = selector
 
@@ -288,33 +288,30 @@ def normalize_hdf5_selection(
             )
 
     if not selected_shape:
-        raise ValueError("The HDF5 selection selects a scalar, not a signal channel.")
-
-    if any(size == 0 for size in selected_shape):
-        raise ValueError("The HDF5 channel selection is empty.")
+        raise ValueError("The HDF5 selection selects a scalar, not a logical source.")
 
     if len(selected_shape) > 2:
         raise ValueError(
-            "An HDF5 channel may have at most two non-fixed dimensions. "
+            "An HDF5 source may have at most two non-fixed dimensions. "
             "Use integer indices to fix additional dimensions."
         )
 
     return tuple(normalized), tuple(selected_shape)
 
 
-def _validate_hdf5_dataset(file: h5py.File, channel: HDF5Source) -> h5py.Dataset:
+def _validate_hdf5_dataset(file: h5py.File, source: HDF5Source) -> h5py.Dataset:
     """Return the selected dataset after validating its path, object type, and dtype."""
     h5py = _require_h5py()
 
-    if channel.dataset not in file:
+    if source.dataset not in file:
         raise KeyError(
-            f"Dataset {channel.dataset!r} does not exist in HDF5 file {str(channel.file)!r}."
+            f"Dataset {source.dataset!r} does not exist in HDF5 file {str(source.file)!r}."
         )
 
-    dataset = file[channel.dataset]
+    dataset = file[source.dataset]
 
     if not isinstance(dataset, h5py.Dataset):
-        raise TypeError(f"HDF5 path {channel.dataset!r} is not a dataset.")
+        raise TypeError(f"HDF5 path {source.dataset!r} is not a dataset.")
 
     dataset = cast("h5py.Dataset", dataset)
 
@@ -327,15 +324,15 @@ def _validate_hdf5_dataset(file: h5py.File, channel: HDF5Source) -> h5py.Dataset
     return dataset
 
 
-RuntimeChannel = Any | HDF5SourceState
+RuntimeSource = np.ndarray | torch.Tensor | HDF5SourceState
 
 
 @contextmanager
 def open_channels(
     data_config: DataConfig,
     channel_indices: Iterable[int],
-) -> Generator[dict[int, RuntimeChannel], None, None]:
-    """Open selected runtime channels and close shared HDF5 files on context exit.
+) -> Generator[dict[int, RuntimeSource], None, None]:
+    """Open selected channel sources and close shared HDF5 files on context exit.
 
     In-memory sources are returned unchanged. HDF5 sources that refer to the same resolved file
     path share one read-only file handle.
@@ -343,14 +340,15 @@ def open_channels(
     Parameters
     ----------
     data_config : DataConfig
-        User channel definitions.
+        User channel source definitions.
     channel_indices : Iterable[int]
         Validated indices of channels needed by the caller.
 
     Yields
     ------
-    dict[int, RuntimeChannel]
-        Mapping from requested indices to arrays or opened :class:`HDF5SourceState` objects.
+    dict[int, RuntimeSource]
+        Mapping from requested indices to in-memory sources or opened :class:`HDF5SourceState`
+        objects.
 
     Raises
     ------
@@ -364,25 +362,22 @@ def open_channels(
         If the selected HDF5 object is not a supported real numeric or Boolean dataset.
     ValueError
         If an HDF5 selection is invalid for its dataset.
-    NotImplementedError
-        If an active channel is timestamped; timestamp access is not connected yet.
     """
     with ExitStack() as stack:
         files: dict[Path, h5py.File] = {}
-        opened_channels: dict[int, RuntimeChannel] = {}
+        opened_channels: dict[int, RuntimeSource] = {}
 
         for channel_index in channel_indices:
             channel = data_config.channels[channel_index]
 
-            if isinstance(channel, TimestampedChannel):
-                raise NotImplementedError("Timestamped channel calculations are not connected yet.")
-
-            if not isinstance(channel, SampledChannel):
+            if isinstance(channel, SampledChannel):
+                source = channel.data
+            elif isinstance(channel, TimestampedChannel):
+                source = channel.timestamps
+            else:
                 raise TypeError(
                     f"Channel {channel_index} has unsupported type {type(channel).__name__}."
                 )
-
-            source = channel.data
 
             if not isinstance(source, HDF5Source):
                 opened_channels[channel_index] = source
@@ -406,23 +401,23 @@ def open_channels(
         yield opened_channels
 
 
-def get_sample_count(channel: RuntimeChannel) -> int:
-    """Return the flattened sample count of an in-memory or HDF5 runtime channel."""
-    if isinstance(channel, HDF5SourceState):
-        return channel.sample_count
+def get_source_length(source: RuntimeSource) -> int:
+    """Return the flattened length of an in-memory or opened HDF5 source."""
+    if isinstance(source, HDF5SourceState):
+        return source.length
 
-    return int(channel.shape[0])
+    return int(source.shape[0])
 
 
-def validate_read_range(channel: RuntimeChannel, start: int, stop: int) -> tuple[int, int]:
-    """Validate and normalize a half-open runtime-channel read range.
+def _validate_source_read_range(source: RuntimeSource, start: int, stop: int) -> tuple[int, int]:
+    """Validate and normalize a half-open runtime-source read range.
 
     Parameters
     ----------
-    channel : RuntimeChannel
-        Channel whose sample count bounds the range.
+    source : RuntimeSource
+        Source whose read range is to be validated.
     start, stop : int
-        Half-open sample bounds. NumPy integers are accepted; Booleans are rejected.
+        Half-open value bounds. NumPy integers are accepted; Booleans are rejected.
 
     Returns
     -------
@@ -434,7 +429,7 @@ def validate_read_range(channel: RuntimeChannel, start: int, stop: int) -> tuple
     TypeError
         If either bound is not an integer.
     ValueError
-        If the range is negative, reversed, or extends beyond the channel.
+        If the range is negative, reversed, or extends beyond the source.
     """
     if isinstance(start, bool) or not isinstance(start, (int, np.integer)):
         raise TypeError("start must be an integer.")
@@ -451,32 +446,32 @@ def validate_read_range(channel: RuntimeChannel, start: int, stop: int) -> tuple
     if stop < start:
         raise ValueError("stop cannot be smaller than start.")
 
-    sample_count = get_sample_count(channel)
+    source_length = get_source_length(source)
 
-    if stop > sample_count:
+    if stop > source_length:
         raise ValueError(
-            f"Cannot read until sample {stop}; the channel contains {sample_count} samples."
+            f"Cannot read until position {stop}; the source contains {source_length} values."
         )
 
     return start, stop
 
 
-def read_channel(channel: RuntimeChannel, start: int, stop: int) -> np.ndarray:
-    """Read a contiguous one-dimensional sample range from a runtime channel.
+def read_source(source: RuntimeSource, start: int, stop: int) -> np.ndarray:
+    """Read a contiguous one-dimensional range from a runtime source.
 
     The returned array has native byte order and C-contiguous storage, copying only when required.
 
     Parameters
     ----------
-    channel : RuntimeChannel
-        In-memory channel or opened HDF5 state.
+    source : RuntimeSource
+        In-memory source or opened HDF5 state.
     start, stop : int
-        Half-open sample bounds.
+        Half-open value bounds.
 
     Returns
     -------
     np.ndarray
-        One-dimensional array containing exactly ``stop - start`` samples.
+        One-dimensional array containing exactly ``stop - start`` values.
 
     Raises
     ------
@@ -485,14 +480,14 @@ def read_channel(channel: RuntimeChannel, start: int, stop: int) -> np.ndarray:
     ValueError
         If the requested range is invalid.
     RuntimeError
-        If the underlying read returns an unexpected shape or sample count.
+        If the underlying read returns an unexpected shape or number of values.
     """
-    start, stop = validate_read_range(channel, start, stop)
+    start, stop = _validate_source_read_range(source, start, stop)
 
-    if isinstance(channel, HDF5SourceState):
-        result = channel.read(start, stop)
-    elif isinstance(channel, torch.Tensor):
-        tensor = channel[start:stop].detach()
+    if isinstance(source, HDF5SourceState):
+        result = source.read(start, stop)
+    elif isinstance(source, torch.Tensor):
+        tensor = source[start:stop].detach()
 
         try:
             result = tensor.numpy()
@@ -501,7 +496,7 @@ def read_channel(channel: RuntimeChannel, start: int, stop: int) -> np.ndarray:
                 raise
             result = tensor.to(torch.float64).numpy()
     else:
-        result = channel[start:stop]
+        result = source[start:stop]
 
     result = np.asarray(result)
 
@@ -513,7 +508,7 @@ def read_channel(channel: RuntimeChannel, start: int, stop: int) -> np.ndarray:
     expected_size = stop - start
 
     if result.shape[0] != expected_size:
-        raise RuntimeError(f"Reading returned {result.shape[0]} samples; expected {expected_size}.")
+        raise RuntimeError(f"Reading returned {result.shape[0]} values; expected {expected_size}.")
 
     if not result.dtype.isnative:
         native_dtype = result.dtype.newbyteorder("=")

@@ -1,6 +1,5 @@
 import h5py
 import numpy as np
-import pytest
 
 from signalsnap_pytorch import (
     DataConfig,
@@ -163,11 +162,3 @@ def test_sampled_pipeline_ignores_unrequested_timestamped_hdf5_source(tmp_path):
     )
 
     assert result_store[(0, 0)].channels == (0, 0)
-
-    with pytest.raises(NotImplementedError, match="Timestamped channel"):
-        calculate_spectra(
-            data_config,
-            spectrum_config,
-            requested_spectra=[(1,)],
-            show_progress=False,
-        )
