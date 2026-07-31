@@ -19,10 +19,10 @@ def test_array_only_usage_does_not_import_h5py():
 
         builtins.__import__ = import_without_h5py
 
-        from signalsnap_pytorch import DataConfig
+        from signalsnap_pytorch import DataConfig, SampledChannel
         from signalsnap_pytorch._core.data_access import open_channels
 
-        config = DataConfig(channels=[np.arange(8)], dt=1.0)
+        config = DataConfig(channels=[SampledChannel(data=np.arange(8), dt=1.0)])
 
         with open_channels(config, [0]) as channels:
             np.testing.assert_array_equal(channels[0], np.arange(8))
@@ -49,10 +49,10 @@ def test_core_usage_does_not_import_matplotlib():
 
         builtins.__import__ = import_without_matplotlib
 
-        from signalsnap_pytorch import DataConfig
+        from signalsnap_pytorch import DataConfig, SampledChannel
         from signalsnap_pytorch._core.data_access import open_channels
 
-        config = DataConfig(channels=[np.arange(8)], dt=1.0)
+        config = DataConfig(channels=[SampledChannel(data=np.arange(8), dt=1.0)])
 
         with open_channels(config, [0]) as channels:
             np.testing.assert_array_equal(channels[0], np.arange(8))

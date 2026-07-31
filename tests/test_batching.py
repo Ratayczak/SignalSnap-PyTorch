@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
+from tests._helpers import sampled_data_config
 
 REQUESTED_SPECTRA = [
     (0,),
@@ -46,7 +47,7 @@ def test_pipeline_batching_matches_single_estimate_batches(
     batch_size: int,
 ):
     rng = np.random.default_rng(4815)
-    data_config = DataConfig(
+    data_config = sampled_data_config(
         channels=(
             rng.normal(size=170),
             rng.normal(size=170),

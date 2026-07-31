@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
-from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
+from signalsnap_pytorch import SpectrumConfig, calculate_spectra
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
 _XPU_AVAILABLE = getattr(torch, "xpu", None) is not None and torch.xpu.is_available()
 
@@ -14,7 +14,7 @@ def test_xpu_spectra_match_cpu_in_single_precision():
     samples = np.arange(512)
     channel_0 = np.sin(2 * np.pi * samples / 16) + 0.05 * rng.standard_normal(samples.size)
     channel_1 = 0.5 * channel_0 + 0.05 * rng.standard_normal(samples.size)
-    data_config = DataConfig(channels=(channel_0, channel_1), dt=1.0)
+    data_config = sampled_data_config(channels=(channel_0, channel_1), dt=1.0)
     requested_spectra = [(0,), (0, 1), (0, 1, 0), (0, 1, 0, 1)]
 
     common_config = {

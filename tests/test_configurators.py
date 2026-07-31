@@ -2,9 +2,16 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from pydantic import ValidationError
 
-from signalsnap_pytorch import DataConfig, HDF5Channel, SpectrumConfig
+from signalsnap_pytorch import (
+    DataConfig,
+    HDF5Source,
+    SampledChannel,
+    SpectrumConfig,
+    TimestampedChannel,
+)
 
 
 def test_spectrum_config_accepts_negative_frequency_band():
@@ -79,50 +86,183 @@ def test_spectrum_config_rejects_invalid_frequency_spacing(df):
         SpectrumConfig(df=df)
 
 
-def test_data_config_accepts_array_channels():
-    config = DataConfig(
-        channels=(np.arange(10), np.arange(10) * 2),
-        dt=0.1,
-    )
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(np.arange(8), id="numpy"),
+        pytest.param(torch.arange(8), id="cpu-tensor"),
+        pytest.param(np.array([True, False]), id="boolean"),
+    ],
+)
+def test_sampled_channel_accepts_supported_in_memory_data_without_copying(data):
+    channel = SampledChannel(data=data, dt=0.125)
 
-    assert len(config.channels) == 2
-    assert isinstance(config.channels, tuple)
-    assert config.dt == 0.1
-    assert config.t_unit == "s"
+    assert channel.data is data
+    assert channel.dt == 0.125
 
 
-def test_data_config_accepts_array_and_hdf5_channels():
-    hdf5_channel = HDF5Channel(
-        file=Path("data.h5"),
+def test_sampled_channel_accepts_hdf5_source_without_opening_it():
+    source = HDF5Source(
+        file=Path("missing.h5"),
         dataset="/signals",
-        selection=(slice(None), slice(None), 0),
+        selection=(slice(None),),
     )
 
-    config = DataConfig(
-        channels=(np.arange(10), hdf5_channel),
-        dt=0.1,
-    )
+    channel = SampledChannel(data=source, dt=0.125)
 
-    assert len(config.channels) == 2
-    assert config.channels[1] == hdf5_channel
+    assert channel.data is source
+
+
+@pytest.mark.parametrize("dt", [0.0, -0.1, np.inf, np.nan, True])
+def test_sampled_channel_rejects_invalid_dt(dt):
+    with pytest.raises((ValidationError, TypeError), match="dt"):
+        SampledChannel(data=np.arange(8), dt=dt)
 
 
 @pytest.mark.parametrize(
-    ("channels", "message"),
+    ("data", "message"),
     [
-        ([], "at least 1 item"),
-        ([None], "cannot be None"),
-        ([object()], "shape attribute"),
-        ([np.ones((2, 3))], "one-dimensional"),
-        ([np.array([])], "cannot be empty"),
-        ([np.array([1 + 2j])], "cannot be complex"),
-        ([np.array(["a", "b"])], "must be numeric"),
-        ([np.array([object()], dtype=object)], "must be numeric"),
+        pytest.param(None, "NumPy array", id="none"),
+        pytest.param([1.0, 2.0], "NumPy array", id="list"),
+        pytest.param(np.ones((2, 3)), "one-dimensional", id="numpy-2d"),
+        pytest.param(torch.ones((2, 3)), "one-dimensional", id="tensor-2d"),
+        pytest.param(np.array([]), "cannot be empty", id="numpy-empty"),
+        pytest.param(torch.tensor([]), "cannot be empty", id="tensor-empty"),
+        pytest.param(np.array([1 + 2j]), "real numeric", id="numpy-complex"),
+        pytest.param(torch.tensor([1 + 2j]), "real numeric", id="tensor-complex"),
+        pytest.param(np.array(["a"]), "real numeric", id="numpy-string"),
     ],
 )
-def test_data_config_rejects_invalid_array_channels(channels, message):
+def test_sampled_channel_rejects_invalid_data(data, message):
     with pytest.raises((ValidationError, TypeError), match=message):
-        DataConfig(channels=channels, dt=1.0)
+        SampledChannel(data=data, dt=1.0)
+
+
+def test_sampled_channel_rejects_non_cpu_tensor_storage():
+    with pytest.raises(ValidationError, match="stored on the CPU"):
+        SampledChannel(data=torch.empty(2, device="meta"), dt=1.0)
+
+
+@pytest.mark.parametrize(
+    "timestamps",
+    [
+        pytest.param(np.array([], dtype=np.float64), id="numpy-empty"),
+        pytest.param(torch.tensor([], dtype=torch.float64), id="tensor-empty"),
+        pytest.param(np.array([0.0, 0.25, 0.25, 1.0]), id="numpy-duplicates"),
+        pytest.param(torch.tensor([0.0, 0.25, 0.25, 1.0]), id="tensor-duplicates"),
+    ],
+)
+def test_timestamped_channel_accepts_empty_and_nondecreasing_data(timestamps):
+    channel = TimestampedChannel(timestamps=timestamps)
+
+    assert channel.timestamps is timestamps
+
+
+def test_timestamped_channel_accepts_hdf5_source_without_opening_it():
+    source = HDF5Source(
+        file="missing.h5",
+        dataset="/timestamps",
+        selection=(slice(None),),
+    )
+
+    channel = TimestampedChannel(timestamps=source)
+
+    assert channel.timestamps is source
+
+
+@pytest.mark.parametrize(
+    ("timestamps", "message"),
+    [
+        pytest.param([0.0, 1.0], "NumPy array", id="list"),
+        pytest.param(np.ones((2, 2)), "one-dimensional", id="two-dimensional"),
+        pytest.param(np.array([False, True]), "real numeric", id="boolean"),
+        pytest.param(np.array([0.0, np.nan]), "finite", id="nan"),
+        pytest.param(np.array([0.0, np.inf]), "finite", id="infinity"),
+        pytest.param(np.array([0.5, 0.25]), "nondecreasing", id="unordered"),
+        pytest.param(torch.empty(2, device="meta"), "stored on the CPU", id="non-cpu"),
+    ],
+)
+def test_timestamped_channel_rejects_invalid_timestamps(timestamps, message):
+    with pytest.raises((ValidationError, TypeError), match=message):
+        TimestampedChannel(timestamps=timestamps)
+
+
+def test_explicit_data_models_are_frozen_without_freezing_referenced_arrays():
+    data = np.arange(8)
+    sampled = SampledChannel(data=data, dt=1.0)
+    timestamped = TimestampedChannel(timestamps=np.array([0.0, 1.0]))
+    source = HDF5Source(file="data.h5", dataset="/x", selection=(slice(None),))
+
+    with pytest.raises(ValidationError, match="frozen"):
+        sampled.dt = 2.0
+    with pytest.raises(ValidationError, match="frozen"):
+        timestamped.timestamps = np.array([])
+    with pytest.raises(ValidationError, match="frozen"):
+        source.dataset = "/y"
+
+    data[0] = 42
+    assert sampled.data[0] == 42
+
+
+def test_data_config_accepts_explicit_heterogeneous_channels_and_bounds():
+    sampled = SampledChannel(data=np.arange(8), dt=0.25)
+    timestamped = TimestampedChannel(timestamps=np.array([0.0, 1.0]))
+
+    config = DataConfig(
+        channels=(sampled, timestamped),
+        observation_start=0.0,
+        observation_stop=2.0,
+        t_unit="ms",
+    )
+
+    assert config.channels == (sampled, timestamped)
+    assert config.observation_start == 0.0
+    assert config.observation_stop == 2.0
+    assert config.t_unit == "ms"
+
+
+@pytest.mark.parametrize(
+    "channel",
+    [
+        pytest.param(np.arange(8), id="numpy"),
+        pytest.param(torch.arange(8), id="tensor"),
+        pytest.param([1.0, 2.0], id="list"),
+        pytest.param(
+            HDF5Source(file="data.h5", dataset="/x", selection=(slice(None),)),
+            id="hdf5-source",
+        ),
+    ],
+)
+def test_data_config_rejects_bare_channels(channel):
+    with pytest.raises(TypeError, match="SampledChannel or TimestampedChannel"):
+        DataConfig(channels=(channel,))
+
+
+def test_data_config_rejects_empty_channels():
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        DataConfig(channels=())
+
+
+def test_data_config_rejects_old_global_dt():
+    channel = SampledChannel(data=np.arange(8), dt=1.0)
+
+    with pytest.raises(ValidationError, match="dt"):
+        DataConfig(channels=(channel,), dt=1.0)
+
+
+@pytest.mark.parametrize(
+    ("start", "stop"),
+    [(0.0, 0.0), (1.0, 0.0)],
+)
+def test_data_config_rejects_unordered_observation_interval(start, stop):
+    channel = SampledChannel(data=np.arange(8), dt=1.0)
+
+    with pytest.raises(ValidationError, match="observation_start"):
+        DataConfig(
+            channels=(channel,),
+            observation_start=start,
+            observation_stop=stop,
+        )
 
 
 @pytest.mark.parametrize(
@@ -136,9 +276,9 @@ def test_data_config_rejects_invalid_array_channels(channels, message):
         ("/signals", (slice(None, None, -1),), "steps other than 1"),
     ],
 )
-def test_hdf5_channel_rejects_invalid_configuration(dataset, selection, message):
+def test_hdf5_source_rejects_invalid_configuration(dataset, selection, message):
     with pytest.raises((ValidationError, TypeError), match=message):
-        HDF5Channel(
+        HDF5Source(
             file=Path("data.h5"),
             dataset=dataset,
             selection=selection,

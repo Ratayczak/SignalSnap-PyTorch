@@ -19,82 +19,8 @@ from ._core.utils import TimeUnits as _TimeUnits
 _SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
-class DataConfig(BaseModel):
-    """Configuration for data used in polyspectra calculations.
-
-    These settings are later resolved together with :class:`SpectrumConfig` into the internal
-    runtime configuration used by :func:`~signalsnap_pytorch.calculate_spectra`.
-
-    Together with ``df`` from :class:`SpectrumConfig`, ``dt`` will be used to determine the number
-    of data points (``window_points``) used for each Fourier transform:
-
-        window_points = round(1 / (dt * df))
-
-    and to determine the Nyquist frequency:
-
-        f_nyquist = 1 / (2 * dt)
-
-    If ``df`` is not specified in :class:`SpectrumConfig`, ``window_points`` is set to ``1000``.
-
-    Attributes
-    ----------
-    channels : tuple[Any, ...]
-        Tuple of data channels. Each channel is recorded (real) signal data and can either be a
-        one-dimensional, nonempty, real-valued numeric or Boolean array with a shape and dtype
-        attribute or a :class:`HDF5Channel`.
-    dt : float
-        The time interval between two consecutive data points. Must be positive.
-    t_unit : Literal["s", "ms", "us", "ns", "ps"]
-        Unit of the time step. Defaults to ``"s"``.
-    """
-
-    model_config = _SHARED_CONFIG
-
-    channels: Annotated[tuple[Any, ...], Field(min_length=1)]
-    dt: Annotated[float, Field(gt=0)]
-    t_unit: _TimeUnits = "s"
-
-    @field_validator("channels")
-    @classmethod
-    def validate_channels(cls, channels: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Validate the shape and dtype of in-memory channels."""
-        for index, channel in enumerate(channels):
-            if isinstance(channel, HDF5Channel):
-                continue
-
-            if channel is None:
-                raise ValueError(f"Channel {index} cannot be None.")
-
-            if not hasattr(channel, "shape"):
-                raise TypeError(f"Array channel {index} must provide a shape attribute.")
-
-            if len(channel.shape) != 1:
-                raise ValueError(f"Array channel {index} must be one-dimensional.")
-
-            if channel.shape[0] == 0:
-                raise ValueError(f"Array channel {index} cannot be empty.")
-
-            try:
-                channel_dtype = np.dtype(channel.dtype)
-            except TypeError:
-                channel_dtype = np.asarray(channel).dtype
-
-            if np.issubdtype(channel_dtype, np.complexfloating):
-                raise TypeError(f"Array channel {index} cannot be complex.")
-
-            is_numeric = np.issubdtype(channel_dtype, np.number)
-            is_boolean = np.issubdtype(channel_dtype, np.bool_)
-
-            if not is_numeric and not is_boolean:
-                raise TypeError(
-                    f"Array channel {index} must be numeric; received dtype {channel_dtype}."
-                )
-
-        return channels
-
-
-class HDF5Channel(BaseModel):
-    """Configuration for HDF5 input channels.
+class HDF5Source(BaseModel):
+    """Configuration for a lazily read HDF5 storage source.
 
     The specified data channel inside the HDF5 file is loaded lazily to allow for inputs exceeding
     system memory.
@@ -183,6 +109,194 @@ class HDF5Channel(BaseModel):
         return tuple(normalized)
 
 
+def _validate_stored_data(
+    value: Any,
+    *,
+    label: str,
+    allow_empty: bool,
+    allow_boolean: bool,
+) -> np.ndarray | torch.Tensor | HDF5Source:
+    """Validate storage type, shape, device, and intrinsic dtype."""
+
+    if isinstance(value, HDF5Source):
+        return value
+
+    if isinstance(value, torch.Tensor):
+        if value.device.type != "cpu":
+            raise ValueError(
+                f"{label} must be stored on the CPU; "
+                "the calculation device is selected by SpectrumConfig."
+            )
+
+        if value.layout != torch.strided:
+            raise TypeError(f"{label} must use PyTorch's strided tensor layout.")
+
+        if value.ndim != 1:
+            raise ValueError(f"{label} must be one-dimensional.")
+
+        if not allow_empty and value.numel() == 0:
+            raise ValueError(f"{label} cannot be empty.")
+
+        try:
+            torch.iinfo(value.dtype)
+            is_integer = True
+        except TypeError:
+            is_integer = False
+
+        is_boolean = value.dtype == torch.bool
+        is_supported = value.is_floating_point() or is_integer or (allow_boolean and is_boolean)
+
+        if value.is_complex() or not is_supported:
+            expected = "real numeric or Boolean" if allow_boolean else "real numeric"
+            raise TypeError(f"{label} must contain {expected} data.")
+
+        return value
+
+    if not isinstance(value, np.ndarray):
+        raise TypeError(f"{label} must be a NumPy array, CPU PyTorch tensor, or HDF5Source.")
+
+    if value.ndim != 1:
+        raise ValueError(f"{label} must be one-dimensional.")
+
+    if not allow_empty and value.size == 0:
+        raise ValueError(f"{label} cannot be empty.")
+
+    is_boolean = np.issubdtype(value.dtype, np.bool_)
+    is_real_numeric = np.issubdtype(value.dtype, np.number) and not np.issubdtype(
+        value.dtype, np.complexfloating
+    )
+
+    if not is_real_numeric and not (allow_boolean and is_boolean):
+        expected = "real numeric or Boolean" if allow_boolean else "real numeric"
+        raise TypeError(f"{label} must contain {expected} data.")
+
+    return value
+
+
+class SampledChannel(BaseModel):
+    """Configuration for one sampled measurement channel.
+
+    The referenced data is retained without copying and must not be mutated during a calculation.
+    """
+
+    model_config = _SHARED_CONFIG
+
+    data: Any
+    dt: Annotated[float, Field(gt=0)]
+
+    @field_validator("data")
+    @classmethod
+    def validate_data(cls, data: Any) -> Any:
+        """Validate sampled storage, shape, device, and dtype."""
+
+        return _validate_stored_data(
+            data,
+            label="SampledChannel data",
+            allow_empty=False,
+            allow_boolean=True,
+        )
+
+    @field_validator("dt", mode="before")
+    @classmethod
+    def reject_boolean_dt(cls, value: Any) -> Any:
+        """Reject Boolean sampling intervals before numeric coercion."""
+
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("SampledChannel dt must be a positive finite number.")
+
+        return value
+
+
+class TimestampedChannel(BaseModel):
+    """Configuration for one timestamped measurement channel.
+
+    The referenced timestamps are retained without copying and must not be mutated during a
+    calculation. Empty timestamp arrays and duplicate timestamps are valid.
+    """
+
+    model_config = _SHARED_CONFIG
+
+    timestamps: Any
+
+    @field_validator("timestamps")
+    @classmethod
+    def validate_timestamps(cls, timestamps: Any) -> Any:
+        """Validate timestamp storage, shape, device, dtype, and ordering."""
+
+        timestamps = _validate_stored_data(
+            timestamps,
+            label="TimestampedChannel timestamps",
+            allow_empty=True,
+            allow_boolean=False,
+        )
+
+        if isinstance(timestamps, HDF5Source):
+            return timestamps
+
+        if isinstance(timestamps, torch.Tensor):
+            if not bool(torch.isfinite(timestamps).all().item()):
+                raise ValueError("TimestampedChannel timestamps must contain only finite values.")
+
+            if timestamps.numel() > 1 and bool(torch.any(timestamps[1:] < timestamps[:-1]).item()):
+                raise ValueError("TimestampedChannel timestamps must be nondecreasing.")
+
+            return timestamps
+
+        if not np.all(np.isfinite(timestamps)):
+            raise ValueError("TimestampedChannel timestamps must contain only finite values.")
+
+        if timestamps.size > 1 and np.any(timestamps[1:] < timestamps[:-1]):
+            raise ValueError("TimestampedChannel timestamps must be nondecreasing.")
+
+        return timestamps
+
+
+class DataConfig(BaseModel):
+    """Configuration for sampled and timestamped measurement channels.
+
+    Observation bounds describe one common half-open physical interval. Sampled-only planning may
+    default the start to zero and infer the stop from the active channel length and sampling
+    interval.
+    """
+
+    model_config = _SHARED_CONFIG
+
+    channels: Annotated[tuple[SampledChannel | TimestampedChannel, ...], Field(min_length=1)]
+    observation_start: float | None = None
+    observation_stop: float | None = None
+    t_unit: _TimeUnits = "s"
+
+    @field_validator("channels", mode="before")
+    @classmethod
+    def require_explicit_channels(cls, channels: Any) -> Any:
+        """Reject bare arrays, tensors, HDF5 sources, and other implicit channels."""
+
+        if not isinstance(channels, (list, tuple)):
+            raise TypeError("channels must be a list or tuple of explicit channel objects.")
+
+        for index, channel in enumerate(channels):
+            if not isinstance(channel, (SampledChannel, TimestampedChannel)):
+                raise TypeError(
+                    f"Channel {index} must be a SampledChannel or TimestampedChannel; "
+                    f"received {type(channel).__name__}."
+                )
+
+        return channels
+
+    @model_validator(mode="after")
+    def validate_observation_interval(self) -> DataConfig:
+        """Require ordered bounds when both observation limits are explicit."""
+
+        if (
+            self.observation_start is not None
+            and self.observation_stop is not None
+            and self.observation_start >= self.observation_stop
+        ):
+            raise ValueError("observation_start must be less than observation_stop.")
+
+        return self
+
+
 class SpectrumConfig(BaseModel):
     """Spectrum configuration for polyspectra calculations.
 
@@ -191,9 +305,9 @@ class SpectrumConfig(BaseModel):
     These settings are later resolved together with :class:`DataConfig` into the internal runtime
     configuration used by :func:`~signalsnap_pytorch.calculate_spectra`.
 
-    ``df`` is the requested frequency spacing. The discrete Fourier transform cannot result in
-    arbitrary frequency spacings with a given sample spacing ``dt`` from :class:`DataConfig`. They
-    are related via:
+    ``df`` is the requested frequency spacing. For active sampled channels, the discrete Fourier
+    transform cannot produce arbitrary frequency spacings for a given common sampling interval
+    ``dt``. They are related via:
 
         window_points = round(1 / (dt * df)),
 
@@ -209,8 +323,8 @@ class SpectrumConfig(BaseModel):
     f_min : float = 0.0
         Lower frequency bound. If omitted, zero is used.
     f_max : float | None = None
-        Upper frequency bound. If omitted, the Nyquist frequency based on :class:`DataConfig`'s
-        ``dt`` is used.
+        Upper frequency bound. If omitted, the Nyquist frequency based on the active sampled
+        channels' common ``dt`` is used.
     m : int = 10
         Number of windows used per spectral estimate. This may be reduced at runtime if the signal
         is too short. Must be at least as high as the highest requested order. Must be positive.

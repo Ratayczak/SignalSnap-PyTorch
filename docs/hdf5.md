@@ -14,28 +14,33 @@ python -m pip install ".[hdf5]"
 
 ## Defining channels
 
-An `HDF5Channel` identifies a file, dataset, and selection. The selected values per spectral
+An `HDF5Source` identifies a file, dataset, and selection. The selected values per spectral
 estimate are flattened into one signal channel:
 
 ```python
 from pathlib import Path
 
-from signalsnap_pytorch import DataConfig, HDF5Channel
+from signalsnap_pytorch import DataConfig, HDF5Source, SampledChannel
 
 data_config = DataConfig(
     channels=(
-        HDF5Channel(
-            file=Path("measurement.h5"),
-            dataset="/signals",
-            selection=(slice(None), slice(None), 0),
+        SampledChannel(
+            data=HDF5Source(
+                file=Path("measurement.h5"),
+                dataset="/signals",
+                selection=(slice(None), slice(None), 0),
+            ),
+            dt=2.0,
         ),
-        HDF5Channel(
-            file=Path("measurement.h5"),
-            dataset="/signals",
-            selection=(slice(None), slice(None), 1),
+        SampledChannel(
+            data=HDF5Source(
+                file=Path("measurement.h5"),
+                dataset="/signals",
+                selection=(slice(None), slice(None), 1),
+            ),
+            dt=2.0,
         ),
     ),
-    dt=2.0,
     t_unit="ns",
 )
 ```
@@ -53,12 +58,14 @@ This example turns the last-axis entries `0` and `1` into separate SignalSnap ch
 
 ## Mixing storage types
 
-In-memory arrays and `HDF5Channel` objects may be combined in one `DataConfig`:
+A `SampledChannel` may reference either in-memory data or an `HDF5Source`:
 
 ```python
 data_config = DataConfig(
-    channels=(in_memory_reference, hdf5_measurement),
-    dt=2.0,
+    channels=(
+        SampledChannel(data=in_memory_reference, dt=2.0),
+        SampledChannel(data=hdf5_measurement, dt=2.0),
+    ),
     t_unit="ns",
 )
 ```

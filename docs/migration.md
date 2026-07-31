@@ -33,8 +33,11 @@ Instead of building a separate data object for each signal, place all channels i
 
 ```python
 data_config = DataConfig(
-    channels=(signal_trace_0, signal_trace_1, signal_trace_2),
-    dt=0.001,
+    channels=(
+        SampledChannel(data=signal_trace_0, dt=0.001),
+        SampledChannel(data=signal_trace_1, dt=0.001),
+        SampledChannel(data=signal_trace_2, dt=0.001),
+    ),
     t_unit="s",
 )
 ```

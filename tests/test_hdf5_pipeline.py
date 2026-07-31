@@ -1,8 +1,16 @@
 import h5py
 import numpy as np
+import pytest
 
-from signalsnap_pytorch import DataConfig, HDF5Channel, SpectrumConfig, calculate_spectra
-from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
+from signalsnap_pytorch import (
+    DataConfig,
+    HDF5Source,
+    SampledChannel,
+    SpectrumConfig,
+    TimestampedChannel,
+    calculate_spectra,
+)
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
 REQUESTED_SPECTRA = [
     (0,),
@@ -54,15 +62,15 @@ def test_hdf5_and_mixed_channels_match_eager_array_pipeline(tmp_path):
         stored[1:9, :, 0].reshape(-1),
         stored[1:9, :, 1].reshape(-1),
     )
-    eager_config = DataConfig(channels=eager_channels, dt=0.1, t_unit="s")
-    hdf5_config = DataConfig(
+    eager_config = sampled_data_config(channels=eager_channels, dt=0.1, t_unit="s")
+    hdf5_config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(1, 9), slice(None), 0),
             ),
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(1, 9), slice(None), 1),
@@ -71,7 +79,7 @@ def test_hdf5_and_mixed_channels_match_eager_array_pipeline(tmp_path):
         dt=0.1,
         t_unit="s",
     )
-    mixed_config = DataConfig(
+    mixed_config = sampled_data_config(
         channels=(
             hdf5_config.channels[0],
             eager_channels[1],
@@ -105,10 +113,10 @@ def test_hdf5_and_mixed_channels_match_eager_array_pipeline(tmp_path):
 
 
 def test_pipeline_does_not_open_unrequested_hdf5_channel(tmp_path):
-    data_config = DataConfig(
+    data_config = sampled_data_config(
         channels=(
             np.arange(128, dtype=float),
-            HDF5Channel(
+            HDF5Source(
                 file=tmp_path / "missing.h5",
                 dataset="/signals",
                 selection=(slice(None),),
@@ -131,3 +139,35 @@ def test_pipeline_does_not_open_unrequested_hdf5_channel(tmp_path):
     )
 
     assert result_store[(0, 0)].channels == (0, 0)
+
+def test_sampled_pipeline_ignores_unrequested_timestamped_hdf5_source(tmp_path):
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.arange(128, dtype=float), dt=1.0),
+            TimestampedChannel(
+                timestamps=HDF5Source(
+                    file=tmp_path / "missing.h5",
+                    dataset="/timestamps",
+                    selection=(slice(None),),
+                )
+            ),
+        )
+    )
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=4)
+
+    result_store = calculate_spectra(
+        data_config,
+        spectrum_config,
+        requested_spectra=[(0, 0)],
+        show_progress=False,
+    )
+
+    assert result_store[(0, 0)].channels == (0, 0)
+
+    with pytest.raises(NotImplementedError, match="Timestamped channel"):
+        calculate_spectra(
+            data_config,
+            spectrum_config,
+            requested_spectra=[(1,)],
+            show_progress=False,
+        )

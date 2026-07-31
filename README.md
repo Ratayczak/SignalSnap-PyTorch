@@ -64,7 +64,7 @@ signals:
 ```python
 import numpy as np
 
-from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
+from signalsnap_pytorch import DataConfig, SampledChannel, SpectrumConfig, calculate_spectra
 
 rng = np.random.default_rng(42)
 
@@ -75,8 +75,10 @@ channel_0 = np.sin(2 * np.pi * 20 * time) + 0.1 * rng.normal(size=time.size)
 channel_1 = np.sin(2 * np.pi * 20 * time + 0.5) + 0.1 * rng.normal(size=time.size)
 
 data_config = DataConfig(
-    channels=(channel_0, channel_1),
-    dt=dt,
+    channels=(
+        SampledChannel(data=channel_0, dt=dt),
+        SampledChannel(data=channel_1, dt=dt),
+    ),
     t_unit="s",
 )
 
@@ -193,17 +195,19 @@ Large measurements can be processed without loading the entire dataset into memo
 ```python
 from pathlib import Path
 
-from signalsnap_pytorch import DataConfig, HDF5Channel
+from signalsnap_pytorch import DataConfig, HDF5Source, SampledChannel
 
 data_config = DataConfig(
     channels=(
-        HDF5Channel(
-            file=Path("measurement.h5"),
-            dataset="/signals",
-            selection=(slice(None), slice(None), 0),
+        SampledChannel(
+            data=HDF5Source(
+                file=Path("measurement.h5"),
+                dataset="/signals",
+                selection=(slice(None), slice(None), 0),
+            ),
+            dt=2.0,
         ),
     ),
-    dt=2.0,
     t_unit="ns",
 )
 ```

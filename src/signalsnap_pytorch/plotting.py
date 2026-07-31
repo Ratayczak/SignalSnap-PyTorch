@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ._core import data_access as _data_access
 from ._core import planning as _planning
 from ._core.utils import PlotComponent as _PlotComponent
-from .configurators import _SHARED_CONFIG, DataConfig, SpectrumConfig
+from .configurators import _SHARED_CONFIG, DataConfig, SampledChannel, SpectrumConfig
 from .results import SpectrumResult, SpectrumResultStore
 
 try:
@@ -257,7 +257,7 @@ def create_first_window_figure(
     *,
     channels: Iterable[int] | None = None,
 ) -> Figure:
-    """Create a figure of the first window of one or more data channels.
+    """Create a figure of the first window of one or more :class:`SampledChannel`.
 
     The window length is derived from ``spectrum_config`` and the sampling interval of the selected
     data channels using:
@@ -270,8 +270,8 @@ def create_first_window_figure(
     Parameters
     ----------
     data_config : :class:`DataConfig`
-        Input channels and their shared sampling metadata. Channels may be in-memory arrays or
-        HDF5-backed channels.
+        Input channel configuration. Every selected channel must be a :class:`SampledChannel`
+        backed by in-memory data or an HDF5 source.
     spectrum_config : :class:`SpectrumConfig`
         Configuration defining the requested frequency spacing and bounds.
     channels : Iterable[int] | None, optional
@@ -289,7 +289,8 @@ def create_first_window_figure(
         If no channels are selected, an index is invalid or duplicated, a channel is shorter than
         one window, or the configured frequency bounds are invalid.
     TypeError
-        If a channel index is not an integer.
+        If a channel index is not an integer, or a
+        :class:`~signalsnap_pytorch.configurators.TimestampedChannel` is chosen.
     """
 
     # Validate DataConfigs and requested channels.
@@ -311,10 +312,27 @@ def create_first_window_figure(
 
         normalized_channels.append(normalized)
 
+    sampled_channels: list[SampledChannel] = []
+
+    for channel in normalized_channels:
+        channel_config = data_config.channels[channel]
+
+        if not isinstance(channel_config, SampledChannel):
+            raise TypeError("create_first_window_figure supports only sampled channels.")
+
+        sampled_channels.append(channel_config)
+
+    dt = sampled_channels[0].dt
+
+    for channel, channel_config in zip(normalized_channels[1:], sampled_channels[1:]):
+        if channel_config.dt != dt:
+            raise ValueError(
+                f"Channel {channel} has dt={channel_config.dt}, but the first "
+                f"selected channel has dt={dt}."
+            )
+
     # Plot first window
-    window_points, _, _, _ = _planning.resolve_frequencies(
-        spectrum_config=spectrum_config, dt=data_config.dt
-    )
+    window_points, _, _, _ = _planning.resolve_frequencies(spectrum_config=spectrum_config, dt=dt)
 
     with _data_access.open_channels(data_config, normalized_channels) as opened_channels:
         for channel in normalized_channels:
@@ -334,7 +352,7 @@ def create_first_window_figure(
             sharex=True,
         )
 
-        time = np.arange(window_points) * data_config.dt
+        time = np.arange(window_points) * dt
 
         for row, channel in enumerate(normalized_channels):
             axis = axes[row, 0]

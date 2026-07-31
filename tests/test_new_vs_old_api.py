@@ -5,7 +5,11 @@ import numpy as np
 import pytest
 
 from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
-from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, align_legacy_spectrum_region
+from tests._helpers import (
+    TEST_SPECTRAL_ESTIMATES_PER_BATCH,
+    align_legacy_spectrum_region,
+    sampled_data_config,
+)
 
 AUTO_CHANNELS = [
     (0,),
@@ -49,7 +53,7 @@ def prepared_data():
         assert isinstance(dataset, h5py.Dataset)
         data = dataset[...]
 
-    return DataConfig(
+    return sampled_data_config(
         channels=(
             data[:1000, :, 0].reshape(-1),
             data[:1000, :, 1].reshape(-1),

@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+import torch
 
-from ..configurators import DataConfig, HDF5Channel
+from ..configurators import DataConfig, HDF5Source, SampledChannel, TimestampedChannel
 
 if TYPE_CHECKING:
     import h5py
@@ -41,8 +42,8 @@ def _require_h5py() -> Any:
 
 
 @dataclass(frozen=True, slots=True)
-class HDF5ChannelState:
-    """Opened runtime representation of a user-specified :class:`HDF5Channel`.
+class HDF5SourceState:
+    """Opened runtime representation of a user-specified :class:`HDF5Source`.
 
     Attributes
     ----------
@@ -218,7 +219,7 @@ class HDF5ChannelState:
 
 
 def normalize_hdf5_selection(
-    dataset: h5py.Dataset, channel: HDF5Channel
+    dataset: h5py.Dataset, channel: HDF5Source
 ) -> tuple[tuple[NormalizedSelector, ...], tuple[int, ...]]:
     """Normalize and validate an HDF5 channel selection against its dataset.
 
@@ -230,7 +231,7 @@ def normalize_hdf5_selection(
     ----------
     dataset : h5py.Dataset
         Dataset selected by ``channel.dataset``.
-    channel : HDF5Channel
+    channel : HDF5Source
         User selection to normalize.
 
     Returns
@@ -301,7 +302,7 @@ def normalize_hdf5_selection(
     return tuple(normalized), tuple(selected_shape)
 
 
-def _validate_hdf5_dataset(file: h5py.File, channel: HDF5Channel) -> h5py.Dataset:
+def _validate_hdf5_dataset(file: h5py.File, channel: HDF5Source) -> h5py.Dataset:
     """Return the selected dataset after validating its path, object type, and dtype."""
     h5py = _require_h5py()
 
@@ -326,7 +327,7 @@ def _validate_hdf5_dataset(file: h5py.File, channel: HDF5Channel) -> h5py.Datase
     return dataset
 
 
-RuntimeChannel = Any | HDF5ChannelState
+RuntimeChannel = Any | HDF5SourceState
 
 
 @contextmanager
@@ -336,7 +337,7 @@ def open_channels(
 ) -> Generator[dict[int, RuntimeChannel], None, None]:
     """Open selected runtime channels and close shared HDF5 files on context exit.
 
-    In-memory channels are returned unchanged. HDF5 channels that refer to the same resolved file
+    In-memory sources are returned unchanged. HDF5 sources that refer to the same resolved file
     path share one read-only file handle.
 
     Parameters
@@ -349,12 +350,12 @@ def open_channels(
     Yields
     ------
     dict[int, RuntimeChannel]
-        Mapping from requested indices to arrays or opened :class:`HDF5ChannelState` objects.
+        Mapping from requested indices to arrays or opened :class:`HDF5SourceState` objects.
 
     Raises
     ------
     ModuleNotFoundError
-        If an HDF5 channel is requested without the optional ``h5py`` dependency.
+        If an HDF5 source is requested without the optional ``h5py`` dependency.
     OSError
         If an HDF5 file cannot be opened.
     KeyError
@@ -363,6 +364,8 @@ def open_channels(
         If the selected HDF5 object is not a supported real numeric or Boolean dataset.
     ValueError
         If an HDF5 selection is invalid for its dataset.
+    NotImplementedError
+        If an active channel is timestamped; timestamp access is not connected yet.
     """
     with ExitStack() as stack:
         files: dict[Path, h5py.File] = {}
@@ -371,21 +374,33 @@ def open_channels(
         for channel_index in channel_indices:
             channel = data_config.channels[channel_index]
 
-            if not isinstance(channel, HDF5Channel):
-                opened_channels[channel_index] = channel
+            if isinstance(channel, TimestampedChannel):
+                raise NotImplementedError("Timestamped channel calculations are not connected yet.")
+
+            if not isinstance(channel, SampledChannel):
+                raise TypeError(
+                    f"Channel {channel_index} has unsupported type {type(channel).__name__}."
+                )
+
+            source = channel.data
+
+            if not isinstance(source, HDF5Source):
+                opened_channels[channel_index] = source
                 continue
 
             h5py = _require_h5py()
-            path = channel.file.expanduser().resolve()
+            path = source.file.expanduser().resolve()
 
             if path not in files:
                 files[path] = stack.enter_context(h5py.File(path, mode="r"))
 
-            dataset = _validate_hdf5_dataset(files[path], channel)
-            selection, selected_shape = normalize_hdf5_selection(dataset, channel)
+            dataset = _validate_hdf5_dataset(files[path], source)
+            selection, selected_shape = normalize_hdf5_selection(dataset, source)
 
-            opened_channels[channel_index] = HDF5ChannelState(
-                dataset=dataset, selection=selection, selected_shape=selected_shape
+            opened_channels[channel_index] = HDF5SourceState(
+                dataset=dataset,
+                selection=selection,
+                selected_shape=selected_shape,
             )
 
         yield opened_channels
@@ -393,7 +408,7 @@ def open_channels(
 
 def get_sample_count(channel: RuntimeChannel) -> int:
     """Return the flattened sample count of an in-memory or HDF5 runtime channel."""
-    if isinstance(channel, HDF5ChannelState):
+    if isinstance(channel, HDF5SourceState):
         return channel.sample_count
 
     return int(channel.shape[0])
@@ -474,8 +489,17 @@ def read_channel(channel: RuntimeChannel, start: int, stop: int) -> np.ndarray:
     """
     start, stop = validate_read_range(channel, start, stop)
 
-    if isinstance(channel, HDF5ChannelState):
+    if isinstance(channel, HDF5SourceState):
         result = channel.read(start, stop)
+    elif isinstance(channel, torch.Tensor):
+        tensor = channel[start:stop].detach()
+
+        try:
+            result = tensor.numpy()
+        except (TypeError, RuntimeError):
+            if not tensor.is_floating_point():
+                raise
+            result = tensor.to(torch.float64).numpy()
     else:
         result = channel[start:stop]
 

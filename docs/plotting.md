@@ -136,7 +136,8 @@ figure.show()
 The window length uses the same frequency-resolution logic as the calculation. Omit `channels` to
 plot every channel. Indices refer to `DataConfig.channels` and retain the requested order.
 
-Array- and HDF5-backed channels are supported. Only the first window is read. A `ValueError` is
-raised when a selected channel is shorter than the resolved window.
+In-memory and HDF5-backed `SampledChannel` objects are supported. Timestamped channels are
+rejected with a clear error. Only the first window is read. A `ValueError` is raised when a
+selected channel is shorter than the resolved window.
 
 Next: [HDF5 input](hdf5.md).

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
+from signalsnap_pytorch import DataConfig, SampledChannel, SpectrumConfig, calculate_spectra
 from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
@@ -14,7 +14,7 @@ from signalsnap_pytorch._core.planning import (
     resolve_channels,
     resolve_frequencies,
 )
-from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH
+from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
 auto_spectra = [(0,), (0, 0)]
 
@@ -84,7 +84,7 @@ def test_spectral_estimates_in_runtime_config(
         m=m,
         spectral_estimates_max=spectral_estimates_max,
     )
-    data_config = DataConfig(channels=(np.ones(n_data_points),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(n_data_points),), dt=1.0)
 
     warning_context = (
         pytest.warns(UserWarning, match=f"using m={expected_m} instead")
@@ -110,7 +110,7 @@ def test_runtime_config_propagates_short_term_uncertainty_configuration():
         spectral_estimates_per_batch=2,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(256),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(256),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -148,7 +148,7 @@ def test_runtime_config_aligns_short_term_batch_size_with_m_var(
         spectral_estimates_max=8,
         spectral_estimates_per_batch=configured_batch_size,
     )
-    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(10_000),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -167,7 +167,7 @@ def test_runtime_config_aligns_batch_size_with_reduced_m_var():
         spectral_estimates_max=3,
         spectral_estimates_per_batch=8,
     )
-    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(10_000),), dt=1.0)
 
     with pytest.warns(UserWarning, match="using m_var=3 instead"):
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
@@ -186,7 +186,7 @@ def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
         m_var=10,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(128),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(128),), dt=1.0)
 
     with pytest.warns(UserWarning, match="using m_var=2 instead"):
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
@@ -206,7 +206,7 @@ def test_runtime_config_applies_estimate_cap_before_reducing_m_var():
         m_var=8,
         spectral_estimates_max=3,
     )
-    data_config = DataConfig(channels=(np.ones(640),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(640),), dt=1.0)
 
     with pytest.warns(UserWarning, match="using m_var=3 instead"):
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
@@ -225,7 +225,7 @@ def test_runtime_config_does_not_reduce_short_term_m_var_to_one():
         m_var=10,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(64),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -243,7 +243,7 @@ def test_global_runtime_keeps_configured_m_var_when_fewer_estimates_are_availabl
         m_var=10,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(128),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(128),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -262,7 +262,7 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
         m_var=3,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(256),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(256),), dt=1.0)
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
     store = initialize_accumulator_store(runtime)
@@ -366,7 +366,7 @@ def test_window_slices_respect_interlacing(
         spectral_estimates_max=None,
         interlacing=interlacing,
     )
-    data_config = DataConfig(channels=(np.ones(n_data_points),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(n_data_points),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -387,7 +387,7 @@ def test_short_term_batch_alignment_is_applied_separately_to_each_placement():
         spectral_estimates_per_batch=8,
         interlacing=True,
     )
-    data_config = DataConfig(channels=(np.ones(10_000),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(10_000),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
     slices = list(iter_window_slices(runtime))
@@ -407,7 +407,7 @@ def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_mas
         spectral_estimates_max=1,
         spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     )
-    data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(64),), dt=1.0)
 
     with pytest.warns(RuntimeWarning, match="at least two spectral estimates"):
         result_store = calculate_spectra(
@@ -419,8 +419,9 @@ def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_mas
     assert result.spectrum.shape == (result.freq.size, result.freq.size)
 
     assert spectrum_config.df is not None
-    window_points = int(np.round(1 / (spectrum_config.df * data_config.dt)))
-    full_fft_freq = np.fft.fftshift(np.fft.fftfreq(window_points, data_config.dt))
+    dt = data_config.channels[0].dt
+    window_points = int(np.round(1 / (spectrum_config.df * dt)))
+    full_fft_freq = np.fft.fftshift(np.fft.fftfreq(window_points, dt))
     third_factor_freq = -(result.freq[:, None] + result.freq[None, :])
     expected_valid_mask = np.isclose(
         third_factor_freq[..., None],
@@ -444,7 +445,7 @@ def test_pipeline_produces_short_term_uncertainty():
         spectral_estimates_per_batch=TEST_SPECTRAL_ESTIMATES_PER_BATCH,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(
+    data_config = sampled_data_config(
         channels=(np.arange(32, dtype=np.float64),),
         dt=1.0,
     )
@@ -483,7 +484,7 @@ def test_runtime_config_keeps_m_for_exact_unshifted_fit_without_interlacing():
         interlacing=False,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(64),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
@@ -500,7 +501,7 @@ def test_runtime_config_raises_when_interlacing_has_no_shifted_estimate():
         interlacing=True,
         spectral_estimates_max=None,
     )
-    data_config = DataConfig(channels=(np.ones(64),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(64),), dt=1.0)
 
     with pytest.raises(ValueError, match="Interlacing was requested"):
         _build_runtime(data_config, spectrum_config, auto_spectra)
@@ -521,7 +522,7 @@ def test_runtime_config_rejects_m_below_requested_order(auto_spectra_channels, m
         df=20 / 15,
         m=m,
     )
-    data_config = DataConfig(channels=(np.ones(50000),), dt=0.001)
+    data_config = sampled_data_config(channels=(np.ones(50000),), dt=0.001)
 
     with pytest.raises(ValueError, match="Not enough data points"):
         _build_runtime(data_config, spectrum_config, auto_spectra_channels)
@@ -534,7 +535,7 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
         df=0.0625,
         m=4,
     )
-    data_config = DataConfig(
+    data_config = sampled_data_config(
         channels=(
             np.ones(136),
             np.ones(136),
@@ -557,6 +558,35 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
     )
 
 
+def test_runtime_config_validates_dt_for_active_sampled_channels_only():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.ones(136), dt=1.0),
+            SampledChannel(data=np.ones(136), dt=2.0),
+        )
+    )
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0, 0)])
+    assert runtime.dt == 1.0
+
+    with pytest.raises(ValueError, match=r"Channel 1 has dt=2.0"):
+        _build_runtime(data_config, spectrum_config, [(0, 1)])
+
+
+def test_runtime_config_rejects_unequal_active_sampled_lengths():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.ones(136), dt=1.0),
+            SampledChannel(data=np.ones(128), dt=1.0),
+        )
+    )
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
+
+    with pytest.raises(ValueError, match=r"Channel 1 contains 128 samples"):
+        _build_runtime(data_config, spectrum_config, [(0, 1)])
+
+
 def test_runtime_config_rejects_out_of_bounds_spectra_channel_indices():
     spectrum_config = SpectrumConfig(
         f_min=0.0,
@@ -564,7 +594,7 @@ def test_runtime_config_rejects_out_of_bounds_spectra_channel_indices():
         df=0.0625,
         m=4,
     )
-    data_config = DataConfig(channels=(np.ones(136),), dt=1.0)
+    data_config = sampled_data_config(channels=(np.ones(136),), dt=1.0)
 
     with pytest.raises(ValueError, match="out of bounds"):
         _build_runtime(data_config, spectrum_config, [(1,)])
@@ -689,7 +719,7 @@ def test_runtime_config_auto_precision_uses_single_on_xpu(monkeypatch):
     monkeypatch.setattr(torch.xpu, "device_count", lambda: 1)
 
     runtime = _build_runtime(
-        DataConfig(channels=(np.ones(136),), dt=1.0),
+        sampled_data_config(channels=(np.ones(136),), dt=1.0),
         SpectrumConfig(
             f_min=0.0,
             f_max=0.5,

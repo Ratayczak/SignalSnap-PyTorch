@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from ..configurators import DataConfig, SpectrumConfig
+from ..configurators import DataConfig, SampledChannel, SpectrumConfig
 from .data_access import RuntimeChannel, get_sample_count
 from .utils import ChannelIndex, FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
@@ -305,25 +305,39 @@ def _get_and_validate_selected_channels(
     data_config: DataConfig,
     opened_channels: Mapping[int, RuntimeChannel],
 ) -> tuple[tuple[int, ...], int, float, TimeUnits]:
-    """Resolve active channels and require them to have equal sample counts.
-
-    Returns the active indices, common sample count, sampling interval, and time unit.
-    """
+    """Require active sampled channels to have equal lengths and sampling intervals."""
 
     active_data_channels = tuple(opened_channels)
     first_channel = active_data_channels[0]
+    first_config = data_config.channels[first_channel]
+
+    if not isinstance(first_config, SampledChannel):
+        raise TypeError(f"Active channel {first_channel} is not sampled.")
+
     first_sample_count = get_sample_count(opened_channels[first_channel])
+    dt = first_config.dt
 
     for channel in active_data_channels[1:]:
+        channel_config = data_config.channels[channel]
+
+        if not isinstance(channel_config, SampledChannel):
+            raise TypeError(f"Active channel {channel} is not sampled.")
+
+        if channel_config.dt != dt:
+            raise ValueError(
+                f"Channel {channel} has dt={channel_config.dt}, but channel "
+                f"{first_channel} has dt={dt}."
+            )
+
         sample_count = get_sample_count(opened_channels[channel])
 
         if sample_count != first_sample_count:
             raise ValueError(
-                f"Channel {channel} contains {sample_count} samples, but channel {first_channel} "
-                f"contains {first_sample_count} samples."
+                f"Channel {channel} contains {sample_count} samples, but channel "
+                f"{first_channel} contains {first_sample_count} samples."
             )
 
-    return active_data_channels, first_sample_count, data_config.dt, data_config.t_unit
+    return active_data_channels, first_sample_count, dt, data_config.t_unit
 
 
 def resolve_frequencies(
@@ -408,9 +422,10 @@ def build_runtime_config(
     ----------
     data_config : :class:`DataConfig`
         Data configurations containing the input data and sampling metadata.
-    opened_channels : Mapping[int, Any | :class:`~signalsnap_pytorch._core.data_access.HDF5ChannelState`]
+    opened_channels : Mapping[int, Any | HDF5SourceState]
         Opened runtime representation of ``data_config.channels``. Array channels are retained
-        directly; HDF5 channels are represented by :class:`~signalsnap_pytorch._core.data_access.HDF5ChannelState` instances.
+        directly; HDF5 channels are represented by
+        :class:`~signalsnap_pytorch._core.data_access.HDF5SourceState` instances.
     spectrum_config : :class:`SpectrumConfig`
         User configuration for frequency bounds, precision, device, windowing, and
         related calculation options.

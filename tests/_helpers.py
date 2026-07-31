@@ -2,9 +2,30 @@ from __future__ import annotations
 
 import numpy as np
 
+from signalsnap_pytorch import DataConfig, SampledChannel
+
 # The largest order-4 regression case peaks near 42 MiB on CUDA at this size while avoiding most
 # per-estimate loop overhead.
 TEST_SPECTRAL_ESTIMATES_PER_BATCH = 32
+
+
+def sampled_data_config(
+    *,
+    channels: tuple[object, ...] | list[object],
+    dt: float,
+    t_unit: str = "s",
+) -> DataConfig:
+    """Build a sampled-only configuration for tests unrelated to public API validation."""
+
+    return DataConfig(
+        channels=tuple(
+            channel
+            if isinstance(channel, SampledChannel)
+            else SampledChannel(data=channel, dt=dt)
+            for channel in channels
+        ),
+        t_unit=t_unit,
+    )
 
 
 def indices_for_freqs(actual_freq: np.ndarray, expected_freq: np.ndarray) -> np.ndarray:

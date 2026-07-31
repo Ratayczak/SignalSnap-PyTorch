@@ -1,14 +1,16 @@
 import h5py
 import numpy as np
 import pytest
+import torch
 
-from signalsnap_pytorch import DataConfig, HDF5Channel
+from signalsnap_pytorch import HDF5Source
 from signalsnap_pytorch._core.data_access import (
-    HDF5ChannelState,
+    HDF5SourceState,
     get_sample_count,
     open_channels,
     read_channel,
 )
+from tests._helpers import sampled_data_config
 
 
 def _open_all_channels(config):
@@ -27,6 +29,15 @@ def test_array_read():
     result = read_channel(channel, 2, 6)
 
     np.testing.assert_array_equal(result, np.array([2, 3, 4, 5]))
+    assert result.flags.c_contiguous
+
+
+def test_cpu_tensor_read_matches_numpy_and_detaches_gradients():
+    channel = torch.arange(10, dtype=torch.float64, requires_grad=True)
+
+    result = read_channel(channel, 2, 6)
+
+    np.testing.assert_array_equal(result, np.array([2.0, 3.0, 4.0, 5.0]))
     assert result.flags.c_contiguous
 
 
@@ -74,16 +85,16 @@ def hdf5_file(tmp_path):
 def test_open_channels_builds_hdf5_state(hdf5_file):
     path, _ = hdf5_file
 
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
+            HDF5Source(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
         ),
         dt=1.0,
     )
 
     with _open_all_channels(config) as channels:
         assert len(channels) == 1
-        assert isinstance(channels[0], HDF5ChannelState)
+        assert isinstance(channels[0], HDF5SourceState)
         assert channels[0].selected_shape == (4, 6)
         assert get_sample_count(channels[0]) == 24
 
@@ -95,9 +106,9 @@ def test_open_channels_builds_hdf5_state(hdf5_file):
 def test_flattened_hdf5_reads_match_numpy(hdf5_file, start, stop):
     path, values = hdf5_file
 
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
+            HDF5Source(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
         ),
         dt=1.0,
     )
@@ -113,9 +124,9 @@ def test_flattened_hdf5_reads_match_numpy(hdf5_file, start, stop):
 
 def test_all_flattened_hdf5_read_ranges_match_numpy(hdf5_file):
     path, values = hdf5_file
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
+            HDF5Source(file=path, dataset="/signals", selection=(slice(None), slice(None), 1)),
         ),
         dt=1.0,
     )
@@ -137,9 +148,9 @@ def test_hdf5_read_respects_selection_offsets(tmp_path):
     with h5py.File(path, "w") as file:
         file.create_dataset("/signals", data=values)
 
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(file=path, dataset="/signals", selection=(slice(2, 8), slice(5, 15), 1)),
+            HDF5Source(file=path, dataset="/signals", selection=(slice(2, 8), slice(5, 15), 1)),
         ),
         dt=1.0,
     )
@@ -154,9 +165,9 @@ def test_hdf5_read_respects_selection_offsets(tmp_path):
 
 def test_one_dimensional_hdf5_selection_matches_numpy(hdf5_file):
     path, values = hdf5_file
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(1, 4), 2, 1),
@@ -174,9 +185,9 @@ def test_one_dimensional_hdf5_selection_matches_numpy(hdf5_file):
 
 def test_negative_integer_and_slice_bounds_are_normalized(hdf5_file):
     path, values = hdf5_file
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(-3, None), slice(-5, -1), -1),
@@ -192,13 +203,13 @@ def test_negative_integer_and_slice_bounds_are_normalized(hdf5_file):
     np.testing.assert_array_equal(actual, expected[2:10])
 
 
-def test_open_channels_preserves_array_and_hdf5_channel_order(hdf5_file):
+def test_open_channels_preserves_array_and_hdf5_source_order(hdf5_file):
     path, values = hdf5_file
     array = np.arange(24)
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
             array,
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(None), slice(None), 1),
@@ -209,7 +220,7 @@ def test_open_channels_preserves_array_and_hdf5_channel_order(hdf5_file):
 
     with _open_all_channels(config) as channels:
         assert channels[0] is array
-        assert isinstance(channels[1], HDF5ChannelState)
+        assert isinstance(channels[1], HDF5SourceState)
         np.testing.assert_array_equal(
             read_channel(channels[1], 0, 4), values[:, :, 1].reshape(-1)[:4]
         )
@@ -217,9 +228,9 @@ def test_open_channels_preserves_array_and_hdf5_channel_order(hdf5_file):
 
 def test_open_channels_closes_hdf5_file_after_context(hdf5_file):
     path, _ = hdf5_file
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(None), slice(None), 1),
@@ -237,14 +248,14 @@ def test_open_channels_closes_hdf5_file_after_context(hdf5_file):
 
 def test_channels_from_same_file_share_file_handle(hdf5_file):
     path, _ = hdf5_file
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(None), slice(None), 0),
             ),
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signals",
                 selection=(slice(None), slice(None), 1),
@@ -270,8 +281,8 @@ def test_channels_from_same_file_share_file_handle(hdf5_file):
 )
 def test_open_channels_rejects_invalid_hdf5_selection(hdf5_file, selection, exception, message):
     path, _ = hdf5_file
-    config = DataConfig(
-        channels=(HDF5Channel(file=path, dataset="/signals", selection=selection),),
+    config = sampled_data_config(
+        channels=(HDF5Source(file=path, dataset="/signals", selection=selection),),
         dt=1.0,
     )
 
@@ -281,8 +292,8 @@ def test_open_channels_rejects_invalid_hdf5_selection(hdf5_file, selection, exce
 
 def test_open_channels_rejects_missing_dataset(hdf5_file):
     path, _ = hdf5_file
-    config = DataConfig(
-        channels=(HDF5Channel(file=path, dataset="/missing", selection=(slice(None),)),),
+    config = sampled_data_config(
+        channels=(HDF5Source(file=path, dataset="/missing", selection=(slice(None),)),),
         dt=1.0,
     )
 
@@ -291,9 +302,9 @@ def test_open_channels_rejects_missing_dataset(hdf5_file):
 
 
 def test_open_channels_rejects_missing_file(tmp_path):
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=tmp_path / "missing.h5",
                 dataset="/signals",
                 selection=(slice(None),),
@@ -310,8 +321,8 @@ def test_open_channels_rejects_group_instead_of_dataset(tmp_path):
     path = tmp_path / "group.h5"
     with h5py.File(path, "w") as file:
         file.create_group("/signals")
-    config = DataConfig(
-        channels=(HDF5Channel(file=path, dataset="/signals", selection=(slice(None),)),),
+    config = sampled_data_config(
+        channels=(HDF5Source(file=path, dataset="/signals", selection=(slice(None),)),),
         dt=1.0,
     )
 
@@ -330,8 +341,8 @@ def test_open_channels_rejects_unsupported_dataset_dtype(tmp_path, values, messa
     path = tmp_path / "dtype.h5"
     with h5py.File(path, "w") as file:
         file.create_dataset("/signals", data=values)
-    config = DataConfig(
-        channels=(HDF5Channel(file=path, dataset="/signals", selection=(slice(None),)),),
+    config = sampled_data_config(
+        channels=(HDF5Source(file=path, dataset="/signals", selection=(slice(None),)),),
         dt=1.0,
     )
 
@@ -344,8 +355,8 @@ def test_boolean_hdf5_dataset_is_supported(tmp_path):
     path = tmp_path / "bool.h5"
     with h5py.File(path, "w") as file:
         file.create_dataset("/signals", data=values)
-    config = DataConfig(
-        channels=(HDF5Channel(file=path, dataset="/signals", selection=(slice(None),)),),
+    config = sampled_data_config(
+        channels=(HDF5Source(file=path, dataset="/signals", selection=(slice(None),)),),
         dt=1.0,
     )
 
@@ -361,9 +372,9 @@ def test_read_channel_converts_to_native_byte_order(tmp_path):
     with h5py.File(path, "w") as file:
         file.create_dataset("/signal", data=np.arange(10, dtype=">f8"))
 
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signal",
                 selection=(slice(None),),
@@ -386,9 +397,9 @@ def test_two_dimensional_hdf5_read_converts_to_native_byte_order(tmp_path):
     with h5py.File(path, "w") as file:
         file.create_dataset("/signal", data=values)
 
-    config = DataConfig(
+    config = sampled_data_config(
         channels=(
-            HDF5Channel(
+            HDF5Source(
                 file=path,
                 dataset="/signal",
                 selection=(slice(None), 1, slice(None)),
@@ -406,12 +417,12 @@ def test_two_dimensional_hdf5_read_converts_to_native_byte_order(tmp_path):
     np.testing.assert_array_equal(result, expected[1:-1])
 
 
-def test_hdf5_channel_normalizes_numpy_integer_selection():
-    channel = HDF5Channel(
+def test_hdf5_source_normalizes_numpy_integer_selection():
+    source = HDF5Source(
         file="data.h5",  # type: ignore
         dataset="/signals",
         selection=(slice(None), np.int64(2)),
     )
 
-    assert channel.selection == (slice(None), 2)
-    assert type(channel.selection[1]) is int
+    assert source.selection == (slice(None), 2)
+    assert type(source.selection[1]) is int

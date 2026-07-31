@@ -4,23 +4,37 @@
 
 ## Input data
 
-`DataConfig` describes the channels and their common sampling interval:
+`DataConfig` accepts only explicit `SampledChannel` and `TimestampedChannel` objects. A sampled
+channel owns its sampling interval:
 
 ```python
+from signalsnap_pytorch import DataConfig, SampledChannel
+
 data_config = DataConfig(
-    channels=(channel_0, channel_1),
-    dt=2.0,
+    channels=(
+        SampledChannel(data=channel_0, dt=2.0),
+        SampledChannel(data=channel_1, dt=2.0),
+    ),
     t_unit="ns",
 )
 ```
 
-`dt` is the time interval between consecutive samples in units of `t_unit`. Supported time units are
-`"s"`, `"ms"`, `"us"`, `"ns"`, and `"ps"`; SignalSnap selects the corresponding frequency unit. For
-example, `t_unit = "us"` will select the frequency unit `"MHz"`.
+`dt` is the time interval between consecutive samples in units of `t_unit`. All sampled channels
+active in one calculation currently require equal dt values and equal logical lengths. Supported
+time units are `"s"`, `"ms"`, `"us"`, `"ns"`, and `"ps"`; SignalSnap selects the corresponding
+frequency unit. For example, `t_unit = "us"` will select the frequency unit `"MHz"`.
 
-Array-backed channels must be one-dimensional, nonempty, real-valued numeric or Boolen arrays. All
-channels used in one calculation must contain the same number of samples, e.g., through slicing.
-HDF5-backed channels are described in the [HDF5 guide](hdf5.md).
+Sampled in-memory data must be a one-dimensional, nonempty NumPy array or CPU PyTorch tensor
+containing real numeric or Boolean values. HDF5-backed channels are described in the
+[HDF5 guide](hdf5.md).
+
+Configuration objects retain their potentially large arrays and tensors without copying them.
+Although the configuration models are frozen, the referenced data remains mutable and must not be
+changed during a calculation.
+
+`DataConfig.observation_start` and `observation_stop` describe a common half-open physical
+interval. Sampled-only planning may default the start to zero and infer the stop from the active
+channel length and dt.
 
 ## Spectrum settings
 
@@ -58,8 +72,8 @@ Configuration objects are immutable and reject unknown fields.
 
 ### Frequency resolution and FFT windows
 
-`df` specifies the requested frequency spacing. Together with the sampling interval `dt`, it
-determines the FFT window length:
+`df` specifies the requested frequency spacing. Together with the active sampled channels' common
+sampling interval `dt`, it determines the FFT window length:
 
 $$
 \mathrm{window\_points} = \mathrm{round}\left(\frac{1}{\mathrm{dt} \cdot \mathrm{df}}\right).
