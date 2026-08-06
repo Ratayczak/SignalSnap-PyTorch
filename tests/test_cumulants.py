@@ -13,8 +13,10 @@ from signalsnap_pytorch._core.cumulants import (
 from signalsnap_pytorch._core.fft import WindowBuffer
 from signalsnap_pytorch._core.planning import (
     RepetitionPlan,
+    SampledChannelPlan,
     SampledFrequencyPlan,
     TimestampFrequencyPlan,
+    WindowBatch,
 )
 from signalsnap_pytorch._core.spectra import (
     ChannelCoefficients,
@@ -24,6 +26,8 @@ from signalsnap_pytorch._core.spectra import (
     build_third_order_cache,
     build_timestamp_third_order_cache,
     compute_spectral_estimates,
+    expand_deterministic_coefficient_batch,
+    prepare_sampled_channel_coefficients,
 )
 
 
@@ -183,6 +187,39 @@ def test_timestamp_third_order_cache_maps_every_pair_to_compact_closing_frequenc
     assert cache.closing_frequencies.size < cache.gather_indices.numel()
 
 
+def test_timestamp_closing_cache_accepts_sampled_view_beyond_fft_support():
+    full_frequencies = np.arange(-3.0, 3.0)
+    frequency_plan = SampledFrequencyPlan(
+        full_fft_frequencies=full_frequencies,
+        band_frequencies=full_frequencies[2:6],
+        band_start=2,
+        band_stop=6,
+    )
+    runtime = SimpleNamespace(device=torch.device("cpu"))
+
+    cache = build_timestamp_third_order_cache(runtime, frequency_plan)
+
+    output_grid_indices = np.array([-1, 0, 1, 2], dtype=np.int64)
+    target_grid_indices = -(
+        output_grid_indices[:, None] + output_grid_indices[None, :]
+    )
+    gathered_frequencies = cache.closing_frequencies[
+        cache.gather_indices.numpy()
+    ]
+
+    np.testing.assert_array_equal(
+        cache.closing_frequencies,
+        np.arange(-4.0, 3.0),
+    )
+    np.testing.assert_array_equal(
+        gathered_frequencies,
+        target_grid_indices.astype(np.float64),
+    )
+    assert cache.closing_frequencies[0] < full_frequencies[0]
+    assert cache.closing_frequencies.size == 2 * len(output_grid_indices) - 1
+    assert torch.all(cache.valid_mask)
+
+
 def test_empty_compact_third_order_coefficients_produce_placeholder_grid():
     coefficients = ThirdOrderCoefficients(
         values=torch.empty(2, 3, 4, 0),
@@ -243,6 +280,129 @@ def test_coefficient_batch_is_compact_and_independent_of_full_fft_storage():
     torch.testing.assert_close(coefficients.dc, expected_dc)
     torch.testing.assert_close(coefficients.output, expected_output)
     torch.testing.assert_close(coefficients.third_order.values, expected_closing)
+
+
+def test_sampled_channel_producer_matches_independent_fft_reference():
+    data = np.arange(16, dtype=np.float64)
+    dt = 0.5
+    window_points = 4
+    full_frequencies = np.fft.fftshift(np.fft.fftfreq(window_points, d=dt))
+    frequency_plan = SampledFrequencyPlan(
+        full_fft_frequencies=full_frequencies,
+        band_frequencies=full_frequencies[1:4],
+        band_start=1,
+        band_stop=4,
+    )
+    runtime = SimpleNamespace(
+        device=torch.device("cpu"),
+        real_dtype=torch.float64,
+        window_plan=SimpleNamespace(windows_per_estimate=2),
+    )
+    window_buffer = WindowBuffer(
+        window=torch.ones(window_points, dtype=torch.float64),
+        norm_all_orders=tuple(torch.tensor(1.0) for _ in range(4)),
+    )
+    batch = WindowBatch(
+        relative_starts=np.array([[0.0, 2.0], [4.0, 6.0]]),
+        duration=2.0,
+        estimate_count=2,
+        shifted=False,
+    )
+    third_order_cache = build_third_order_cache(runtime, frequency_plan)
+
+    actual = prepare_sampled_channel_coefficients(
+        channel_index=3,
+        source=data,
+        channel_plan=SampledChannelPlan(sample_count=data.size, dt=dt),
+        batch=batch,
+        frequency_plan=frequency_plan,
+        window_buffer=window_buffer,
+        runtime=runtime,
+        third_order_cache=third_order_cache,
+    )
+
+    chunks = data.reshape(2, 2, window_points)
+    full_coefficients = np.fft.fftshift(
+        np.fft.ifft(chunks, axis=-1) * window_points * dt,
+        axes=-1,
+    )[None, ...]
+    np.testing.assert_allclose(actual.dc.numpy(), full_coefficients[..., 2], atol=1e-14)
+    np.testing.assert_allclose(
+        actual.output.numpy(),
+        full_coefficients[..., 1:4],
+        atol=1e-14,
+    )
+    assert actual.third_order is not None
+    np.testing.assert_allclose(
+        actual.third_order.values.numpy(),
+        full_coefficients[..., third_order_cache.closing_fft_indices.numpy()],
+        atol=1e-14,
+    )
+
+
+def test_deterministic_coefficient_expansion_uses_zero_stride_views():
+    gather_indices = torch.tensor([[0, 1], [1, 0]])
+    valid_mask = torch.ones((2, 2), dtype=torch.bool)
+    coefficients = ChannelCoefficients(
+        dc=torch.arange(6, dtype=torch.float64).reshape(1, 2, 3),
+        output=torch.arange(24, dtype=torch.float64).reshape(1, 2, 3, 4),
+        third_order=ThirdOrderCoefficients(
+            values=torch.arange(30, dtype=torch.float64).reshape(1, 2, 3, 5),
+            gather_indices=gather_indices,
+            valid_mask=valid_mask,
+        ),
+    )
+    batch = CoefficientBatch(by_channel={4: coefficients})
+
+    expanded = expand_deterministic_coefficient_batch(batch, realization_count=7)
+    actual = expanded.by_channel[4]
+
+    for original_values, expanded_values in (
+        (coefficients.dc, actual.dc),
+        (coefficients.output, actual.output),
+        (coefficients.third_order.values, actual.third_order.values),
+    ):
+        assert expanded_values.shape[0] == 7
+        assert expanded_values.stride(0) == 0
+        assert (
+            expanded_values.untyped_storage().data_ptr()
+            == original_values.untyped_storage().data_ptr()
+        )
+        torch.testing.assert_close(expanded_values[6], original_values[0])
+
+    assert actual.third_order is not None
+    assert actual.third_order.gather_indices is gather_indices
+    assert actual.third_order.valid_mask is valid_mask
+
+
+def test_deterministic_coefficient_expansion_returns_original_for_one_realization():
+    batch = CoefficientBatch(
+        by_channel={
+            0: ChannelCoefficients(
+                dc=torch.ones((1, 2, 3)),
+                output=torch.ones((1, 2, 3, 4)),
+            )
+        }
+    )
+
+    assert expand_deterministic_coefficient_batch(batch, 1) is batch
+
+
+def test_deterministic_coefficient_expansion_rejects_invalid_axes():
+    batch = CoefficientBatch(
+        by_channel={
+            0: ChannelCoefficients(
+                dc=torch.ones((2, 2, 3)),
+                output=torch.ones((2, 2, 3, 4)),
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="At least one realization"):
+        expand_deterministic_coefficient_batch(batch, 0)
+
+    with pytest.raises(RuntimeError, match="exactly one realization"):
+        expand_deterministic_coefficient_batch(batch, 3)
 
 
 def test_channel_coefficients_cache_output_centered_only_over_windows():

@@ -15,8 +15,16 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
-from .fft import TimestampWindow, WindowBuffer
-from .planning import RuntimeConfig, SampledFrequencyPlan, TimestampFrequencyPlan
+from .data_access import RuntimeSource, read_source
+from .fft import TimestampWindow, WindowBuffer, compute_fft, reshape_window_chunk, to_device
+from .planning import (
+    FrequencyPlan,
+    RuntimeConfig,
+    SampledChannelPlan,
+    SampledFrequencyPlan,
+    TimestampFrequencyPlan,
+    WindowBatch,
+)
 
 
 @dataclass(slots=True)
@@ -158,11 +166,24 @@ def build_third_order_cache(
 
 def build_timestamp_third_order_cache(
     runtime: RuntimeConfig,
-    frequency_plan: TimestampFrequencyPlan,
+    frequency_plan: FrequencyPlan,
 ) -> TimestampThirdOrderFrequencyCache:
-    """Build compact closing frequencies for a direct timestamp transform."""
+    """Build compact timestamp closing frequencies for either output view."""
 
-    grid_indices = frequency_plan.grid_indices
+    if isinstance(frequency_plan, TimestampFrequencyPlan):
+        grid_indices = frequency_plan.grid_indices
+        actual_df = frequency_plan.actual_df
+    elif isinstance(frequency_plan, SampledFrequencyPlan):
+        grid_indices = (
+            np.arange(frequency_plan.band_start, frequency_plan.band_stop, dtype=np.int64)
+            - frequency_plan.window_points // 2
+        )
+        actual_df = float(
+            abs(frequency_plan.full_fft_frequencies[1] - frequency_plan.full_fft_frequencies[0])
+        )
+    else:
+        raise TypeError(f"Unsupported frequency plan {type(frequency_plan).__name__}.")
+
     target_grid_indices = -(grid_indices[:, None] + grid_indices[None, :])
     closing_grid_indices, inverse_indices = np.unique(target_grid_indices, return_inverse=True)
     gather_indices = torch.as_tensor(
@@ -172,7 +193,7 @@ def build_timestamp_third_order_cache(
     )
 
     return TimestampThirdOrderFrequencyCache(
-        closing_frequencies=(closing_grid_indices.astype(np.float64) * frequency_plan.actual_df),
+        closing_frequencies=(closing_grid_indices.astype(np.float64) * actual_df),
         gather_indices=gather_indices,
         valid_mask=torch.ones(target_grid_indices.shape, dtype=torch.bool, device=runtime.device),
     )
@@ -205,6 +226,77 @@ def build_coefficient_batch(
         )
 
     return CoefficientBatch(by_channel=by_channel)
+
+
+def prepare_sampled_channel_coefficients(
+    channel_index: int,
+    source: RuntimeSource,
+    channel_plan: SampledChannelPlan,
+    batch: WindowBatch,
+    frequency_plan: SampledFrequencyPlan,
+    window_buffer: WindowBuffer,
+    runtime: RuntimeConfig,
+    third_order_cache: ThirdOrderIndexCache | None,
+) -> ChannelCoefficients:
+    """Read and transform one sampled channel for a physical window batch."""
+
+    window_points = round(batch.duration / channel_plan.dt)
+    start = round(float(batch.relative_starts[0, 0]) / channel_plan.dt)
+    stop = start + batch.estimate_count * runtime.window_plan.windows_per_estimate * window_points
+    data = read_source(source, start, stop)
+    chunk = reshape_window_chunk(
+        chunk=data,
+        estimate_count=batch.estimate_count,
+        windows_per_estimate=runtime.window_plan.windows_per_estimate,
+        window_points=window_points,
+    )
+    chunk = to_device(chunk, runtime)
+    coefficients = compute_fft(chunk=chunk, window=window_buffer.window, dt=channel_plan.dt)
+    coefficient_batch = build_coefficient_batch(
+        frequency_plan=frequency_plan,
+        coeffs_by_channel={channel_index: coefficients},
+        third_order_cache=third_order_cache,
+    )
+    return coefficient_batch.by_channel[channel_index]
+
+
+def expand_deterministic_coefficient_batch(
+    coefficient_batch: CoefficientBatch,
+    realization_count: int,
+) -> CoefficientBatch:
+    """Expand deterministic sampled coefficients across realizations as views."""
+
+    if realization_count < 1:
+        raise ValueError("At least one realization is required.")
+
+    if realization_count == 1:
+        return coefficient_batch
+
+    def expand(values: Tensor) -> Tensor:
+        if values.shape[0] != 1:
+            raise RuntimeError("Deterministic coefficients must contain exactly one realization.")
+
+        return values.expand(realization_count, *values.shape[1:])
+
+    expanded_channels = {}
+
+    for channel, coefficients in coefficient_batch.by_channel.items():
+        third_order = coefficients.third_order
+
+        if third_order is not None:
+            third_order = ThirdOrderCoefficients(
+                values=expand(third_order.values),
+                gather_indices=third_order.gather_indices,
+                valid_mask=third_order.valid_mask,
+            )
+
+        expanded_channels[channel] = ChannelCoefficients(
+            dc=expand(coefficients.dc),
+            output=expand(coefficients.output),
+            third_order=third_order,
+        )
+
+    return CoefficientBatch(by_channel=expanded_channels)
 
 
 def compute_spectral_estimates(

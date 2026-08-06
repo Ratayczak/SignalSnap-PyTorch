@@ -4,6 +4,7 @@ import numpy as np
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
+    PhotonOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -20,8 +21,12 @@ REQUESTED_SPECTRA = [
 ]
 
 
-def _assert_result_stores_equal(actual_store, expected_store):
-    for channels in REQUESTED_SPECTRA:
+def _assert_result_stores_equal(
+    actual_store,
+    expected_store,
+    requested_spectra=REQUESTED_SPECTRA,
+):
+    for channels in requested_spectra:
         actual = actual_store[channels]
         expected = expected_store[channels]
 
@@ -162,3 +167,90 @@ def test_sampled_pipeline_ignores_unrequested_timestamped_hdf5_source(tmp_path):
     )
 
     assert result_store[(0, 0)].channels == (0, 0)
+
+
+def test_mixed_exponential_pipeline_has_array_hdf5_parity(tmp_path):
+    dt = 0.25
+    counts = np.tile(np.array([0, 1, 2, 3]), 2)
+    sampled = np.zeros((counts.size, 4))
+    timestamps = []
+
+    for window_index, count in enumerate(counts):
+        sampled[window_index, 2] = count / dt
+        timestamps.extend([window_index + 0.5] * count)
+
+    timestamps = np.asarray(timestamps).reshape(3, 4)
+    path = tmp_path / "mixed.h5"
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset("/sampled", data=sampled, chunks=(2, 4))
+        file.create_dataset("/timestamps", data=timestamps, chunks=(1, 4))
+
+    eager_config = DataConfig(
+        channels=(
+            SampledChannel(data=sampled.reshape(-1), dt=dt),
+            TimestampedChannel(timestamps=timestamps.reshape(-1)),
+        ),
+        observation_start=0.0,
+        observation_stop=8.0,
+    )
+    hdf5_config = DataConfig(
+        channels=(
+            SampledChannel(
+                data=HDF5Source(
+                    file=path,
+                    dataset="/sampled",
+                    selection=(slice(None), slice(None)),
+                ),
+                dt=dt,
+            ),
+            TimestampedChannel(
+                timestamps=HDF5Source(
+                    file=path,
+                    dataset="/timestamps",
+                    selection=(slice(None), slice(None)),
+                )
+            ),
+        ),
+        observation_start=0.0,
+        observation_stop=8.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=-3.0,
+        f_max=3.0,
+        m=4,
+        interlacing=True,
+        photon_options=PhotonOptions(
+            weighting="exponential",
+            scale=1.25,
+            repetitions=5,
+            seed=97531,
+        ),
+    )
+    requested_spectra = [
+        (0, 1),
+        (1, 1),
+        (0, 1, 1),
+        (1, 1, 0),
+        (0, 1, 0, 1),
+    ]
+
+    expected = calculate_spectra(
+        eager_config,
+        spectrum_config,
+        requested_spectra=requested_spectra,
+        show_progress=False,
+    )
+    actual = calculate_spectra(
+        hdf5_config,
+        spectrum_config,
+        requested_spectra=requested_spectra,
+        show_progress=False,
+    )
+
+    _assert_result_stores_equal(
+        actual,
+        expected,
+        requested_spectra=requested_spectra,
+    )

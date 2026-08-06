@@ -10,6 +10,7 @@ from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.fft import prepare_default_timestamp_window
 from signalsnap_pytorch._core.planning import (
+    SampledFrequencyPlan,
     TimestampedChannelPlan,
     TimestampFrequencyPlan,
     WindowBatch,
@@ -497,6 +498,40 @@ def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
     np.testing.assert_allclose(
         coefficients.third_order.values.numpy(),
         expected_closing,
+        atol=1e-14,
+    )
+
+
+def test_timestamp_coefficients_accept_sampled_output_frequency_view():
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.array([0.5]),
+        window_indices=np.array([0], dtype=np.int64),
+        global_event_indices=np.array([0], dtype=np.int64),
+        estimate_count=1,
+        windows_per_estimate=1,
+    )
+    full_frequencies = np.array([-2.0, -1.0, 0.0, 1.0])
+    frequency_plan = SampledFrequencyPlan(
+        full_fft_frequencies=full_frequencies,
+        band_frequencies=full_frequencies[1:],
+        band_start=1,
+        band_stop=4,
+    )
+    runtime = _runtime()
+
+    coefficients = materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        prepare_default_timestamp_window(runtime),
+        runtime,
+        third_order_cache=None,
+        event_amplitudes=np.array([[2.5]]),
+    )
+
+    expected = 2.5 * np.exp(1j * np.pi * frequency_plan.band_frequencies)
+    np.testing.assert_allclose(
+        coefficients.output.numpy(),
+        expected.reshape(1, 1, 1, -1),
         atol=1e-14,
     )
 
