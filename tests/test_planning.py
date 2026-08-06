@@ -693,12 +693,39 @@ def test_timestamp_frequency_plan_applies_exact_inclusive_hard_bounds(
     )
 
     assert isinstance(frequency_plan, TimestampFrequencyPlan)
+    assert frequency_plan.actual_df == 0.125
     np.testing.assert_array_equal(
         frequency_plan.band_frequencies,
         np.asarray(expected_band),
     )
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        frequency_plan.grid_indices.astype(np.float64) * frequency_plan.actual_df,
+    )
     assert np.all(frequency_plan.band_frequencies >= f_min)
     assert np.all(frequency_plan.band_frequencies <= f_max)
+
+
+def test_timestamp_grid_indices_give_compact_closing_frequency_identity():
+    frequency_plan = resolve_timestamp_frequencies(
+        f_min=-2.0,
+        f_max=2.0,
+        window_duration=10.0,
+    )
+
+    closing_indices = -(
+        frequency_plan.grid_indices[:, None]
+        + frequency_plan.grid_indices[None, :]
+    )
+    compact_indices = np.unique(closing_indices)
+    expected_indices = np.arange(-40, 41, dtype=np.int64)
+
+    assert compact_indices.size == 2 * frequency_plan.grid_indices.size - 1
+    np.testing.assert_array_equal(compact_indices, expected_indices)
+    np.testing.assert_array_equal(
+        compact_indices.astype(np.float64) * frequency_plan.actual_df,
+        expected_indices.astype(np.float64) * 0.1,
+    )
 
 
 def test_timestamp_frequency_plan_rejects_band_without_grid_frequency():

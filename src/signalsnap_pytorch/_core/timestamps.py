@@ -1,15 +1,28 @@
+# This file is part of SignalSnap (PyTorch): Signal Analysis In Python Made Easy
+# Copyright (c) 2024 and later, Armin Ghorbanietemad, Markus Sifft and Daniel Hägele.
+#
+# This software is provided under the terms of the 3-Clause BSD License.
+# For details, see the LICENSE file in the root of this repository or
+# https://opensource.org/licenses/BSD-3-Clause
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
+from torch import Tensor
 
 from .data_access import RuntimeSource, get_source_length, read_source, relative_float64_offsets
-from .planning import WindowBatch
+from .fft import TimestampWindow
+from .planning import RuntimeConfig, TimestampFrequencyPlan, WindowBatch
+from .spectra import ChannelCoefficients, ThirdOrderCoefficients, TimestampThirdOrderFrequencyCache
 
 # Sequential reads of about 512 KiB for float64 timestamps.
 _TIMESTAMP_READ_CHUNK_SIZE = 65_536
+_MAX_DIRECT_PHASE_ELEMENTS = 1_048_576
+_MAX_DIRECT_FREQUENCIES_PER_CHUNK = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,3 +180,158 @@ def prepare_timestamp_batch(cursor: TimestampCursor, batch: WindowBatch) -> Prep
         estimate_count=estimate_count,
         windows_per_estimate=windows_per_estimate,
     )
+
+
+def direct_timestamp_transform(
+    prepared: PreparedTimestampBatch,
+    frequencies: NDArray[np.float64],
+    event_weights: Tensor,
+    runtime: RuntimeConfig,
+) -> Tensor:
+    """Direct-transform prepared events using the positive-exponential convention.
+
+    Parameters
+    ----------
+    prepared
+        Window-relative event times and flattened ``(B, m)`` window indices.
+    frequencies
+        Frequencies to evaluate, with shape ``(F,)``.
+    event_weights
+        Window and amplitude weights with shape ``(R, E)``.
+    runtime
+        Calculation device and numeric dtypes.
+
+    Returns
+    -------
+    Tensor
+        Complex coefficients with shape ``(R, B, m, F)``.
+    """
+
+    if event_weights.ndim != 2:
+        raise ValueError("Event weights must have shape (R, E).")
+
+    realization_count, event_count = event_weights.shape
+    if realization_count == 0:
+        raise ValueError("At least one amplitude realization is required.")
+
+    if event_count != prepared.relative_event_times.size:
+        raise ValueError(
+            f"Event weights contain {event_count} events; "
+            f"the prepared batch contains {prepared.relative_event_times.size}."
+        )
+
+    frequency_values = torch.as_tensor(
+        frequencies,
+        dtype=runtime.real_dtype,
+        device=runtime.device,
+    )
+    if frequency_values.ndim != 1:
+        raise ValueError("Frequencies must be one-dimensional.")
+
+    weights = event_weights.to(dtype=runtime.real_dtype, device=runtime.device)
+    relative_times = torch.as_tensor(
+        prepared.relative_event_times,
+        dtype=runtime.real_dtype,
+        device=runtime.device,
+    )
+    window_indices = torch.as_tensor(
+        prepared.window_indices,
+        dtype=torch.long,
+        device=runtime.device,
+    )
+
+    window_count = prepared.estimate_count * prepared.windows_per_estimate
+    frequency_count = frequency_values.numel()
+    result = torch.zeros(
+        realization_count,
+        window_count,
+        frequency_count,
+        dtype=runtime.complex_dtype,
+        device=runtime.device,
+    )
+
+    if event_count == 0 or frequency_count == 0:
+        return result.reshape(
+            realization_count,
+            prepared.estimate_count,
+            prepared.windows_per_estimate,
+            frequency_count,
+        )
+
+    frequency_chunk_size = min(frequency_count, _MAX_DIRECT_FREQUENCIES_PER_CHUNK)
+
+    for frequency_start in range(0, frequency_count, frequency_chunk_size):
+        frequency_stop = min(frequency_start + frequency_chunk_size, frequency_count)
+        frequency_chunk = frequency_values[frequency_start:frequency_stop]
+        event_chunk_size = max(
+            1,
+            _MAX_DIRECT_PHASE_ELEMENTS // (realization_count * frequency_chunk.numel()),
+        )
+        frequency_result = result.new_zeros(
+            realization_count,
+            window_count,
+            frequency_chunk.numel(),
+        )
+
+        for event_start in range(0, event_count, event_chunk_size):
+            event_stop = min(event_start + event_chunk_size, event_count)
+            time_chunk = relative_times[event_start:event_stop]
+            angles = 2.0 * torch.pi * time_chunk[:, None] * frequency_chunk[None, :]
+            phases = torch.polar(torch.ones_like(angles), angles)
+            contributions = weights[:, event_start:event_stop, None] * phases[None, :, :]
+            frequency_result.index_add_(1, window_indices[event_start:event_stop], contributions)
+
+        result[:, :, frequency_start:frequency_stop] = frequency_result
+
+    return result.reshape(
+        realization_count,
+        prepared.estimate_count,
+        prepared.windows_per_estimate,
+        frequency_count,
+    )
+
+
+def materialize_unit_timestamp_coefficients(
+    prepared: PreparedTimestampBatch,
+    frequency_plan: TimestampFrequencyPlan,
+    timestamp_window: TimestampWindow,
+    runtime: RuntimeConfig,
+    third_order_cache: TimestampThirdOrderFrequencyCache | None,
+) -> ChannelCoefficients:
+    """Materialize unit-weight coefficients for one prepared timestamp batch."""
+
+    relative_times = torch.as_tensor(
+        prepared.relative_event_times,
+        dtype=runtime.real_dtype,
+        device=runtime.device,
+    )
+    event_weights = timestamp_window.evaluate(relative_times).unsqueeze(0)
+
+    dc = direct_timestamp_transform(
+        prepared,
+        frequencies=np.zeros(1, dtype=np.float64),
+        event_weights=event_weights,
+        runtime=runtime,
+    )[..., 0]
+    output = direct_timestamp_transform(
+        prepared,
+        frequencies=frequency_plan.band_frequencies,
+        event_weights=event_weights,
+        runtime=runtime,
+    )
+
+    third_order = None
+    if third_order_cache is not None:
+        closing_values = direct_timestamp_transform(
+            prepared,
+            frequencies=third_order_cache.closing_frequencies,
+            event_weights=event_weights,
+            runtime=runtime,
+        )
+        third_order = ThirdOrderCoefficients(
+            values=closing_values,
+            gather_indices=third_order_cache.gather_indices,
+            valid_mask=third_order_cache.valid_mask,
+        )
+
+    return ChannelCoefficients(dc=dc, output=output, third_order=third_order)

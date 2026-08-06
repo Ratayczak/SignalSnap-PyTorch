@@ -128,6 +128,8 @@ class SampledFrequencyPlan:
 class TimestampFrequencyPlan:
     """Resolved hard-bounded direct-transform frequency grid."""
 
+    actual_df: float
+    grid_indices: NDArray[np.int64]
     band_frequencies: NDArray[np.float64]
 
 
@@ -572,6 +574,7 @@ def resolve_timestamp_frequencies(
     candidate_frequencies = grid_indices.astype(np.float64) * actual_df
     within_bounds = (candidate_frequencies >= f_min) & (candidate_frequencies <= f_max)
     band_frequencies = candidate_frequencies[within_bounds]
+    band_grid_indices = grid_indices[within_bounds]
 
     if band_frequencies.size == 0:
         raise ValueError(
@@ -579,7 +582,11 @@ def resolve_timestamp_frequencies(
             "any timestamp frequencies at the resolved frequency spacing."
         )
 
-    return TimestampFrequencyPlan(band_frequencies=band_frequencies)
+    return TimestampFrequencyPlan(
+        actual_df=actual_df,
+        grid_indices=band_grid_indices,
+        band_frequencies=band_frequencies,
+    )
 
 
 def _count_complete_windows(available_duration: float, window_duration: float) -> int:

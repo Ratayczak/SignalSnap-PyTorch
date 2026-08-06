@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
+from numpy.typing import NDArray
 from torch import Tensor
 
 from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
 from .fft import WindowBuffer
-from .planning import RuntimeConfig, SampledFrequencyPlan
+from .planning import RuntimeConfig, SampledFrequencyPlan, TimestampFrequencyPlan
 
 
 @dataclass(slots=True)
@@ -36,6 +38,15 @@ class ThirdOrderIndexCache:
     """
 
     closing_fft_indices: Tensor
+    gather_indices: Tensor
+    valid_mask: Tensor
+
+
+@dataclass(slots=True)
+class TimestampThirdOrderFrequencyCache:
+    """Compact closing-frequency mapping for a timestamp frequency grid."""
+
+    closing_frequencies: NDArray[np.float64]
     gather_indices: Tensor
     valid_mask: Tensor
 
@@ -142,6 +153,28 @@ def build_third_order_cache(
         closing_fft_indices=closing_fft_indices,
         gather_indices=gather_indices,
         valid_mask=valid_mask,
+    )
+
+
+def build_timestamp_third_order_cache(
+    runtime: RuntimeConfig,
+    frequency_plan: TimestampFrequencyPlan,
+) -> TimestampThirdOrderFrequencyCache:
+    """Build compact closing frequencies for a direct timestamp transform."""
+
+    grid_indices = frequency_plan.grid_indices
+    target_grid_indices = -(grid_indices[:, None] + grid_indices[None, :])
+    closing_grid_indices, inverse_indices = np.unique(target_grid_indices, return_inverse=True)
+    gather_indices = torch.as_tensor(
+        inverse_indices.reshape(target_grid_indices.shape),
+        dtype=torch.long,
+        device=runtime.device,
+    )
+
+    return TimestampThirdOrderFrequencyCache(
+        closing_frequencies=(closing_grid_indices.astype(np.float64) * frequency_plan.actual_df),
+        gather_indices=gather_indices,
+        valid_mask=torch.ones(target_grid_indices.shape, dtype=torch.bool, device=runtime.device),
     )
 
 

@@ -11,13 +11,18 @@ from signalsnap_pytorch._core.cumulants import (
     gather_s3_third_factor,
 )
 from signalsnap_pytorch._core.fft import WindowBuffer
-from signalsnap_pytorch._core.planning import RepetitionPlan, SampledFrequencyPlan
+from signalsnap_pytorch._core.planning import (
+    RepetitionPlan,
+    SampledFrequencyPlan,
+    TimestampFrequencyPlan,
+)
 from signalsnap_pytorch._core.spectra import (
     ChannelCoefficients,
     CoefficientBatch,
     ThirdOrderCoefficients,
     build_coefficient_batch,
     build_third_order_cache,
+    build_timestamp_third_order_cache,
     compute_spectral_estimates,
 )
 
@@ -143,6 +148,39 @@ def test_third_order_cache_retains_only_unique_valid_closing_coefficients():
         dense_fft_indices[expected_valid],
     )
     assert cache.closing_fft_indices.numel() < cache.gather_indices.numel()
+
+
+def test_timestamp_third_order_cache_maps_every_pair_to_compact_closing_frequency():
+    grid_indices = np.arange(-2, 3, dtype=np.int64)
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=0.1,
+        grid_indices=grid_indices,
+        band_frequencies=grid_indices.astype(np.float64) * 0.1,
+    )
+    runtime = SimpleNamespace(device=torch.device("cpu"))
+
+    cache = build_timestamp_third_order_cache(runtime, frequency_plan)
+
+    target_grid_indices = -(
+        grid_indices[:, None] + grid_indices[None, :]
+    )
+    expected_closing_indices = np.arange(-4, 5, dtype=np.int64)
+    gathered_frequencies = cache.closing_frequencies[
+        cache.gather_indices.numpy()
+    ]
+
+    np.testing.assert_array_equal(
+        cache.closing_frequencies,
+        expected_closing_indices.astype(np.float64) * 0.1,
+    )
+    np.testing.assert_array_equal(
+        gathered_frequencies,
+        target_grid_indices.astype(np.float64) * 0.1,
+    )
+    assert cache.gather_indices.dtype == torch.long
+    assert cache.gather_indices.device == torch.device("cpu")
+    assert torch.all(cache.valid_mask)
+    assert cache.closing_frequencies.size < cache.gather_indices.numel()
 
 
 def test_empty_compact_third_order_coefficients_produce_placeholder_grid():
