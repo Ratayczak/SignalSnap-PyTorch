@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import warnings
 
+import torch
 from tqdm.auto import tqdm
 
 from ._core import accumulation as _accumulation
@@ -162,29 +163,62 @@ def calculate_spectra(
                         dt=channel_plan.dt,
                     )
 
-                intermediate_buffer = _spectra.build_intermediate_slice_buffer(
-                    runtime=runtime,
+                coefficient_batch = _spectra.build_coefficient_batch(
                     frequency_plan=common_frequency_plan,
                     coeffs_by_channel=coeffs_by_channel,
                     third_order_cache=third_order_cache,
                 )
+                # Release full FFT banks after extracting compact coefficients.
+                del coeffs_by_channel
 
-                # Compute and accumulate every requested spectrum for this window batch.
-                for spectrum_channels in runtime.spectrum_frequency_plans:
+                realization_sums: dict[tuple[int, ...], torch.Tensor] = {}
+
+                for realization_ids in runtime.repetition_plan.iter_batches():
+                    realization_count = next(iter(coefficient_batch.by_channel.values())).dc.shape[
+                        0
+                    ]
+
+                    if realization_count != len(realization_ids):
+                        raise RuntimeError(
+                            "The coefficient realization axis does not match the current "
+                            "repetition batch."
+                        )
+
+                    for spectrum_channels in runtime.spectrum_frequency_plans:
+                        if spectrum_channels in failed_spectra:
+                            continue
+
+                        try:
+                            spectral_estimates = _spectra.compute_spectral_estimates(
+                                channels=spectrum_channels,
+                                coefficient_batch=coefficient_batch,
+                                window_buffer=window_buffer,
+                                runtime=runtime,
+                            )
+                            chunk_sum = spectral_estimates.sum(dim=0)
+
+                            if spectrum_channels in realization_sums:
+                                realization_sums[spectrum_channels] += chunk_sum
+                            else:
+                                realization_sums[spectrum_channels] = chunk_sum
+                        except Exception as exc:  # noqa: BLE001
+                            failed_spectra.add(spectrum_channels)
+                            realization_sums.pop(spectrum_channels, None)
+                            warnings.warn(
+                                f"Calculation failed for spectrum {spectrum_channels}: "
+                                f"{type(exc).__name__}: {exc}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+
+                for spectrum_channels, realization_sum in realization_sums.items():
                     if spectrum_channels in failed_spectra:
                         continue
 
                     accumulator = accumulator_store.get(spectrum_channels)
 
-                    # Isolate calculation failures to the affected spectrum so the remaining
-                    # requests can continue.
                     try:
-                        spectral_estimates = _spectra.compute_spectral_estimates(
-                            channels=spectrum_channels,
-                            intermediate_buffer=intermediate_buffer,
-                            window_buffer=window_buffer,
-                            runtime=runtime,
-                        )
+                        spectral_estimates = realization_sum / runtime.repetition_plan.count
                         _accumulation.accumulate_spectral_estimates(
                             accumulator=accumulator,
                             spectral_estimates=spectral_estimates,

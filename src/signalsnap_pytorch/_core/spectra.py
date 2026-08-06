@@ -12,140 +12,97 @@ from dataclasses import dataclass, field
 import torch
 from torch import Tensor
 
-from .cumulants import (
-    build_s3_target_indices,
-    c2_factorized,
-    c3_factorized,
-    c4_factorized,
-    gather_s3_third_factor,
-)
+from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
 from .fft import WindowBuffer
 from .planning import RuntimeConfig, SampledFrequencyPlan
 
 
 @dataclass(slots=True)
 class ThirdOrderIndexCache:
-    """Cached mapping from output frequency pairs to the implied third frequency.
+    """Compact mapping from output-frequency pairs to closing FFT coefficients.
 
     Attributes
     ----------
-    target_indices : Tensor
-        Integer tensor with shape ``(F, F)``. Each entry indexes the shifted full FFT at
-        ``w3 = -(w1 + w2)``. Invalid entries contain the safe placeholder index zero.
+    closing_fft_indices : Tensor
+        Sorted unique indices into the shifted FFT, with shape ``(K,)``. These contain every valid
+        closing frequency required by the output grid.
+    gather_indices : Tensor
+        Integer tensor with shape ``(F, F)`` mapping each output-frequency pair to an entry in the
+        compact ``K`` axis. Invalid pairs contain placeholder index zero and must be interpreted
+        using ``valid_mask``.
     valid_mask : Tensor
-        Boolean tensor with shape ``(F, F)`` identifying entries whose implied third frequency lies
-        within the full FFT support.
+        Boolean tensor with shape ``(F, F)`` identifying output-frequency pairs whose closing
+        frequency lies within the sampled FFT support.
     """
 
-    target_indices: Tensor
+    closing_fft_indices: Tensor
+    gather_indices: Tensor
     valid_mask: Tensor
 
 
 @dataclass(slots=True)
-class ThirdOrderFactor:
-    """Prepared third factor for a third-order cumulant.
+class ThirdOrderCoefficients:
+    """Compact closing-frequency coefficients for one channel.
 
     Attributes
     ----------
-    centered_a_w3 : Tensor
-        Centered Fourier coefficients with shape ``(B, m, F, F)`` gathered at the implied third
-        frequencies.
+    values : Tensor
+        Closing-frequency coefficients with shape ``(R, B, m, K)``.
+    gather_indices : Tensor
+        Integer tensor with shape ``(F, F)`` mapping output-frequency pairs onto the compact ``K``
+        axis.
     valid_mask : Tensor
-        Boolean validity mask with shape ``(F, F)``.
+        Boolean tensor with shape ``(F, F)`` identifying valid sampled closing frequencies.
     """
 
-    centered_a_w3: Tensor
+    values: Tensor
+    gather_indices: Tensor
     valid_mask: Tensor
 
-
-@dataclass(slots=True)
-class IntermediateSliceBuffer:
-    """Stores precomputed intermediate results used in :func:`compute_spectral_estimates`.
-
-    Attributes
-    ----------
-    band_start_idx, band_end_idx : int
-        Start-inclusive and end-exclusive indices selecting the requested band from the shifted
-        full Fourier coefficients.
-    m : int
-        Number of windows per spectral estimate.
-    fft_freq_count : int
-        Length of the full Fourier coefficients.
-    coeffs_by_channel : dict[int, Tensor]
-        Shifted full Fourier coefficients by channel, each with shape ``(B, m, N)``.
-    third_order_cache : :class:`ThirdOrderIndexCache` | None
-        Indices of the third frequency for the corresponding frequency axis.
-    """
-
-    band_start_idx: int
-    band_end_idx: int
-    m: int
-    fft_freq_count: int
-    coeffs_by_channel: dict[int, Tensor] = field(default_factory=dict)
-    third_order_cache: ThirdOrderIndexCache | None = None
-
-    _centered_coeffs_by_channel_band: dict[int, Tensor] = field(default_factory=dict)
-    _centered_c3_third_factor_by_channel: dict[int, ThirdOrderFactor] = field(default_factory=dict)
-
-    def centered_coeffs_by_channel_band(self, channel: int, conjugated: bool = False) -> Tensor:
-        """Return cached centered coefficients for one channel in the selected band.
-
-        Parameters
-        ----------
-        channel : int
-            Data-channel index present in ``coeffs_by_channel``.
-        conjugated : bool, default=False
-            Return the complex conjugate of the cached coefficients.
+    def gathered_centered_values(self) -> Tensor:
+        """Center over ``m`` and gather onto the closing-frequency grid.
 
         Returns
         -------
         Tensor
-            Tensor with shape ``(B, m, F)`` centered over the window axis.
+            Temporary tensor with shape ``(R, B, m, F, F)``. Entries outside
+            ``valid_mask`` are placeholders and must be masked by the caller.
         """
-        if channel not in self._centered_coeffs_by_channel_band:
-            coeffs = self.coeffs_by_channel[channel][..., self.band_start_idx : self.band_end_idx]
-            self._centered_coeffs_by_channel_band[channel] = coeffs - coeffs.mean(
-                dim=1, keepdim=True
-            )
+        centered = self.values - self.values.mean(dim=-2, keepdim=True)
+
+        if centered.shape[-1] == 0:
+            output_shape = centered.shape[:-1] + self.gather_indices.shape
+            return centered.new_zeros(output_shape)
+
+        return centered[..., self.gather_indices]
+
+
+@dataclass(slots=True)
+class ChannelCoefficients:
+    """Prepared source-independent coefficients for one channel."""
+
+    dc: Tensor
+    output: Tensor
+    third_order: ThirdOrderCoefficients | None = None
+    _centered_output: Tensor | None = field(default=None, init=False, repr=False)
+
+    def centered_output(self, conjugated: bool = False) -> Tensor:
+        """Return output coefficients centered only over ``m``."""
+
+        if self._centered_output is None:
+            self._centered_output = self.output - self.output.mean(dim=-2, keepdim=True)
 
         if conjugated:
-            return torch.conj(self._centered_coeffs_by_channel_band[channel])
-        else:
-            return self._centered_coeffs_by_channel_band[channel]
+            return torch.conj(self._centered_output)
 
-    def centered_c3_third_factor_by_channel(self, channel: int) -> ThirdOrderFactor:
-        """Return the cached third-order factor for one channel.
+        return self._centered_output
 
-        Parameters
-        ----------
-        channel : int
-            Data-channel index present in ``coeffs_by_channel``.
 
-        Returns
-        -------
-        ThirdOrderFactor
-            Centered coefficients gathered on the ``(w1, w2)`` output grid.
+@dataclass(slots=True)
+class CoefficientBatch:
+    """Compact coefficients for every active channel in one batch."""
 
-        Raises
-        ------
-        ValueError
-            If no :class:`ThirdOrderIndexCache` was supplied.
-        """
-        if channel not in self._centered_c3_third_factor_by_channel:
-            if self.third_order_cache is None:
-                raise ValueError("Third-order spectra require third_order_cache.")
-
-            coeffs = self.coeffs_by_channel[channel]
-            centered_a_w3 = gather_s3_third_factor(
-                coeffs - coeffs.mean(dim=1, keepdim=True),
-                self.third_order_cache.target_indices,
-            )
-            self._centered_c3_third_factor_by_channel[channel] = ThirdOrderFactor(
-                centered_a_w3=centered_a_w3,
-                valid_mask=self.third_order_cache.valid_mask,
-            )
-
-        return self._centered_c3_third_factor_by_channel[channel]
+    by_channel: dict[int, ChannelCoefficients]
 
 
 def build_third_order_cache(
@@ -164,7 +121,8 @@ def build_third_order_cache(
     Returns
     -------
     ThirdOrderIndexCache
-        Target indices and validity mask, each with shape ``(F, F)`` on the runtime device.
+        Compact shifted-FFT indices with shape ``(K,)`` and output-grid mapping tensors with shape
+        ``(F, F)`` on the runtime device.
     """
     axis_indices = torch.arange(
         frequency_plan.band_start,
@@ -172,46 +130,53 @@ def build_third_order_cache(
         device=runtime.device,
     )
     target_indices, valid_mask = build_s3_target_indices(axis_indices, frequency_plan.window_points)
-    return ThirdOrderIndexCache(target_indices=target_indices, valid_mask=valid_mask)
+    closing_fft_indices, inverse_indices = torch.unique(
+        target_indices[valid_mask],
+        sorted=True,
+        return_inverse=True,
+    )
+    gather_indices = torch.zeros_like(target_indices)
+    gather_indices[valid_mask] = inverse_indices
+
+    return ThirdOrderIndexCache(
+        closing_fft_indices=closing_fft_indices,
+        gather_indices=gather_indices,
+        valid_mask=valid_mask,
+    )
 
 
-def build_intermediate_slice_buffer(
-    runtime: RuntimeConfig,
+def build_coefficient_batch(
     frequency_plan: SampledFrequencyPlan,
     coeffs_by_channel: dict[int, Tensor],
     third_order_cache: ThirdOrderIndexCache | None,
-) -> IntermediateSliceBuffer:
-    """Create the reusable intermediate buffer for one calculation batch.
+) -> CoefficientBatch:
+    """Select compact source-independent coefficients from sampled FFTs."""
 
-    Parameters
-    ----------
-    runtime : RuntimeConfig
-        Resolved band indices, FFT length, and window count.
-    frequency_plan : SampledFrequencyPlan
-        Common sampled frequency plan used by the current coefficient preparation path.
-    coeffs_by_channel : dict[int, Tensor]
-        Shifted full Fourier coefficients with shape ``(B, m, N)`` for each active channel.
-    third_order_cache : ThirdOrderIndexCache | None
-        Shared third-order index mapping, required when an order-three spectrum is requested.
+    by_channel: dict[int, ChannelCoefficients] = {}
 
-    Returns
-    -------
-    IntermediateSliceBuffer
-        Buffer that lazily caches centered and gathered coefficients.
-    """
-    return IntermediateSliceBuffer(
-        band_start_idx=frequency_plan.band_start,
-        band_end_idx=frequency_plan.band_stop,
-        m=runtime.window_plan.windows_per_estimate,
-        fft_freq_count=frequency_plan.window_points,
-        coeffs_by_channel=coeffs_by_channel,
-        third_order_cache=third_order_cache,
-    )
+    for channel, coeffs in coeffs_by_channel.items():
+        dc_index = coeffs.shape[-1] // 2
+        third_order = None
+
+        if third_order_cache is not None:
+            third_order = ThirdOrderCoefficients(
+                values=coeffs[..., third_order_cache.closing_fft_indices],
+                gather_indices=third_order_cache.gather_indices,
+                valid_mask=third_order_cache.valid_mask,
+            )
+
+        by_channel[channel] = ChannelCoefficients(
+            dc=coeffs[..., dc_index].clone(),
+            output=coeffs[..., frequency_plan.band_start : frequency_plan.band_stop].clone(),
+            third_order=third_order,
+        )
+
+    return CoefficientBatch(by_channel=by_channel)
 
 
 def compute_spectral_estimates(
     channels: tuple[int, ...],
-    intermediate_buffer: IntermediateSliceBuffer,
+    coefficient_batch: CoefficientBatch,
     window_buffer: WindowBuffer,
     runtime: RuntimeConfig,
 ) -> Tensor:
@@ -225,7 +190,7 @@ def compute_spectral_estimates(
     channels : tuple[int, ...]
         Specifies the corresponding channels of the spectrum, e.g. ``(0, 0, 0)`` for a
         third-order auto-spectrum.
-    intermediate_buffer : :class:`IntermediateSliceBuffer`
+    coefficient_batch : :class:`CoefficientBatch`
         Stores the precomputed Fourier coefficients and bands for the current slice.
     window_buffer : :class:`WindowBuffer`
         Stores all information related to the window function.
@@ -236,8 +201,8 @@ def compute_spectral_estimates(
     -------
     Tensor
         Spectral estimates for the specified spectrum. Output shape depends on order: order 1
-        returns ``(B, 1)``, order 2 returns ``(B, F)``, and orders 3 and 4 return ``(B, F, F)``,
-        where ``F`` is the selected-band length. Invalid third-order points, where
+        returns ``(R, B, 1)``, order 2 returns ``(R, B, F)``, and orders 3 and 4 return
+        ``(R, B, F, F)``, where ``F`` is the selected-band length. Invalid third-order points, where
         ``w3 = -(w1 + w2)`` lies outside the shifted FFT support, are filled with ``NaN``.
 
     Raises
@@ -249,37 +214,38 @@ def compute_spectral_estimates(
     windows_per_estimate = runtime.window_plan.windows_per_estimate
 
     if order == 1:
-        a_w = intermediate_buffer.coeffs_by_channel[channels[0]]
-        dc_index = a_w.shape[-1] // 2
-        cumulants = a_w[:, :, dc_index].mean(dim=1, keepdim=True)
+        coefficients = coefficient_batch.by_channel[channels[0]]
+        cumulants = coefficients.dc.mean(dim=-1, keepdim=True)
 
     elif order == 2:
         cumulants = c2_factorized(
             windows_per_estimate,
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
+            coefficient_batch.by_channel[channels[0]].centered_output(),
+            coefficient_batch.by_channel[channels[1]].centered_output(conjugated=True),
         )
 
     elif order == 3:
-        prepared = intermediate_buffer.centered_c3_third_factor_by_channel(channels[2])
+        third_order = coefficient_batch.by_channel[channels[2]].third_order
+        if third_order is None:
+            raise ValueError("Third-order coefficients were not prepared.")
 
         cumulants = c3_factorized(
             windows_per_estimate,
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[1]),
-            prepared.centered_a_w3,
+            coefficient_batch.by_channel[channels[0]].centered_output(),
+            coefficient_batch.by_channel[channels[1]].centered_output(),
+            third_order.gathered_centered_values(),
         )
 
         nan_value = torch.full_like(cumulants, complex(float("nan"), 0.0))
-        cumulants = torch.where(prepared.valid_mask, cumulants, nan_value)
+        cumulants = torch.where(third_order.valid_mask, cumulants, nan_value)
 
     elif order == 4:
         cumulants = c4_factorized(
             windows_per_estimate,
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[2]),
-            intermediate_buffer.centered_coeffs_by_channel_band(channels[3], conjugated=True),
+            coefficient_batch.by_channel[channels[0]].centered_output(),
+            coefficient_batch.by_channel[channels[1]].centered_output(conjugated=True),
+            coefficient_batch.by_channel[channels[2]].centered_output(),
+            coefficient_batch.by_channel[channels[3]].centered_output(conjugated=True),
         )
     else:
         raise ValueError(f"Unsupported spectrum order: {order}.")

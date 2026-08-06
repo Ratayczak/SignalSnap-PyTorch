@@ -181,13 +181,14 @@ def compute_fft(chunk: Tensor, window: Tensor, dt: float) -> Tensor:
     Returns
     -------
     Tensor
-        Shifted complex Fourier coefficients scaled by ``dt``, with shape ``(B, m, N)``.
+        Shifted complex Fourier coefficients scaled by ``dt``, with shape ``(1, B, m, N)``. The
+        leading dimension is the number of different realizations.
     """
 
     coeffs = torch.fft.ifft(window * chunk, dim=-1, norm="forward")
     coeffs = torch.fft.fftshift(coeffs, dim=-1)
 
-    return coeffs * dt
+    return (coeffs * dt).unsqueeze(0)
 
 
 def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> WindowBuffer:

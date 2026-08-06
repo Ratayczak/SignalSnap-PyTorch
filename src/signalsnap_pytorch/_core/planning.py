@@ -59,6 +59,13 @@ class RepetitionPlan:
     batch_size: int
     resolved_seed: int | None
 
+    def iter_batches(self) -> Iterator[range]:
+        """Yield bounded batches of stable realization IDs."""
+
+        for start in range(0, self.count, self.batch_size):
+            stop = min(start + self.batch_size, self.count)
+            yield range(start, stop)
+
 
 def _resolve_repetition_plan(photon_options: PhotonOptions | None) -> RepetitionPlan:
     """Resolve shared amplitude-repetition iteration for one calculation."""
