@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -244,7 +245,7 @@ def prepare_timestamp_batch(cursor: TimestampCursor, batch: WindowBatch) -> Prep
 
 def direct_timestamp_transform(
     prepared: PreparedTimestampBatch,
-    frequencies: NDArray[np.float64],
+    frequencies: NDArray[np.floating[Any]],
     event_weights: Tensor,
     runtime: RuntimeConfig,
 ) -> Tensor:
@@ -359,7 +360,7 @@ def materialize_timestamp_coefficients(
     third_order_cache: TimestampThirdOrderFrequencyCache | None,
     event_amplitudes: NDArray[np.float64],
 ) -> ChannelCoefficients:
-    """Materialize timestamp coefficients from one shared amplitude matrix."""
+    """Materialize the timestamp coefficients from a shared amplitude matrix."""
 
     event_count = prepared.global_event_indices.size
 

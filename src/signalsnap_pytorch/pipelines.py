@@ -113,7 +113,6 @@ def calculate_spectra(
             frequency_plans_by_type[plan_type] = frequency_plan
 
         sampled_frequency_plan = frequency_plans_by_type.get(_planning.SampledFrequencyPlan)
-        timestamp_frequency_plan = frequency_plans_by_type.get(_planning.TimestampFrequencyPlan)
 
         has_third_order = any(len(channels) == 3 for channels in runtime.spectrum_frequency_plans)
         timestamp_cursors: dict[int, _timestamps.TimestampCursor] = {}
