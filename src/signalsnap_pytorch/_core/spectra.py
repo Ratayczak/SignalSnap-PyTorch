@@ -20,7 +20,7 @@ from .cumulants import (
     gather_s3_third_factor,
 )
 from .fft import WindowBuffer
-from .planning import RuntimeConfig
+from .planning import RuntimeConfig, SampledFrequencyPlan
 
 
 @dataclass(slots=True)
@@ -148,13 +148,18 @@ class IntermediateSliceBuffer:
         return self._centered_c3_third_factor_by_channel[channel]
 
 
-def build_third_order_cache(runtime: RuntimeConfig) -> ThirdOrderIndexCache:
+def build_third_order_cache(
+    runtime: RuntimeConfig,
+    frequency_plan: SampledFrequencyPlan,
+) -> ThirdOrderIndexCache:
     """Build the frequency-index mapping reused by all third-order spectra.
 
     Parameters
     ----------
     runtime : RuntimeConfig
         Resolved frequency band, FFT length, and device.
+    frequency_plan : SampledFrequencyPlan
+        Common sampled frequency plan used by the current coefficient preparation path.
 
     Returns
     -------
@@ -162,16 +167,17 @@ def build_third_order_cache(runtime: RuntimeConfig) -> ThirdOrderIndexCache:
         Target indices and validity mask, each with shape ``(F, F)`` on the runtime device.
     """
     axis_indices = torch.arange(
-        runtime.band_start_idx,
-        runtime.band_end_idx,
+        frequency_plan.band_start,
+        frequency_plan.band_stop,
         device=runtime.device,
     )
-    target_indices, valid_mask = build_s3_target_indices(axis_indices, runtime.window_points)
+    target_indices, valid_mask = build_s3_target_indices(axis_indices, frequency_plan.window_points)
     return ThirdOrderIndexCache(target_indices=target_indices, valid_mask=valid_mask)
 
 
 def build_intermediate_slice_buffer(
     runtime: RuntimeConfig,
+    frequency_plan: SampledFrequencyPlan,
     coeffs_by_channel: dict[int, Tensor],
     third_order_cache: ThirdOrderIndexCache | None,
 ) -> IntermediateSliceBuffer:
@@ -181,6 +187,8 @@ def build_intermediate_slice_buffer(
     ----------
     runtime : RuntimeConfig
         Resolved band indices, FFT length, and window count.
+    frequency_plan : SampledFrequencyPlan
+        Common sampled frequency plan used by the current coefficient preparation path.
     coeffs_by_channel : dict[int, Tensor]
         Shifted full Fourier coefficients with shape ``(B, m, N)`` for each active channel.
     third_order_cache : ThirdOrderIndexCache | None
@@ -192,10 +200,10 @@ def build_intermediate_slice_buffer(
         Buffer that lazily caches centered and gathered coefficients.
     """
     return IntermediateSliceBuffer(
-        band_start_idx=runtime.band_start_idx,
-        band_end_idx=runtime.band_end_idx,
-        m=runtime.m,
-        fft_freq_count=runtime.window_points,
+        band_start_idx=frequency_plan.band_start,
+        band_end_idx=frequency_plan.band_stop,
+        m=runtime.window_plan.windows_per_estimate,
+        fft_freq_count=frequency_plan.window_points,
         coeffs_by_channel=coeffs_by_channel,
         third_order_cache=third_order_cache,
     )
@@ -238,6 +246,7 @@ def compute_spectral_estimates(
         If the channel tuple does not describe an order-one through order-four spectrum.
     """
     order = len(channels)
+    windows_per_estimate = runtime.window_plan.windows_per_estimate
 
     if order == 1:
         a_w = intermediate_buffer.coeffs_by_channel[channels[0]]
@@ -246,7 +255,7 @@ def compute_spectral_estimates(
 
     elif order == 2:
         cumulants = c2_factorized(
-            runtime.m,
+            windows_per_estimate,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
         )
@@ -255,7 +264,7 @@ def compute_spectral_estimates(
         prepared = intermediate_buffer.centered_c3_third_factor_by_channel(channels[2])
 
         cumulants = c3_factorized(
-            runtime.m,
+            windows_per_estimate,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1]),
             prepared.centered_a_w3,
@@ -266,7 +275,7 @@ def compute_spectral_estimates(
 
     elif order == 4:
         cumulants = c4_factorized(
-            runtime.m,
+            windows_per_estimate,
             intermediate_buffer.centered_coeffs_by_channel_band(channels[0]),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[1], conjugated=True),
             intermediate_buffer.centered_coeffs_by_channel_band(channels[2]),

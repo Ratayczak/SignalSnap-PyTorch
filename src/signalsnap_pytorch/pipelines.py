@@ -82,50 +82,101 @@ def calculate_spectra(
             spectrum_config=spectrum_config,
             spectra_channels=spectra_channels,
         )
-        window_buffer = _fft.prepare_window(runtime)
+        timestamped_channels = tuple(
+            channel
+            for channel, channel_plan in runtime.channel_plans.items()
+            if isinstance(channel_plan, _planning.TimestampedChannelPlan)
+        )
+        if timestamped_channels:
+            raise NotImplementedError(
+                "Timestamped channel coefficient preparation is not implemented yet."
+            )
+        selected_frequency_plans = tuple(runtime.spectrum_frequency_plans.values())
+        common_frequency_plan = selected_frequency_plans[0]
+
+        if not isinstance(common_frequency_plan, _planning.SampledFrequencyPlan):
+            raise TypeError(
+                "Internal error: sampled coefficient preparation requires a SampledFrequencyPlan."
+            )
+
+        if any(plan is not common_frequency_plan for plan in selected_frequency_plans[1:]):
+            raise NotImplementedError(
+                "Multiple spectrum frequency views are not connected to "
+                "coefficient preparation yet."
+            )
+        first_channel = runtime.active_data_channels[0]
+        first_channel_plan = runtime.channel_plans[first_channel]
+        assert isinstance(first_channel_plan, _planning.SampledChannelPlan)
+
+        window_buffer = _fft.prepare_window(
+            runtime,
+            dt=first_channel_plan.dt,
+            window_points=common_frequency_plan.window_points,
+        )
         third_order_cache = (
-            _spectra.build_third_order_cache(runtime) if 3 in runtime.orders else None
+            _spectra.build_third_order_cache(runtime, common_frequency_plan)
+            if any(len(channels) == 3 for channels in runtime.spectrum_frequency_plans)
+            else None
         )
         accumulator_store = _accumulation.initialize_accumulator_store(runtime)
 
         failed_spectra: set[tuple[int, ...]] = set()
 
-        # Each data slice contains estimate_count groups of runtime.m windows and produces that
-        # many estimates for every requested spectrum.
+        # Each window batch contains estimate_count groups of plan.windows_per_estimate windows and
+        # produces that many estimates for every requested spectrum.
+        plan = runtime.window_plan
+
         with tqdm(
-            total=_planning.window_slice_count(runtime),
+            total=_planning.physical_estimate_count(plan),
             desc="Calculating spectra",
             unit="estimate",
             disable=not show_progress,
         ) as progress:
-            for start, end, estimate_count, shifted in _planning.iter_window_slices(runtime):
+            for batch in _planning.iter_window_batches(plan):
                 coeffs_by_channel = {}
 
                 # Compute Fourier coefficients for each active channel.
                 for channel_index in runtime.active_data_channels:
+                    channel_plan = runtime.channel_plans[channel_index]
+                    assert isinstance(channel_plan, _planning.SampledChannelPlan)
+
+                    channel_window_points = round(batch.duration / channel_plan.dt)
+                    start = round(float(batch.relative_starts[0, 0]) / channel_plan.dt)
+                    end = (
+                        start
+                        + batch.estimate_count
+                        * runtime.window_plan.windows_per_estimate
+                        * channel_window_points
+                    )
                     data = _data_access.read_source(channels[channel_index], start, end)
-                    chunk = _fft.reshape_window_chunk(data, runtime, estimate_count)
+                    chunk = _fft.reshape_window_chunk(
+                        chunk=data,
+                        estimate_count=batch.estimate_count,
+                        windows_per_estimate=plan.windows_per_estimate,
+                        window_points=channel_window_points,
+                    )
                     chunk = _fft.to_device(chunk, runtime)
                     coeffs_by_channel[channel_index] = _fft.compute_fft(
                         chunk=chunk,
                         window=window_buffer.window,
-                        runtime=runtime,
+                        dt=channel_plan.dt,
                     )
 
                 intermediate_buffer = _spectra.build_intermediate_slice_buffer(
                     runtime=runtime,
+                    frequency_plan=common_frequency_plan,
                     coeffs_by_channel=coeffs_by_channel,
                     third_order_cache=third_order_cache,
                 )
 
-                # Compute and accumulate every requested spectrum for this data slice.
-                for spectrum_channels in runtime.spectra_channels:
+                # Compute and accumulate every requested spectrum for this window batch.
+                for spectrum_channels in runtime.spectrum_frequency_plans:
                     if spectrum_channels in failed_spectra:
                         continue
 
                     accumulator = accumulator_store.get(spectrum_channels)
 
-                    # Isolate calculation failures to the affected spectrum so the remaining spectrum
+                    # Isolate calculation failures to the affected spectrum so the remaining
                     # requests can continue.
                     try:
                         spectral_estimates = _spectra.compute_spectral_estimates(
@@ -137,9 +188,9 @@ def calculate_spectra(
                         _accumulation.accumulate_spectral_estimates(
                             accumulator=accumulator,
                             spectral_estimates=spectral_estimates,
-                            shifted=shifted,
+                            shifted=batch.shifted,
                         )
-                    except Exception as exc: # noqa: BLE001 -- intentional per-spectrum fault boundary
+                    except Exception as exc:  # noqa: BLE001
                         failed_spectra.add(spectrum_channels)
                         warnings.warn(
                             f"Calculation failed for spectrum {spectrum_channels}: "
@@ -148,7 +199,7 @@ def calculate_spectra(
                             stacklevel=2,
                         )
 
-                progress.update(estimate_count)
+                progress.update(batch.estimate_count)
 
         # Finalize accumulated spectra and their uncertainty estimates.
         result_store = SpectrumResultStore()
@@ -159,7 +210,7 @@ def calculate_spectra(
             # Isolate finalization failures so other completed spectra can still be returned.
             try:
                 result = _accumulation.finalize_result(accumulator)
-            except Exception as exc: # noqa: BLE001 -- intentional per-spectrum fault boundary
+            except Exception as exc:  # noqa: BLE001 -- intentional per-spectrum fault boundary
                 warnings.warn(
                     f"Could not finalize spectrum for channels {accumulator.channels}: "
                     f"{type(exc).__name__}: {exc}",

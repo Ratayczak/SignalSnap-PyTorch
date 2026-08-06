@@ -10,6 +10,7 @@ from __future__ import annotations
 from .configurators import (
     DataConfig,
     HDF5Source,
+    PhotonOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -20,6 +21,7 @@ from .results import SpectrumResult, SpectrumResultStore
 __all__ = [
     "DataConfig",
     "HDF5Source",
+    "PhotonOptions",
     "SampledChannel",
     "SpectrumConfig",
     "SpectrumResult",

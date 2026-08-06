@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from ._core.utils import TimeUnits as _TimeUnits
 
@@ -297,6 +297,50 @@ class DataConfig(BaseModel):
         return self
 
 
+class PhotonOptions(BaseModel):
+    """Statistical weighting options for active timestamped channels.
+
+    Unit weighting assigns every event an amplitude of one. Exponential weighting generates positive
+    random amplitudes with the configured scale for each repetition.
+    """
+
+    model_config = _SHARED_CONFIG
+
+    weighting: Literal["unit", "exponential"]
+    scale: Annotated[float, Field(gt=0)] | None = None
+    repetitions: Annotated[StrictInt, Field(gt=0)] | None = None
+    seed: Annotated[StrictInt, Field(ge=0)] | None = None
+
+    @field_validator("scale", mode="before")
+    @classmethod
+    def reject_boolean_scale(cls, value: Any) -> Any:
+        """Reject Boolean scales before numeric coercion."""
+
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("PhotonOptions scale must be a positive finite number.")
+
+        return value
+
+    @model_validator(mode="after")
+    def validate_weighting_fields(self) -> PhotonOptions:
+        """Require only the fields belonging to the selected weighting."""
+
+        exponential_fields = (self.scale, self.repetitions, self.seed)
+
+        if self.weighting == "unit":
+            if any(value is not None for value in exponential_fields):
+                raise ValueError(
+                    "Unit photon weighting does not accept scale, repetitions, or seed."
+                )
+
+            return self
+
+        if self.scale is None or self.repetitions is None:
+            raise ValueError("Exponential photon weighting requires scale and repetitions.")
+
+        return self
+
+
 class SpectrumConfig(BaseModel):
     """Spectrum configuration for polyspectra calculations.
 
@@ -325,6 +369,10 @@ class SpectrumConfig(BaseModel):
     f_max : float | None = None
         Upper frequency bound. If omitted, the Nyquist frequency based on the active sampled
         channels' common ``dt`` is used.
+    photon_options : PhotonOptions | None = None
+        Statistical weighting applied to every active timestamped channel. Planning requires this
+        for calculations containing timestamped channels and rejects it for sampled-only
+        calculations.
     m : int = 10
         Number of windows used per spectral estimate. This may be reduced at runtime if the signal
         is too short. Must be at least as high as the highest requested order. Must be positive.
@@ -372,9 +420,9 @@ class SpectrumConfig(BaseModel):
     model_config = _SHARED_CONFIG
 
     df: Annotated[float, Field(gt=0)] | None = None
-
     f_min: float = 0.0
     f_max: float | None = None
+    photon_options: PhotonOptions | None = None
     m: Annotated[int, Field(gt=0)] = 10
     uncertainty_estimation: Literal["global", "short_term"] = "global"
     m_var: Annotated[int, Field(ge=2)] = 10

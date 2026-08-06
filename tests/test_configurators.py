@@ -8,10 +8,105 @@ from pydantic import ValidationError
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
+    PhotonOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
 )
+
+
+def test_photon_options_accept_unit_weighting_without_mark_fields():
+    options = PhotonOptions(weighting="unit")
+
+    assert options.weighting == "unit"
+    assert options.scale is None
+    assert options.repetitions is None
+    assert options.seed is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("scale", 1.0, id="scale"),
+        pytest.param("repetitions", 2, id="repetitions"),
+        pytest.param("seed", 0, id="seed"),
+    ],
+)
+def test_unit_photon_weighting_rejects_exponential_fields(field, value):
+    with pytest.raises(ValidationError, match="does not accept"):
+        PhotonOptions(weighting="unit", **{field: value})
+
+
+def test_photon_options_accept_exponential_weighting():
+    options = PhotonOptions(
+        weighting="exponential",
+        scale=1.5,
+        repetitions=100,
+        seed=1234,
+    )
+
+    assert options.scale == 1.5
+    assert options.repetitions == 100
+    assert options.seed == 1234
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["scale", "repetitions"],
+)
+def test_exponential_photon_weighting_requires_scale_and_repetitions(missing_field):
+    values = {"scale": 1.0, "repetitions": 2}
+    del values[missing_field]
+
+    with pytest.raises(ValidationError, match="requires scale and repetitions"):
+        PhotonOptions(weighting="exponential", **values)
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [0.0, -1.0, np.inf, np.nan, True],
+)
+def test_exponential_photon_weighting_rejects_invalid_scale(scale):
+    with pytest.raises((ValidationError, TypeError), match="scale|finite"):
+        PhotonOptions(
+            weighting="exponential",
+            scale=scale,
+            repetitions=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "repetitions",
+    [0, -1, 1.5, "2", True],
+)
+def test_exponential_photon_weighting_requires_strict_positive_repetitions(repetitions):
+    with pytest.raises(ValidationError, match="repetitions"):
+        PhotonOptions(
+            weighting="exponential",
+            scale=1.0,
+            repetitions=repetitions,
+        )
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [-1, 1.5, "2", True],
+)
+def test_exponential_photon_weighting_requires_strict_nonnegative_seed(seed):
+    with pytest.raises(ValidationError, match="seed"):
+        PhotonOptions(
+            weighting="exponential",
+            scale=1.0,
+            repetitions=2,
+            seed=seed,
+        )
+
+
+def test_photon_options_are_frozen():
+    options = PhotonOptions(weighting="unit")
+
+    with pytest.raises(ValidationError, match="frozen"):
+        options.weighting = "exponential"
 
 
 def test_spectrum_config_accepts_negative_frequency_band():

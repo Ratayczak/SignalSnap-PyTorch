@@ -332,7 +332,7 @@ def create_first_window_figure(
             )
 
     # Plot first window
-    window_points, _, _, _ = _planning.resolve_frequencies(spectrum_config=spectrum_config, dt=dt)
+    window_points, _ = _planning.resolve_sampled_frequencies(spectrum_config=spectrum_config, dt=dt)
 
     with _data_access.open_channels(data_config, normalized_channels) as opened_channels:
         for channel in normalized_channels:

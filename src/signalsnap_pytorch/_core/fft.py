@@ -87,10 +87,10 @@ class WindowBuffer:
     Attributes
     ----------
     window : Tensor
-        Real window function with shape ``(N,)``, where ``N = runtime.window_points``.
+        Real window function with shape ``(N,)``.
     norm_all_orders : tuple[Tensor, Tensor, Tensor, Tensor]
         Scalar normalization for orders one through four. Entry ``n - 1`` is
-        ``runtime.dt * sum(window**n)``.
+        ``dt * sum(window**n)``.
     """
 
     window: Tensor
@@ -163,7 +163,7 @@ def _acg_window(
     return acG_k / torch.max(acG_k)
 
 
-def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor:
+def compute_fft(chunk: Tensor, window: Tensor, dt: float) -> Tensor:
     """Window a signal chunk and compute its Fourier coefficients.
 
     ``coeffs`` is computed via the inverse FFT with forward normalization because the SignalSnap
@@ -175,46 +175,50 @@ def compute_fft(chunk: Tensor, window: Tensor, runtime: RuntimeConfig) -> Tensor
         Real-valued signal chunk with shape ``(B, m, N)``.
     window : Tensor
         Window tensor with shape ``(N,)``.
-    runtime : RuntimeConfig
-        Runtime settings defining FFT mode, sample spacing, and dtypes.
+    dt : float
+        Sampling interval of the channel.
 
     Returns
     -------
     Tensor
-        Shifted complex Fourier coefficients scaled by ``runtime.dt``, with shape ``(B, m, N)``.
+        Shifted complex Fourier coefficients scaled by ``dt``, with shape ``(B, m, N)``.
     """
 
     coeffs = torch.fft.ifft(window * chunk, dim=-1, norm="forward")
     coeffs = torch.fft.fftshift(coeffs, dim=-1)
 
-    return coeffs * runtime.dt
+    return coeffs * dt
 
 
-def prepare_window(runtime: RuntimeConfig) -> WindowBuffer:
+def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> WindowBuffer:
     """Build the window tensors used for each spectral estimate.
 
     Parameters
     ----------
     runtime : :class:`RuntimeConfig`
         Runtime parameters resolved from the user configs.
+    dt : float
+        Sampling interval used for discrete window normalization.
+    window_points : int
+        Number of sampled points in one coefficient window.
 
     Returns
     -------
     WindowBuffer
-        ``window`` has shape ``(N,)``, where ``N = runtime.window_points``. ``norm_all_orders``
-        contains the scalar normalization for orders one through four.
+        ``window`` has shape ``(N,)``, where ``N=window_points``. ``norm_all_orders`` contains the
+        scalar normalization for orders one through four.
     """
 
     if runtime.old_window:
         window = _old_cg_window(
-            runtime.window_points,
+            window_points,
             fs=1,
             torch_device=runtime.device,
             dtype=runtime.real_dtype,
         )
     else:
         window = _acg_window(
-            runtime.window_points,
+            window_points,
             torch_device=runtime.device,
             dtype=runtime.real_dtype,
         )
@@ -222,30 +226,32 @@ def prepare_window(runtime: RuntimeConfig) -> WindowBuffer:
     return WindowBuffer(
         window=window,
         norm_all_orders=(
-            runtime.dt * window.sum(),
-            runtime.dt * (window**2).sum(),
-            runtime.dt * (window**3).sum(),
-            runtime.dt * (window**4).sum(),
+            dt * window.sum(),
+            dt * (window**2).sum(),
+            dt * (window**3).sum(),
+            dt * (window**4).sum(),
         ),
     )
 
 
 def reshape_window_chunk(
     chunk: np.ndarray,
-    runtime: RuntimeConfig,
     estimate_count: int,
+    windows_per_estimate: int,
+    window_points: int,
 ) -> np.ndarray:
     """Reshape one flat signal slice into the window batch used by the FFT.
 
     Parameters
     ----------
     chunk : np.ndarray
-        One-dimensional signal slice with shape ``(B * m * N,)``, where ``B=estimate_count``,
-        ``m = runtime.m`` and ``N = runtime.window_points``.
-    runtime : RuntimeConfig
-        Resolved window count and window length.
+        One-dimensional signal slice with shape ``(B * m * N,)``.
     estimate_count : int
         Number of spectral estimates represented by ``chunk``.
+    windows_per_estimate : int
+        Number of coefficient windows in each spectral estimate.
+    window_points : int
+        Number of sampled points in each coefficient window.
 
     Returns
     -------
@@ -257,13 +263,12 @@ def reshape_window_chunk(
     ValueError
         If ``chunk`` does not contain exactly ``B * m * N`` samples.
     """
-
-    expected_size = estimate_count * runtime.window_points * runtime.m
+    expected_size = estimate_count * window_points * windows_per_estimate
 
     if chunk.shape[0] != expected_size:
         raise ValueError(f"Expected chunk with {expected_size} samples, got {chunk.shape[0]}.")
 
-    return chunk.reshape(estimate_count, runtime.m, runtime.window_points)
+    return chunk.reshape(estimate_count, windows_per_estimate, window_points)
 
 
 def to_device(array: np.ndarray, runtime: RuntimeConfig) -> Tensor:

@@ -4,15 +4,32 @@ import numpy as np
 import pytest
 import torch
 
-from signalsnap_pytorch import DataConfig, SampledChannel, SpectrumConfig, calculate_spectra
+from signalsnap_pytorch import (
+    DataConfig,
+    PhotonOptions,
+    SampledChannel,
+    SpectrumConfig,
+    TimestampedChannel,
+    calculate_spectra,
+)
 from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
+    SampledChannelPlan,
+    SampledFrequencyPlan,
+    TimestampFrequencyPlan,
+    TimestampedChannelPlan,
+    _MAX_AMPLITUDE_REPETITIONS_PER_BATCH,
+    _build_channel_plans,
+    _count_complete_windows,
     _resolve_device,
+    _resolve_repetition_plan,
     build_runtime_config,
-    iter_window_slices,
+    iter_window_batches,
+    physical_estimate_count,
     resolve_channels,
-    resolve_frequencies,
+    resolve_sampled_frequencies,
+    resolve_timestamp_frequencies,
 )
 from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
@@ -95,8 +112,8 @@ def test_spectral_estimates_in_runtime_config(
     with warning_context:
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra_channels)
 
-    assert runtime.m == expected_m
-    assert runtime.spectral_estimates == expected_unshifted_estimates
+    assert runtime.window_plan.windows_per_estimate == expected_m
+    assert runtime.window_plan.unshifted_estimate_count == expected_unshifted_estimates
 
 
 def test_runtime_config_propagates_short_term_uncertainty_configuration():
@@ -116,8 +133,8 @@ def test_runtime_config_propagates_short_term_uncertainty_configuration():
 
     assert runtime.uncertainty_estimation == "short_term"
     assert runtime.m_var == 3
-    assert runtime.spectral_estimates == 4
-    assert runtime.spectral_estimates_per_batch == 2
+    assert runtime.window_plan.unshifted_estimate_count == 4
+    assert runtime.window_plan.estimates_per_batch == 2
 
 
 @pytest.mark.parametrize(
@@ -152,7 +169,7 @@ def test_runtime_config_aligns_short_term_batch_size_with_m_var(
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
-    assert runtime.spectral_estimates_per_batch == expected_batch_size
+    assert runtime.window_plan.estimates_per_batch == expected_batch_size
     assert spectrum_config.spectral_estimates_per_batch == configured_batch_size
 
 
@@ -173,7 +190,7 @@ def test_runtime_config_aligns_batch_size_with_reduced_m_var():
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
     assert runtime.m_var == 3
-    assert runtime.spectral_estimates_per_batch == 6
+    assert runtime.window_plan.estimates_per_batch == 6
 
 
 def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
@@ -191,7 +208,7 @@ def test_runtime_config_reduces_short_term_m_var_to_available_estimates():
     with pytest.warns(UserWarning, match="using m_var=2 instead"):
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
-    assert runtime.spectral_estimates == 2
+    assert runtime.window_plan.unshifted_estimate_count == 2
     assert runtime.m_var == 2
     assert spectrum_config.m_var == 10
 
@@ -211,7 +228,7 @@ def test_runtime_config_applies_estimate_cap_before_reducing_m_var():
     with pytest.warns(UserWarning, match="using m_var=3 instead"):
         runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
-    assert runtime.spectral_estimates == 3
+    assert runtime.window_plan.unshifted_estimate_count == 3
     assert runtime.m_var == 3
 
 
@@ -229,7 +246,7 @@ def test_runtime_config_does_not_reduce_short_term_m_var_to_one():
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
-    assert runtime.spectral_estimates == 1
+    assert runtime.window_plan.unshifted_estimate_count == 1
     assert runtime.m_var == 10
 
 
@@ -248,7 +265,7 @@ def test_global_runtime_keeps_configured_m_var_when_fewer_estimates_are_availabl
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
     assert runtime.uncertainty_estimation == "global"
-    assert runtime.spectral_estimates == 2
+    assert runtime.window_plan.unshifted_estimate_count == 2
     assert runtime.m_var == 10
 
 
@@ -267,10 +284,18 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
 
     store = initialize_accumulator_store(runtime)
 
-    assert len(tuple(store)) == len(runtime.spectra_channels)
+    assert len(tuple(store)) == len(runtime.spectrum_frequency_plans)
     for accumulator in store:
         assert accumulator.uncertainty_estimation == "short_term"
         assert accumulator.m_var == 3
+
+        frequency_plan = runtime.spectrum_frequency_plans[accumulator.channels]
+        expected_frequencies = (
+            np.asarray([0.0])
+            if len(accumulator.channels) == 1
+            else frequency_plan.band_frequencies
+        )
+        np.testing.assert_array_equal(accumulator.freq, expected_frequencies)
 
 
 @pytest.mark.parametrize(
@@ -369,10 +394,33 @@ def test_window_slices_respect_interlacing(
     data_config = sampled_data_config(channels=(np.ones(n_data_points),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
+    batches = list(iter_window_batches(runtime.window_plan))
+    frequency_plan = next(iter(runtime.spectrum_frequency_plans.values()))
 
-    assert runtime.interlacing is interlacing
-    assert runtime.spectral_estimates == expected_spectral_estimates
-    assert list(iter_window_slices(runtime)) == expected_slices
+    assert runtime.window_plan.unshifted_estimate_count == expected_spectral_estimates
+    assert physical_estimate_count(runtime.window_plan) == sum(
+        expected[2] for expected in expected_slices
+    )
+    assert len(batches) == len(expected_slices)
+
+    for batch, (start, end, estimate_count, shifted) in zip(batches, expected_slices):
+        expected_starts = np.arange(
+            start,
+            end,
+            frequency_plan.window_points,
+            dtype=np.float64,
+        )
+        expected_starts = expected_starts.reshape(
+            estimate_count,
+            runtime.window_plan.windows_per_estimate,
+        )
+
+        np.testing.assert_array_equal(batch.relative_starts, expected_starts)
+        assert batch.duration == runtime.window_plan.duration
+        assert batch.estimate_count == estimate_count
+        assert batch.shifted is shifted
+
+    assert (runtime.window_plan.shifted_estimate_count > 0) is interlacing
 
 
 def test_short_term_batch_alignment_is_applied_separately_to_each_placement():
@@ -390,12 +438,12 @@ def test_short_term_batch_alignment_is_applied_separately_to_each_placement():
     data_config = sampled_data_config(channels=(np.ones(10_000),), dt=1.0)
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
-    slices = list(iter_window_slices(runtime))
+    batches = list(iter_window_batches(runtime.window_plan))
 
-    assert [estimate_count for _, _, estimate_count, _ in slices] == [6, 2, 6, 2]
-    assert [shifted for _, _, _, shifted in slices] == [False, False, True, True]
-    assert sum(estimate_count for _, _, estimate_count, shifted in slices if not shifted) == 8
-    assert sum(estimate_count for _, _, estimate_count, shifted in slices if shifted) == 8
+    assert [batch.estimate_count for batch in batches] == [6, 2, 6, 2]
+    assert [batch.shifted for batch in batches] == [False, False, True, True]
+    assert sum(batch.estimate_count for batch in batches if not batch.shifted) == 8
+    assert sum(batch.estimate_count for batch in batches if batch.shifted) == 8
 
 
 def test_pipeline_returns_full_axis_third_order_spectrum_with_invalid_points_masked():
@@ -464,7 +512,110 @@ def test_pipeline_produces_short_term_uncertainty():
     assert np.isfinite(result.spectrum_uncertainty).all()
 
 
-def test_resolve_frequencies_rejects_band_without_fft_frequency():
+@pytest.mark.parametrize(
+    ("f_min", "f_max", "expected_start", "expected_stop", "expected_band"),
+    [
+        pytest.param(
+            -0.25,
+            0.25,
+            2,
+            7,
+            [-0.25, -0.125, 0.0, 0.125, 0.25],
+            id="exact-endpoints-are-inclusive",
+        ),
+        pytest.param(
+            -0.249,
+            0.249,
+            3,
+            6,
+            [-0.125, 0.0, 0.125],
+            id="neighboring-bins-outside-hard-bounds-are-excluded",
+        ),
+        pytest.param(
+            -0.5,
+            0.5,
+            0,
+            8,
+            [-0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375],
+            id="even-grid-has-negative-but-not-positive-nyquist-bin",
+        ),
+        pytest.param(
+            -1.0,
+            0.25,
+            0,
+            7,
+            [-0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25],
+            id="lower-bound-beyond-sampled-support-is-intersected",
+        ),
+        pytest.param(
+            -0.25,
+            1.0,
+            2,
+            8,
+            [-0.25, -0.125, 0.0, 0.125, 0.25, 0.375],
+            id="upper-bound-beyond-sampled-support-is-intersected",
+        ),
+    ],
+)
+def test_sampled_frequency_plan_applies_exact_inclusive_hard_bounds(
+    f_min,
+    f_max,
+    expected_start,
+    expected_stop,
+    expected_band,
+):
+    spectrum_config = SpectrumConfig(
+        f_min=f_min,
+        f_max=f_max,
+        df=0.125,
+    )
+
+    window_points, frequency_plan = resolve_sampled_frequencies(spectrum_config, dt=1.0)
+
+    assert window_points == 8
+    assert frequency_plan.band_start == expected_start
+    assert frequency_plan.band_stop == expected_stop
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        np.asarray(expected_band),
+    )
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        frequency_plan.full_fft_frequencies[expected_start:expected_stop],
+    )
+    assert np.all(frequency_plan.band_frequencies >= f_min)
+    assert np.all(frequency_plan.band_frequencies <= f_max)
+
+    if expected_start > 0:
+        assert frequency_plan.full_fft_frequencies[expected_start - 1] < f_min
+
+    if expected_stop < window_points:
+        assert frequency_plan.full_fft_frequencies[expected_stop] > f_max
+
+
+def test_sampled_frequency_plan_uses_actual_odd_fft_support():
+    spectrum_config = SpectrumConfig(
+        f_min=-0.5,
+        f_max=0.5,
+        df=0.2,
+    )
+
+    window_points, frequency_plan = resolve_sampled_frequencies(spectrum_config, dt=1.0)
+
+    assert window_points == 5
+    np.testing.assert_allclose(
+        frequency_plan.full_fft_frequencies,
+        [-0.4, -0.2, 0.0, 0.2, 0.4],
+        rtol=0.0,
+        atol=1e-15,
+    )
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        frequency_plan.full_fft_frequencies,
+    )
+
+
+def test_resolve_sampled_frequencies_rejects_band_without_fft_frequency():
     spectrum_config = SpectrumConfig(
         f_min=0.1,
         f_max=0.2,
@@ -472,7 +623,204 @@ def test_resolve_frequencies_rejects_band_without_fft_frequency():
     )
 
     with pytest.raises(ValueError, match="does not contain any FFT frequencies"):
-        resolve_frequencies(spectrum_config, dt=1.0)
+        resolve_sampled_frequencies(spectrum_config, dt=1.0)
+
+
+@pytest.mark.parametrize(
+    ("f_min", "f_max"),
+    [
+        pytest.param(0.6, 1.0, id="entirely-above-sampled-support"),
+        pytest.param(-1.0, -0.6, id="entirely-below-sampled-support"),
+    ],
+)
+def test_sampled_frequency_plan_rejects_band_disjoint_from_fft_support(f_min, f_max):
+    spectrum_config = SpectrumConfig(
+        f_min=f_min,
+        f_max=f_max,
+        df=0.125,
+    )
+
+    with pytest.raises(ValueError, match="does not contain any FFT frequencies"):
+        resolve_sampled_frequencies(spectrum_config, dt=1.0)
+
+
+@pytest.mark.parametrize(
+    ("f_min", "f_max", "expected_band"),
+    [
+        pytest.param(
+            -0.25,
+            0.25,
+            [-0.25, -0.125, 0.0, 0.125, 0.25],
+            id="exact-endpoints-are-inclusive",
+        ),
+        pytest.param(
+            np.nextafter(-0.25, np.inf),
+            np.nextafter(0.25, -np.inf),
+            [-0.125, 0.0, 0.125],
+            id="neighboring-grid-points-outside-hard-bounds-are-excluded",
+        ),
+        pytest.param(
+            -0.75,
+            0.75,
+            [
+                -0.75,
+                -0.625,
+                -0.5,
+                -0.375,
+                -0.25,
+                -0.125,
+                0.0,
+                0.125,
+                0.25,
+                0.375,
+                0.5,
+                0.625,
+                0.75,
+            ],
+            id="grid-is-not-limited-by-sampled-nyquist",
+        ),
+    ],
+)
+def test_timestamp_frequency_plan_applies_exact_inclusive_hard_bounds(
+    f_min,
+    f_max,
+    expected_band,
+):
+    frequency_plan = resolve_timestamp_frequencies(
+        f_min=f_min,
+        f_max=f_max,
+        window_duration=8.0,
+    )
+
+    assert isinstance(frequency_plan, TimestampFrequencyPlan)
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        np.asarray(expected_band),
+    )
+    assert np.all(frequency_plan.band_frequencies >= f_min)
+    assert np.all(frequency_plan.band_frequencies <= f_max)
+
+
+def test_timestamp_frequency_plan_rejects_band_without_grid_frequency():
+    with pytest.raises(ValueError, match="does not contain any timestamp frequencies"):
+        resolve_timestamp_frequencies(
+            f_min=0.1,
+            f_max=0.2,
+            window_duration=2.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("observation_start", "observation_stop", "expected_start", "expected_stop"),
+    [
+        pytest.param(None, None, 0.0, 16.0, id="infer-both-bounds"),
+        pytest.param(100.0, None, 100.0, 116.0, id="infer-stop"),
+        pytest.param(None, 16.0, 0.0, 16.0, id="default-start"),
+        pytest.param(100.0, 116.0, 100.0, 116.0, id="explicit-bounds"),
+    ],
+)
+def test_runtime_config_resolves_sampled_observation_interval(
+    observation_start,
+    observation_stop,
+    expected_start,
+    expected_stop,
+):
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(64), dt=0.25),),
+        observation_start=observation_start,
+        observation_stop=observation_stop,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.25,
+        f_min=0.0,
+        f_max=2.0,
+        m=2,
+        interlacing=False,
+    )
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0,)])
+    first_batch = next(iter_window_batches(runtime.window_plan))
+
+    assert runtime.window_plan.observation_start == expected_start
+    assert runtime.window_plan.observation_stop == expected_stop
+    assert first_batch.relative_starts[0, 0] == 0.0
+
+
+def test_runtime_config_rejects_sampled_observation_interval_with_wrong_duration():
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(64), dt=0.25),),
+        observation_start=100.0,
+        observation_stop=115.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.25,
+        f_min=0.0,
+        f_max=2.0,
+        m=2,
+        interlacing=False,
+    )
+
+    with pytest.raises(ValueError, match="configured observation interval has duration"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+def test_runtime_config_rejects_duration_error_hidden_by_relative_tolerance():
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(1), dt=1e9),),
+        observation_start=0.0,
+        observation_stop=1e9 + 5e-4,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1e-9,
+        f_min=0.0,
+        f_max=5e-10,
+        m=1,
+        interlacing=False,
+    )
+
+    with pytest.raises(ValueError, match="configured observation interval has duration"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+def test_runtime_config_accepts_ulp_scale_observation_duration_rounding():
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(3), dt=0.1),),
+        observation_start=0.0,
+        observation_stop=0.3,
+    )
+    spectrum_config = SpectrumConfig(
+        df=10.0,
+        f_min=0.0,
+        f_max=5.0,
+        m=1,
+        interlacing=False,
+    )
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0,)])
+
+    assert runtime.window_plan.observation_stop == 0.3
+
+
+@pytest.mark.parametrize(
+    ("available_duration", "window_duration", "expected_count"),
+    [
+        pytest.param(10.0, 2.0, 5, id="exact-boundary"),
+        pytest.param(
+            np.nextafter(10.0, -np.inf),
+            2.0,
+            5,
+            id="ulp-below-boundary",
+        ),
+        pytest.param(10.0 - 1e-6, 2.0, 4, id="physically-incomplete-window"),
+        pytest.param(1.0, 2.0, 0, id="no-complete-window"),
+    ],
+)
+def test_complete_window_count_uses_only_ulp_scale_boundary_tolerance(
+    available_duration,
+    window_duration,
+    expected_count,
+):
+    assert _count_complete_windows(available_duration, window_duration) == expected_count
 
 
 def test_runtime_config_keeps_m_for_exact_unshifted_fit_without_interlacing():
@@ -488,8 +836,8 @@ def test_runtime_config_keeps_m_for_exact_unshifted_fit_without_interlacing():
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
 
-    assert runtime.m == 4
-    assert runtime.spectral_estimates == 1
+    assert runtime.window_plan.windows_per_estimate == 4
+    assert runtime.window_plan.unshifted_estimate_count == 1
 
 
 def test_runtime_config_raises_when_interlacing_has_no_shifted_estimate():
@@ -546,7 +894,7 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
     runtime = _build_runtime(data_config, spectrum_config, None)
 
     assert runtime.active_data_channels == (0, 1)
-    assert runtime.spectra_channels == (
+    assert tuple(runtime.spectrum_frequency_plans) == (
         (0,),
         (0, 0),
         (0, 0, 0),
@@ -556,6 +904,8 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
         (1, 1, 1),
         (1, 1, 1, 1),
     )
+    frequency_plans = tuple(runtime.spectrum_frequency_plans.values())
+    assert all(plan is frequency_plans[0] for plan in frequency_plans[1:])
 
 
 def test_runtime_config_validates_dt_for_active_sampled_channels_only():
@@ -568,10 +918,363 @@ def test_runtime_config_validates_dt_for_active_sampled_channels_only():
     spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
 
     runtime = _build_runtime(data_config, spectrum_config, [(0, 0)])
-    assert runtime.dt == 1.0
+    channel_plan = runtime.channel_plans[0]
+    assert isinstance(channel_plan, SampledChannelPlan)
+    assert channel_plan.dt == 1.0
 
     with pytest.raises(ValueError, match=r"Channel 1 has dt=2.0"):
         _build_runtime(data_config, spectrum_config, [(0, 1)])
+
+
+def test_sampled_runtime_uses_neutral_repetition_plan():
+    data_config = sampled_data_config(channels=(np.ones(136),), dt=1.0)
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0, 0)])
+
+    assert runtime.repetition_plan.count == 1
+    assert runtime.repetition_plan.batch_size == 1
+    assert runtime.repetition_plan.resolved_seed is None
+
+
+def test_sampled_only_runtime_rejects_photon_options():
+    data_config = sampled_data_config(channels=(np.ones(136),), dt=1.0)
+    spectrum_config = SpectrumConfig(
+        df=0.125,
+        f_min=0.0,
+        f_max=0.5,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    with pytest.raises(ValueError, match="sampled-only calculation"):
+        _build_runtime(data_config, spectrum_config, [(0, 0)])
+
+
+def test_active_timestamped_channel_requires_photon_options():
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+        observation_start=0.0,
+        observation_stop=2.0,
+    )
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
+
+    with pytest.raises(ValueError, match="required when an active channel is timestamped"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+@pytest.mark.parametrize(
+    ("observation_start", "observation_stop"),
+    [
+        pytest.param(None, 2.0, id="missing-start"),
+        pytest.param(0.0, None, id="missing-stop"),
+        pytest.param(None, None, id="missing-both"),
+    ],
+)
+def test_active_timestamped_channel_requires_explicit_observation_bounds(
+    observation_start,
+    observation_stop,
+):
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+        observation_start=observation_start,
+        observation_stop=observation_stop,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.125,
+        f_min=0.0,
+        f_max=0.5,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    with pytest.raises(ValueError, match="require explicit observation_start"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+@pytest.mark.parametrize(
+    ("df", "f_max"),
+    [
+        pytest.param(None, 0.5, id="missing-df"),
+        pytest.param(0.125, None, id="missing-f-max"),
+        pytest.param(None, None, id="missing-both"),
+    ],
+)
+def test_timestamp_only_runtime_requires_explicit_frequency_grid(df, f_max):
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+        observation_start=0.0,
+        observation_stop=2.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=df,
+        f_min=0.0,
+        f_max=f_max,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    with pytest.raises(ValueError, match="require explicit df and f_max"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+def test_mixed_runtime_rejects_interval_that_does_not_match_sampled_duration():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.ones(64), dt=0.25),
+            TimestampedChannel(timestamps=np.array([100.0, 101.0])),
+        ),
+        observation_start=100.0,
+        observation_stop=115.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.25,
+        f_min=0.0,
+        f_max=2.0,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    with pytest.raises(ValueError, match="configured observation interval has duration"):
+        _build_runtime(data_config, spectrum_config, [(0, 1)])
+
+
+def test_configured_timestamped_channel_may_remain_inactive():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.ones(136), dt=1.0),
+            TimestampedChannel(timestamps=np.array([0.0, 1.0])),
+        )
+    )
+    spectrum_config = SpectrumConfig(df=0.125, f_min=0.0, f_max=0.5, m=2)
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0, 0)])
+
+    assert runtime.active_data_channels == (0,)
+    assert tuple(runtime.channel_plans) == (0,)
+
+
+def test_timestamp_only_runtime_uses_complete_event_free_tail_windows():
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+        observation_start=0.0,
+        observation_stop=10.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.5,
+        f_min=-0.5,
+        f_max=1.0,
+        m=1,
+        interlacing=True,
+        spectral_estimates_max=None,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0,)])
+    frequency_plan = runtime.spectrum_frequency_plans[(0,)]
+    batches = list(iter_window_batches(runtime.window_plan))
+
+    assert isinstance(frequency_plan, TimestampFrequencyPlan)
+    np.testing.assert_array_equal(
+        frequency_plan.band_frequencies,
+        [-0.5, 0.0, 0.5, 1.0],
+    )
+    assert runtime.window_plan.duration == 2.0
+    assert runtime.window_plan.interlacing_offset == 1.0
+    assert runtime.window_plan.unshifted_estimate_count == 5
+    assert runtime.window_plan.shifted_estimate_count == 4
+    assert physical_estimate_count(runtime.window_plan) == 9
+
+    unshifted_starts = np.concatenate(
+        [batch.relative_starts.ravel() for batch in batches if not batch.shifted]
+    )
+    shifted_starts = np.concatenate(
+        [batch.relative_starts.ravel() for batch in batches if batch.shifted]
+    )
+    np.testing.assert_array_equal(unshifted_starts, [0.0, 2.0, 4.0, 6.0, 8.0])
+    np.testing.assert_array_equal(shifted_starts, [1.0, 3.0, 5.0, 7.0])
+
+
+def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.ones(10), dt=1.0),
+            TimestampedChannel(timestamps=np.array([0.0, 1.0])),
+        ),
+        observation_start=0.0,
+        observation_stop=10.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0 / 3.0,
+        f_min=-1.0,
+        f_max=1.0,
+        m=2,
+        interlacing=True,
+        spectral_estimates_max=None,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    runtime = _build_runtime(
+        data_config,
+        spectrum_config,
+        [(1, 1), (0, 1), (0, 0)],
+    )
+
+    timestamp_plan = runtime.spectrum_frequency_plans[(1, 1)]
+    mixed_plan = runtime.spectrum_frequency_plans[(0, 1)]
+    sampled_plan = runtime.spectrum_frequency_plans[(0, 0)]
+
+    assert isinstance(timestamp_plan, TimestampFrequencyPlan)
+    assert isinstance(mixed_plan, SampledFrequencyPlan)
+    assert mixed_plan is sampled_plan
+    assert timestamp_plan.band_frequencies[0] == -1.0
+    assert timestamp_plan.band_frequencies[-1] == 1.0
+    assert mixed_plan.band_frequencies[0] > -1.0
+    assert mixed_plan.band_frequencies[-1] < 1.0
+    assert runtime.window_plan.duration == 3.0
+    assert runtime.window_plan.interlacing_offset == 1.0
+    assert runtime.window_plan.unshifted_estimate_count == 1
+    assert runtime.window_plan.shifted_estimate_count == 1
+
+    batches = list(iter_window_batches(runtime.window_plan))
+    np.testing.assert_array_equal(batches[0].relative_starts, [[0.0, 3.0]])
+    np.testing.assert_array_equal(batches[1].relative_starts, [[1.0, 4.0]])
+
+
+def test_pipeline_rejects_timestamp_execution_at_coefficient_boundary():
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+        observation_start=0.0,
+        observation_stop=2.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=0.0,
+        f_max=0.5,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    with pytest.raises(NotImplementedError, match="coefficient preparation"):
+        calculate_spectra(
+            data_config,
+            spectrum_config,
+            requested_spectra=[(0,)],
+            show_progress=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("photon_options", "expected_weighting", "expected_scale"),
+    [
+        pytest.param(
+            PhotonOptions(weighting="unit"),
+            "unit",
+            None,
+            id="unit",
+        ),
+        pytest.param(
+            PhotonOptions(
+                weighting="exponential",
+                scale=1.5,
+                repetitions=4,
+                seed=123,
+            ),
+            "exponential",
+            1.5,
+            id="exponential",
+        ),
+    ],
+)
+def test_timestamped_channel_plan_owns_amplitude_instructions(
+    photon_options,
+    expected_weighting,
+    expected_scale,
+):
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
+    )
+
+    with open_channels(data_config, (0,)) as opened_channels:
+        channel_plans, _ = _build_channel_plans(
+            data_config=data_config,
+            opened_channels=opened_channels,
+            photon_options=photon_options,
+        )
+
+    channel_plan = channel_plans[0]
+    assert isinstance(channel_plan, TimestampedChannelPlan)
+    assert channel_plan.event_count == 2
+    assert channel_plan.weighting == expected_weighting
+    assert channel_plan.scale == expected_scale
+
+
+@pytest.mark.parametrize(
+    "photon_options",
+    [
+        None,
+        PhotonOptions(weighting="unit"),
+    ],
+)
+def test_repetition_plan_is_neutral_without_exponential_weighting(photon_options):
+    plan = _resolve_repetition_plan(photon_options)
+
+    assert plan.count == 1
+    assert plan.batch_size == 1
+    assert plan.resolved_seed is None
+
+
+def test_exponential_repetition_plan_preserves_count_and_explicit_seed():
+    options = PhotonOptions(
+        weighting="exponential",
+        scale=1.0,
+        repetitions=4,
+        seed=0,
+    )
+
+    plan = _resolve_repetition_plan(options)
+
+    assert plan.count == 4
+    assert plan.batch_size == 4
+    assert plan.resolved_seed == 0
+
+
+def test_exponential_repetition_plan_bounds_internal_batch_size():
+    repetition_count = _MAX_AMPLITUDE_REPETITIONS_PER_BATCH + 1
+    options = PhotonOptions(
+        weighting="exponential",
+        scale=1.0,
+        repetitions=repetition_count,
+        seed=123,
+    )
+
+    plan = _resolve_repetition_plan(options)
+
+    assert plan.count == repetition_count
+    assert plan.batch_size == _MAX_AMPLITUDE_REPETITIONS_PER_BATCH
+
+
+def test_exponential_repetition_plan_resolves_one_63_bit_seed(monkeypatch):
+    calls = []
+
+    def fake_randbits(bit_count):
+        calls.append(bit_count)
+        return 456
+
+    monkeypatch.setattr(
+        "signalsnap_pytorch._core.planning.secrets.randbits",
+        fake_randbits,
+    )
+    options = PhotonOptions(
+        weighting="exponential",
+        scale=1.0,
+        repetitions=2,
+    )
+
+    plan = _resolve_repetition_plan(options)
+
+    assert calls == [63]
+    assert plan.resolved_seed == 456
 
 
 def test_runtime_config_rejects_unequal_active_sampled_lengths():
