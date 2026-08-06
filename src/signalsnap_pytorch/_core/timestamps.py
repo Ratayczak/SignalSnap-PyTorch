@@ -16,13 +16,16 @@ from torch import Tensor
 
 from .data_access import RuntimeSource, get_source_length, read_source, relative_float64_offsets
 from .fft import TimestampWindow
-from .planning import RuntimeConfig, TimestampFrequencyPlan, WindowBatch
+from .planning import RuntimeConfig, TimestampedChannelPlan, TimestampFrequencyPlan, WindowBatch
 from .spectra import ChannelCoefficients, ThirdOrderCoefficients, TimestampThirdOrderFrequencyCache
 
 # Sequential reads of about 512 KiB for float64 timestamps.
 _TIMESTAMP_READ_CHUNK_SIZE = 65_536
+
 _MAX_DIRECT_PHASE_ELEMENTS = 1_048_576
 _MAX_DIRECT_FREQUENCIES_PER_CHUNK = 256
+_PHILOX_OUTPUTS_PER_COUNTER = 4
+_OPEN_UNIT_FLOAT64_SCALE = 2.0**-52
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,63 @@ class PreparedTimestampBatch:
     global_event_indices: NDArray[np.int64]
     estimate_count: int
     windows_per_estimate: int
+
+
+def generate_keyed_exponential_amplitudes(
+    prepared: PreparedTimestampBatch,
+    realization_ids: range,
+    *,
+    resolved_seed: int,
+    channel_index: int,
+    scale: float,
+) -> NDArray[np.float64]:
+    """Generate CPU float64 exponential amplitudes keyed by event identity.
+
+    NumPy's counter-based Philox 4x64 generator supplies the integer stream.
+    The Philox key is derived from the calculation seed and channel index.
+    Counter words identify the global event block and realization.
+
+    The returned array has shape ``(R, E)``. Its values therefore do not
+    depend on physical batching, repetition batching, or traversal order.
+    """
+
+    event_indices = prepared.global_event_indices
+    realizations = np.asarray(tuple(realization_ids), dtype=np.int64)
+
+    if realizations.size == 0:
+        raise ValueError("At least one realization ID is required.")
+
+    amplitudes = np.empty((realizations.size, event_indices.size), dtype=np.float64)
+
+    if event_indices.size == 0:
+        return amplitudes
+
+    first_event = int(event_indices[0])
+    last_event = int(event_indices[-1])
+    expected_indices = np.arange(first_event, last_event + 1, dtype=np.int64)
+
+    if not np.array_equal(event_indices, expected_indices):
+        raise RuntimeError("Prepared timestamp events must retain contiguous global indices.")
+
+    first_counter = first_event // _PHILOX_OUTPUTS_PER_COUNTER
+    final_counter = last_event // _PHILOX_OUTPUTS_PER_COUNTER
+    raw_count = (final_counter - first_counter + 1) * _PHILOX_OUTPUTS_PER_COUNTER
+    event_offsets = event_indices - (first_counter * _PHILOX_OUTPUTS_PER_COUNTER)
+
+    key = np.random.SeedSequence([resolved_seed, channel_index]).generate_state(2, dtype=np.uint64)
+
+    for row, realization_id in enumerate(realizations):
+        counter = np.array([first_counter, int(realization_id), 0, 0], dtype=np.uint64)
+        bit_generator = np.random.Philox(counter=counter, key=key)
+        raw_values = bit_generator.random_raw(raw_count)
+        selected_values = raw_values[event_offsets]
+
+        uniform_survival = (
+            (selected_values >> np.uint64(12)).astype(np.float64) + 0.5
+        ) * _OPEN_UNIT_FLOAT64_SCALE
+        amplitudes[row] = -scale * np.log(uniform_survival)
+
+    return amplitudes
 
 
 class TimestampCursor:
@@ -291,21 +351,42 @@ def direct_timestamp_transform(
     )
 
 
-def materialize_unit_timestamp_coefficients(
+def materialize_timestamp_coefficients(
     prepared: PreparedTimestampBatch,
     frequency_plan: TimestampFrequencyPlan,
     timestamp_window: TimestampWindow,
     runtime: RuntimeConfig,
     third_order_cache: TimestampThirdOrderFrequencyCache | None,
+    event_amplitudes: NDArray[np.float64],
 ) -> ChannelCoefficients:
-    """Materialize unit-weight coefficients for one prepared timestamp batch."""
+    """Materialize timestamp coefficients from one shared amplitude matrix."""
+
+    event_count = prepared.global_event_indices.size
+
+    if event_amplitudes.ndim != 2:
+        raise ValueError("Event amplitudes must have shape (R, E).")
+
+    if event_amplitudes.shape[0] == 0:
+        raise ValueError("At least one amplitude realization is required.")
+
+    if event_amplitudes.shape[1] != event_count:
+        raise ValueError(
+            f"Event amplitudes contain {event_amplitudes.shape[1]} events; "
+            f"the prepared batch contains {event_count}."
+        )
 
     relative_times = torch.as_tensor(
         prepared.relative_event_times,
         dtype=runtime.real_dtype,
         device=runtime.device,
     )
-    event_weights = timestamp_window.evaluate(relative_times).unsqueeze(0)
+    amplitudes = torch.as_tensor(
+        event_amplitudes,
+        dtype=runtime.real_dtype,
+        device=runtime.device,
+    )
+    window_weights = timestamp_window.evaluate(relative_times)
+    event_weights = amplitudes * window_weights.unsqueeze(0)
 
     dc = direct_timestamp_transform(
         prepared,
@@ -335,3 +416,68 @@ def materialize_unit_timestamp_coefficients(
         )
 
     return ChannelCoefficients(dc=dc, output=output, third_order=third_order)
+
+
+def materialize_unit_timestamp_coefficients(
+    prepared: PreparedTimestampBatch,
+    frequency_plan: TimestampFrequencyPlan,
+    timestamp_window: TimestampWindow,
+    runtime: RuntimeConfig,
+    third_order_cache: TimestampThirdOrderFrequencyCache | None,
+) -> ChannelCoefficients:
+    """Materialize one unit-amplitude realization."""
+
+    event_amplitudes = np.ones((1, prepared.global_event_indices.size), dtype=np.float64)
+    return materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        timestamp_window,
+        runtime,
+        third_order_cache,
+        event_amplitudes,
+    )
+
+
+def materialize_timestamp_channel_coefficients(
+    prepared: PreparedTimestampBatch,
+    channel_index: int,
+    channel_plan: TimestampedChannelPlan,
+    realization_ids: range,
+    frequency_plan: TimestampFrequencyPlan,
+    timestamp_window: TimestampWindow,
+    runtime: RuntimeConfig,
+    third_order_cache: TimestampThirdOrderFrequencyCache | None,
+) -> ChannelCoefficients:
+    """Materialize one timestamp channel for a stable realization batch."""
+
+    if channel_plan.weighting == "unit":
+        event_amplitudes = np.ones(
+            (len(realization_ids), prepared.global_event_indices.size),
+            dtype=np.float64,
+        )
+    elif channel_plan.weighting == "exponential":
+        resolved_seed = runtime.repetition_plan.resolved_seed
+
+        if channel_plan.scale is None or resolved_seed is None:
+            raise RuntimeError(
+                "Exponential timestamp weighting requires a scale and resolved seed."
+            )
+
+        event_amplitudes = generate_keyed_exponential_amplitudes(
+            prepared,
+            realization_ids,
+            resolved_seed=resolved_seed,
+            channel_index=channel_index,
+            scale=channel_plan.scale,
+        )
+    else:
+        raise RuntimeError(f"Unknown timestamp weighting model {channel_plan.weighting!r}.")
+
+    return materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        timestamp_window,
+        runtime,
+        third_order_cache,
+        event_amplitudes,
+    )

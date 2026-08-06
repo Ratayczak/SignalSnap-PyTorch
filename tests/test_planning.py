@@ -1195,34 +1195,6 @@ def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
     np.testing.assert_array_equal(batches[1].relative_starts, [[1.0, 4.0]])
 
 
-def test_pipeline_rejects_exponential_timestamp_execution_before_phase_seven():
-    data_config = DataConfig(
-        channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
-        observation_start=0.0,
-        observation_stop=2.0,
-    )
-    spectrum_config = SpectrumConfig(
-        df=1.0,
-        f_min=0.0,
-        f_max=0.5,
-        m=2,
-        photon_options=PhotonOptions(
-            weighting="exponential",
-            scale=1.0,
-            repetitions=2,
-            seed=123,
-        ),
-    )
-
-    with pytest.raises(NotImplementedError, match="Exponential timestamp weighting"):
-        calculate_spectra(
-            data_config,
-            spectrum_config,
-            requested_spectra=[(0,)],
-            show_progress=False,
-        )
-
-
 @pytest.mark.parametrize(
     ("photon_options", "expected_weighting", "expected_scale"),
     [

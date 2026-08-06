@@ -9,12 +9,19 @@ from signalsnap_pytorch import DataConfig, HDF5Source, TimestampedChannel
 from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.fft import prepare_default_timestamp_window
-from signalsnap_pytorch._core.planning import TimestampFrequencyPlan, WindowBatch
+from signalsnap_pytorch._core.planning import (
+    TimestampedChannelPlan,
+    TimestampFrequencyPlan,
+    WindowBatch,
+)
 from signalsnap_pytorch._core.spectra import build_timestamp_third_order_cache
 from signalsnap_pytorch._core.timestamps import (
     PreparedTimestampBatch,
     TimestampCursor,
     direct_timestamp_transform,
+    generate_keyed_exponential_amplitudes,
+    materialize_timestamp_channel_coefficients,
+    materialize_timestamp_coefficients,
     materialize_unit_timestamp_coefficients,
     prepare_timestamp_batch,
 )
@@ -53,6 +60,147 @@ def _runtime(dtype=torch.float64, duration=1.0):
         device=torch.device("cpu"),
         window_plan=SimpleNamespace(duration=duration),
     )
+
+
+def _prepared_events(global_event_indices):
+    event_indices = np.asarray(global_event_indices, dtype=np.int64)
+    return PreparedTimestampBatch(
+        relative_event_times=np.zeros(event_indices.size, dtype=np.float64),
+        window_indices=np.zeros(event_indices.size, dtype=np.int64),
+        global_event_indices=event_indices,
+        estimate_count=1,
+        windows_per_estimate=1,
+    )
+
+
+def test_keyed_exponential_amplitudes_lock_philox_stream_and_transform():
+    prepared = _prepared_events(np.arange(3, 9))
+
+    actual = generate_keyed_exponential_amplitudes(
+        prepared,
+        range(2, 5),
+        resolved_seed=1234,
+        channel_index=7,
+        scale=1.5,
+    )
+
+    expected = np.array(
+        [
+            [
+                0.48596626469593807,
+                1.0130647510740087,
+                2.8540173143180034,
+                0.8989021372038755,
+                4.314648392085424,
+                0.478821649596433,
+            ],
+            [
+                0.9165340274484812,
+                5.177763660217787,
+                0.9500213756313394,
+                2.3599477517112843,
+                5.66941143536925,
+                0.504162025831843,
+            ],
+            [
+                0.35576219255200214,
+                0.7194604886838967,
+                1.2081723507989828,
+                1.1179264779233187,
+                2.715905356925086,
+                0.19679736546458293,
+            ],
+        ]
+    )
+    np.testing.assert_allclose(actual, expected, rtol=2e-15, atol=0)
+
+
+def test_keyed_exponential_amplitudes_are_batch_and_repetition_chunk_invariant():
+    full = generate_keyed_exponential_amplitudes(
+        _prepared_events(np.arange(3, 12)),
+        range(2, 5),
+        resolved_seed=91,
+        channel_index=4,
+        scale=0.75,
+    )
+    event_chunks = np.concatenate(
+        [
+            generate_keyed_exponential_amplitudes(
+                _prepared_events(np.arange(3, 7)),
+                range(2, 5),
+                resolved_seed=91,
+                channel_index=4,
+                scale=0.75,
+            ),
+            generate_keyed_exponential_amplitudes(
+                _prepared_events(np.arange(7, 12)),
+                range(2, 5),
+                resolved_seed=91,
+                channel_index=4,
+                scale=0.75,
+            ),
+        ],
+        axis=1,
+    )
+    repetition_chunks = np.concatenate(
+        [
+            generate_keyed_exponential_amplitudes(
+                _prepared_events(np.arange(3, 12)),
+                realization_ids,
+                resolved_seed=91,
+                channel_index=4,
+                scale=0.75,
+            )
+            for realization_ids in (range(2, 3), range(3, 5))
+        ],
+        axis=0,
+    )
+
+    np.testing.assert_array_equal(event_chunks, full)
+    np.testing.assert_array_equal(repetition_chunks, full)
+
+
+def test_keyed_exponential_amplitudes_separate_channels_events_and_scale():
+    prepared = _prepared_events(np.arange(4))
+    channel_zero = generate_keyed_exponential_amplitudes(
+        prepared,
+        range(2),
+        resolved_seed=17,
+        channel_index=0,
+        scale=1.0,
+    )
+    channel_one = generate_keyed_exponential_amplitudes(
+        prepared,
+        range(2),
+        resolved_seed=17,
+        channel_index=1,
+        scale=1.0,
+    )
+    scaled = generate_keyed_exponential_amplitudes(
+        prepared,
+        range(2),
+        resolved_seed=17,
+        channel_index=0,
+        scale=2.5,
+    )
+
+    assert np.all(channel_zero > 0)
+    assert not np.array_equal(channel_zero, channel_one)
+    assert np.unique(channel_zero[0]).size == prepared.global_event_indices.size
+    np.testing.assert_array_equal(scaled, 2.5 * channel_zero)
+
+
+def test_keyed_exponential_amplitudes_preserve_empty_event_axis():
+    actual = generate_keyed_exponential_amplitudes(
+        _prepared_events(np.empty(0, dtype=np.int64)),
+        range(3, 5),
+        resolved_seed=8,
+        channel_index=2,
+        scale=1.0,
+    )
+
+    assert actual.shape == (2, 0)
+    assert actual.dtype == np.float64
 
 
 def test_timestamp_batch_assigns_boundaries_duplicates_and_empty_windows(monkeypatch):
@@ -309,6 +457,199 @@ def test_unit_timestamp_coefficients_apply_window_to_dc_output_and_closing_roles
     )
     assert coefficients.third_order.gather_indices is third_order_cache.gather_indices
     assert coefficients.third_order.valid_mask is third_order_cache.valid_mask
+
+
+def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.array([0.5, 0.5]),
+        window_indices=np.array([0, 1], dtype=np.int64),
+        global_event_indices=np.array([0, 1], dtype=np.int64),
+        estimate_count=1,
+        windows_per_estimate=2,
+    )
+    grid_indices = np.arange(-1, 2, dtype=np.int64)
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=grid_indices,
+        band_frequencies=grid_indices.astype(np.float64),
+    )
+    runtime = _runtime()
+    third_order_cache = build_timestamp_third_order_cache(runtime, frequency_plan)
+    amplitudes = np.array([[2.0, 3.0], [5.0, 7.0]])
+
+    coefficients = materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        prepare_default_timestamp_window(runtime),
+        runtime,
+        third_order_cache,
+        amplitudes,
+    )
+
+    output_phases = np.exp(1j * np.pi * frequency_plan.band_frequencies)
+    expected_output = amplitudes[:, None, :, None] * output_phases[None, None, None, :]
+    closing_phases = np.exp(1j * np.pi * third_order_cache.closing_frequencies)
+    expected_closing = amplitudes[:, None, :, None] * closing_phases[None, None, None, :]
+
+    np.testing.assert_allclose(coefficients.dc.numpy(), amplitudes[:, None, :], atol=1e-14)
+    np.testing.assert_allclose(coefficients.output.numpy(), expected_output, atol=1e-14)
+    assert coefficients.third_order is not None
+    np.testing.assert_allclose(
+        coefficients.third_order.values.numpy(),
+        expected_closing,
+        atol=1e-14,
+    )
+
+
+def test_unit_timestamp_materializer_delegates_to_shared_amplitude_contract():
+    prepared = _prepared_events(np.arange(2))
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=np.array([0, 1], dtype=np.int64),
+        band_frequencies=np.array([0.0, 1.0]),
+    )
+    runtime = _runtime()
+    timestamp_window = prepare_default_timestamp_window(runtime)
+
+    unit = materialize_unit_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        timestamp_window,
+        runtime,
+        third_order_cache=None,
+    )
+    shared = materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        timestamp_window,
+        runtime,
+        third_order_cache=None,
+        event_amplitudes=np.ones((1, 2)),
+    )
+
+    torch.testing.assert_close(unit.dc, shared.dc)
+    torch.testing.assert_close(unit.output, shared.output)
+
+
+@pytest.mark.parametrize(
+    ("amplitudes", "message"),
+    [
+        pytest.param(np.ones(2), "shape", id="missing-realization-axis"),
+        pytest.param(np.ones((0, 2)), "realization", id="empty-realization-axis"),
+        pytest.param(np.ones((1, 3)), "contains 2", id="event-count-mismatch"),
+    ],
+)
+def test_timestamp_materializer_rejects_invalid_amplitude_shape(amplitudes, message):
+    prepared = _prepared_events(np.arange(2))
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=np.array([0], dtype=np.int64),
+        band_frequencies=np.array([0.0]),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        materialize_timestamp_coefficients(
+            prepared,
+            frequency_plan,
+            prepare_default_timestamp_window(_runtime()),
+            _runtime(),
+            third_order_cache=None,
+            event_amplitudes=amplitudes,
+        )
+
+
+def test_timestamp_channel_dispatch_materializes_unit_realization_batch():
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.array([0.5, 0.5]),
+        window_indices=np.array([0, 1], dtype=np.int64),
+        global_event_indices=np.array([4, 5], dtype=np.int64),
+        estimate_count=1,
+        windows_per_estimate=2,
+    )
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=np.array([0], dtype=np.int64),
+        band_frequencies=np.array([0.0]),
+    )
+    runtime = _runtime()
+
+    coefficients = materialize_timestamp_channel_coefficients(
+        prepared,
+        channel_index=3,
+        channel_plan=TimestampedChannelPlan(
+            event_count=2,
+            weighting="unit",
+            scale=None,
+        ),
+        realization_ids=range(2),
+        frequency_plan=frequency_plan,
+        timestamp_window=prepare_default_timestamp_window(runtime),
+        runtime=runtime,
+        third_order_cache=None,
+    )
+
+    assert coefficients.dc.shape == (2, 1, 2)
+    torch.testing.assert_close(coefficients.dc, torch.ones_like(coefficients.dc))
+
+
+def test_timestamp_channel_dispatch_keys_exponential_amplitudes(monkeypatch):
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.array([0.5, 0.5]),
+        window_indices=np.array([0, 1], dtype=np.int64),
+        global_event_indices=np.array([4, 5], dtype=np.int64),
+        estimate_count=1,
+        windows_per_estimate=2,
+    )
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=np.array([0], dtype=np.int64),
+        band_frequencies=np.array([0.0]),
+    )
+    runtime = _runtime()
+    runtime.repetition_plan = SimpleNamespace(resolved_seed=91)
+    expected_amplitudes = np.array([[2.0, 3.0], [5.0, 7.0]])
+
+    def fake_amplitudes(
+        actual_prepared,
+        realization_ids,
+        *,
+        resolved_seed,
+        channel_index,
+        scale,
+    ):
+        assert actual_prepared is prepared
+        assert realization_ids == range(2, 4)
+        assert resolved_seed == 91
+        assert channel_index == 6
+        assert scale == 1.5
+        return expected_amplitudes
+
+    monkeypatch.setattr(
+        _timestamps,
+        "generate_keyed_exponential_amplitudes",
+        fake_amplitudes,
+    )
+
+    coefficients = materialize_timestamp_channel_coefficients(
+        prepared,
+        channel_index=6,
+        channel_plan=TimestampedChannelPlan(
+            event_count=2,
+            weighting="exponential",
+            scale=1.5,
+        ),
+        realization_ids=range(2, 4),
+        frequency_plan=frequency_plan,
+        timestamp_window=prepare_default_timestamp_window(runtime),
+        runtime=runtime,
+        third_order_cache=None,
+    )
+
+    np.testing.assert_allclose(
+        coefficients.dc.numpy(),
+        expected_amplitudes[:, None, :],
+        atol=1e-14,
+    )
 
 
 def test_unit_timestamp_coefficients_keep_empty_windows_and_omit_third_order_storage():

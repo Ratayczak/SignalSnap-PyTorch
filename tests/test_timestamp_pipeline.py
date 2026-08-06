@@ -1,5 +1,7 @@
 import numpy as np
 
+from signalsnap_pytorch._core import planning as _planning
+from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch import (
     DataConfig,
     PhotonOptions,
@@ -209,3 +211,123 @@ def test_unit_timestamp_pipeline_counts_complete_event_free_tail_windows():
 
     expected = np.array([0.25 / _normalization(1)])
     np.testing.assert_allclose(result.spectrum, expected, rtol=1e-13)
+
+
+def test_exponential_pipeline_averages_spectra_instead_of_coefficients(monkeypatch):
+    amplitudes = np.array(
+        [
+            [1.0, 3.0, 2.0, 4.0],
+            [2.0, 6.0, 1.0, 5.0],
+        ]
+    )
+
+    def fixed_amplitudes(
+        prepared,
+        realization_ids,
+        *,
+        resolved_seed,
+        channel_index,
+        scale,
+    ):
+        assert resolved_seed == 123
+        assert channel_index == 0
+        assert scale == 1.0
+        rows = np.asarray(tuple(realization_ids), dtype=np.int64)
+        return amplitudes[rows[:, None], prepared.global_event_indices[None, :]]
+
+    monkeypatch.setattr(
+        _timestamps,
+        "generate_keyed_exponential_amplitudes",
+        fixed_amplitudes,
+    )
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=np.arange(4) + 0.5),),
+        observation_start=0.0,
+        observation_stop=4.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=0.0,
+        f_max=0.5,
+        m=2,
+        photon_options=PhotonOptions(
+            weighting="exponential",
+            scale=1.0,
+            repetitions=2,
+            seed=123,
+        ),
+    )
+
+    result = calculate_spectra(
+        data_config,
+        spectrum_config,
+        requested_spectra=[(0, 0)],
+        show_progress=False,
+    )[(0, 0)]
+
+    expected = np.array([5.0 / _normalization(2)])
+    coefficient_average_result = np.array([4.5 / _normalization(2)])
+    np.testing.assert_allclose(result.spectrum, expected, rtol=1e-13)
+    assert not np.allclose(result.spectrum, coefficient_average_result, rtol=1e-13)
+    np.testing.assert_allclose(result.spectrum_uncertainty, 0.0, atol=1e-14)
+
+
+def test_exponential_pipeline_is_physical_and_repetition_batch_invariant(monkeypatch):
+    patterns = ((), (0.2,), (0.25, 0.75), (0.5, 0.5, 0.8))
+    timestamps = np.array(
+        [
+            window_index + relative_time
+            for window_index in range(16)
+            for relative_time in patterns[window_index % len(patterns)]
+        ]
+    )
+    data_config = DataConfig(
+        channels=(TimestampedChannel(timestamps=timestamps),),
+        observation_start=0.0,
+        observation_stop=16.0,
+    )
+    requested_spectra = [(0,) * order for order in range(1, 5)]
+
+    def calculate(estimates_per_batch):
+        return calculate_spectra(
+            data_config,
+            SpectrumConfig(
+                df=1.0,
+                f_min=-1.0,
+                f_max=1.0,
+                m=4,
+                spectral_estimates_per_batch=estimates_per_batch,
+                photon_options=PhotonOptions(
+                    weighting="exponential",
+                    scale=1.25,
+                    repetitions=5,
+                    seed=9876,
+                ),
+            ),
+            requested_spectra=requested_spectra,
+            show_progress=False,
+        )
+
+    reference = calculate(estimates_per_batch=1)
+    physical_batched = calculate(estimates_per_batch=2)
+    monkeypatch.setattr(_planning, "_MAX_AMPLITUDE_REPETITIONS_PER_BATCH", 2)
+    repetition_batched = calculate(estimates_per_batch=2)
+
+    for channels in requested_spectra:
+        expected = reference[channels]
+
+        for actual_store in (physical_batched, repetition_batched):
+            actual = actual_store[channels]
+            np.testing.assert_array_equal(actual.freq, expected.freq)
+            np.testing.assert_allclose(
+                actual.spectrum,
+                expected.spectrum,
+                rtol=2e-13,
+                atol=2e-13,
+            )
+            np.testing.assert_allclose(
+                actual.spectrum_uncertainty,
+                expected.spectrum_uncertainty,
+                rtol=2e-13,
+                atol=2e-13,
+            )
