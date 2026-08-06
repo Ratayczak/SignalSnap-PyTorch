@@ -25,7 +25,7 @@ from ..configurators import (
     SpectrumConfig,
     TimestampedChannel,
 )
-from .data_access import RuntimeSource, get_source_length
+from .data_access import RuntimeSource, get_source_length, validate_timestamp_source
 from .utils import ChannelIndex, FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
 _MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 100
@@ -487,7 +487,7 @@ def _resolve_observation_interval(
                 f"{sampled_duration}."
             )
 
-    return float(observation_start), float(observation_stop)
+    return observation_start, observation_stop
 
 
 def resolve_sampled_frequencies(
@@ -747,6 +747,14 @@ def build_runtime_config(
     )
 
     observation_start, observation_stop = _resolve_observation_interval(data_config, channel_plans)
+    for channel, channel_plan in channel_plans.items():
+        if isinstance(channel_plan, TimestampedChannelPlan):
+            validate_timestamp_source(
+                opened_channels[channel],
+                observation_start,
+                observation_stop,
+                label=f"Timestamped channel {channel}",
+            )
     repetition_plan = _resolve_repetition_plan(photon_options)
     orders = tuple(sorted({len(channels) for channels in spectra_channels}))
 

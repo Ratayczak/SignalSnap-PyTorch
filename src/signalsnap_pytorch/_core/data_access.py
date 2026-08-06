@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import h5py
 
 NormalizedSelector = int | slice
+_TIMESTAMP_VALIDATION_CHUNK_SIZE = 65_536
 
 
 def _require_h5py() -> Any:
@@ -515,3 +516,99 @@ def read_source(source: RuntimeSource, start: int, stop: int) -> np.ndarray:
         result = result.astype(native_dtype, copy=False)
 
     return np.ascontiguousarray(result)
+
+
+def relative_float64_offsets(
+    values: np.ndarray,
+    observation_start: float,
+) -> np.ndarray:
+    """Rebase raw timestamps before conversion to canonical float64 offsets."""
+
+    if np.issubdtype(values.dtype, np.integer):
+        integral_origin = isinstance(observation_start, int) or (
+            isinstance(observation_start, float) and observation_start.is_integer()
+        )
+
+        if integral_origin:
+            origin = int(observation_start)
+            offsets = (int(value) - origin for value in values)
+            return np.fromiter(offsets, dtype=np.float64, count=values.size)
+
+    return np.asarray(values - observation_start, dtype=np.float64)
+
+
+def validate_timestamp_source(
+    source: RuntimeSource,
+    observation_start: float,
+    observation_stop: float,
+    *,
+    label: str,
+) -> None:
+    """Validate one active timestamp source using bounded contiguous reads."""
+
+    if isinstance(source, HDF5SourceState):
+        is_boolean = np.issubdtype(source.dataset.dtype, np.bool_)
+    elif isinstance(source, torch.Tensor):
+        is_boolean = source.dtype == torch.bool
+    else:
+        is_boolean = np.issubdtype(source.dtype, np.bool_)
+
+    if is_boolean:
+        raise TypeError(f"{label} must contain real numeric timestamps, not Boolean data.")
+
+    previous_raw: float | None = None
+    previous_offset: float | None = None
+
+    for start in range(0, get_source_length(source), _TIMESTAMP_VALIDATION_CHUNK_SIZE):
+        stop = min(start + _TIMESTAMP_VALIDATION_CHUNK_SIZE, get_source_length(source))
+        values = read_source(source, start, stop)
+
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{label} must contain only finite timestamps.")
+
+        if values.size > 1 and np.any(values[1:] < values[:-1]):
+            raise ValueError(f"{label} must be nondecreasing in flattened C order.")
+
+        offsets = relative_float64_offsets(values, observation_start)
+
+        if not np.all(np.isfinite(offsets)):
+            raise ValueError(
+                f"{label} cannot be represented as finite float64 offsets. "
+                "Use a nearby time origin or a more appropriate time unit."
+            )
+
+        first_raw = values[0].item()
+        last_raw = values[-1].item()
+        first_offset = float(offsets[0])
+        last_offset = float(offsets[-1])
+
+        if previous_raw is not None and first_raw < previous_raw:
+            raise ValueError(f"{label} must be nondecreasing in flattened C order.")
+
+        if (
+            previous_raw is not None
+            and first_raw != previous_raw
+            and first_offset == previous_offset
+        ):
+            raise ValueError(
+                f"{label} contains distinct timestamps that collapse to one float64 "
+                "offset. Use a nearby time origin or a more appropriate time unit."
+            )
+
+        distinct = values[1:] != values[:-1]
+        collapsed = offsets[1:] == offsets[:-1]
+
+        if np.any(distinct & collapsed):
+            raise ValueError(
+                f"{label} contains distinct timestamps that collapse to one float64 "
+                "offset. Use a nearby time origin or a more appropriate time unit."
+            )
+
+        if first_raw < observation_start or last_raw >= observation_stop:
+            raise ValueError(
+                f"{label} must lie within the half-open observation interval "
+                f"[{observation_start}, {observation_stop})."
+            )
+
+        previous_raw = last_raw
+        previous_offset = last_offset

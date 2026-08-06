@@ -16,6 +16,9 @@ from torch import Tensor
 from .planning import RuntimeConfig
 
 _CPU_DEVICE = torch.device("cpu")
+_TIMESTAMP_WINDOW_SIGMA = 0.14
+_TIMESTAMP_QUADRATURE_POINTS = 128
+_LEGACY_TIMESTAMP_REFERENCE_POINTS = 70
 
 
 ### ------------------------
@@ -103,6 +106,164 @@ class WindowBuffer:
         explicit range validation.
         """
         return self.norm_all_orders[order - 1]
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultTimestampWindow:
+    """Continuous timestamp window and order-one through order-four normalizers."""
+
+    duration: float
+    norm_all_orders: tuple[Tensor, Tensor, Tensor, Tensor]
+
+    def evaluate(self, relative_times: Tensor) -> Tensor:
+        """Evaluate the window at times relative to the current window start."""
+
+        normalized_times = relative_times / self.duration
+        return _default_timestamp_window(normalized_times)
+
+    def norm(self, order: int) -> Tensor:
+        """Return the continuous normalization for an order from one through four."""
+
+        return self.norm_all_orders[order - 1]
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyTimestampWindow:
+    """Fixed 70-point v1 timestamp window and normalization convention."""
+
+    duration: float
+    reference_dt: float
+    scale: Tensor
+    norm_all_orders: tuple[Tensor, Tensor, Tensor, Tensor]
+
+    def evaluate(self, relative_times: Tensor) -> Tensor:
+        """Evaluate the normalized v1 window at relative event times."""
+
+        reference_positions = relative_times / self.reference_dt
+        raw = _old_calc_window(
+            reference_positions,
+            _LEGACY_TIMESTAMP_REFERENCE_POINTS,
+            _LEGACY_TIMESTAMP_REFERENCE_POINTS + 1,
+            _TIMESTAMP_WINDOW_SIGMA,
+        )
+        return raw * self.scale
+
+    def norm(self, order: int) -> Tensor:
+        """Return the v1 discrete reference normalization for an order."""
+
+        return self.norm_all_orders[order - 1]
+
+
+def _default_timestamp_window(normalized_times: Tensor) -> Tensor:
+    """Evaluate the continuous confined-Gaussian family using a Torch tensor."""
+
+    def gaussian(values: Tensor) -> Tensor:
+        scaled = (values - 0.5) / (2.0 * _TIMESTAMP_WINDOW_SIGMA)
+        return torch.exp(-(scaled**2))
+
+    zero = normalized_times.new_tensor(0.0)
+    one = normalized_times.new_tensor(1.0)
+    edge = gaussian(zero)
+    denominator = gaussian(one) + gaussian(-one)
+    raw = (
+        gaussian(normalized_times)
+        - edge * (gaussian(normalized_times + one) + gaussian(normalized_times - one)) / denominator
+    )
+
+    midpoint = normalized_times.new_tensor(0.5)
+    midpoint_raw = (
+        gaussian(midpoint)
+        - edge * (gaussian(midpoint + one) + gaussian(midpoint - one)) / denominator
+    )
+
+    return raw / midpoint_raw
+
+
+def _default_timestamp_normalizations(duration: float) -> tuple[float, ...]:
+    """Calculate continuous normalizers using CPU float64 quadrature."""
+
+    nodes_array, weights_array = np.polynomial.legendre.leggauss(_TIMESTAMP_QUADRATURE_POINTS)
+    normalized_times = torch.from_numpy((nodes_array + 1.0) / 2.0)
+    weights = torch.from_numpy(weights_array)
+    window = _default_timestamp_window(normalized_times)
+
+    return tuple(duration * 0.5 * torch.dot(weights, window**order).item() for order in range(1, 5))
+
+
+def prepare_default_timestamp_window(runtime: RuntimeConfig) -> DefaultTimestampWindow:
+    """Prepare the default continuous window for a timestamp calculation."""
+
+    duration = runtime.window_plan.duration
+    normalizations = _default_timestamp_normalizations(duration)
+    norms = torch.as_tensor(normalizations, dtype=runtime.real_dtype, device=runtime.device)
+
+    return DefaultTimestampWindow(
+        duration=duration,
+        norm_all_orders=(norms[0], norms[1], norms[2], norms[3]),
+    )
+
+
+def _legacy_timestamp_raw_numpy(reference_positions: np.ndarray) -> np.ndarray:
+    """Evaluate the unnormalized v1 timestamp window."""
+
+    reference_points = _LEGACY_TIMESTAMP_REFERENCE_POINTS
+    length = reference_points + 1
+
+    def gaussian(values: np.ndarray | float):
+        scaled = (values - reference_points / 2.0) / (2.0 * length * _TIMESTAMP_WINDOW_SIGMA)
+        return np.exp(-(scaled**2))
+
+    edge = gaussian(-0.5)
+    denominator = gaussian(-0.5 + length) + gaussian(-0.5 - length)
+
+    return (
+        gaussian(reference_positions)
+        - edge
+        * (gaussian(reference_positions + length) + gaussian(reference_positions - length))
+        / denominator
+    )
+
+
+def prepare_legacy_timestamp_window(runtime: RuntimeConfig) -> LegacyTimestampWindow:
+    """Prepare the exact fixed-grid v1 timestamp window convention."""
+
+    duration = runtime.window_plan.duration
+    reference_points = _LEGACY_TIMESTAMP_REFERENCE_POINTS
+    reference_dt = duration / reference_points
+    reference_grid = np.linspace(0.0, float(reference_points), reference_points, dtype=np.float64)
+
+    raw = _legacy_timestamp_raw_numpy(reference_grid)
+    norm2 = reference_dt * float(np.sum(raw**2))
+    scale = 1.0 / np.sqrt(norm2)
+    normalized_window = raw * scale
+
+    normalizations = tuple(
+        reference_dt * float(np.sum(normalized_window**order)) for order in range(1, 5)
+    )
+    values = torch.as_tensor(
+        (scale, *normalizations),
+        dtype=runtime.real_dtype,
+        device=runtime.device,
+    )
+
+    return LegacyTimestampWindow(
+        duration=duration,
+        reference_dt=reference_dt,
+        scale=values[0],
+        norm_all_orders=(values[1], values[2], values[3], values[4]),
+    )
+
+
+TimestampWindow = DefaultTimestampWindow | LegacyTimestampWindow
+
+
+def prepare_timestamp_window(runtime: RuntimeConfig) -> TimestampWindow:
+    """Prepare the selected default or legacy timestamp window convention."""
+
+    if runtime.old_window:
+        return prepare_legacy_timestamp_window(runtime)
+
+    return prepare_default_timestamp_window(runtime)
 
 
 def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:

@@ -992,6 +992,33 @@ def test_active_timestamped_channel_requires_explicit_observation_bounds(
         _build_runtime(data_config, spectrum_config, [(0,)])
 
 
+def test_timestamp_runtime_preserves_large_integral_observation_origin():
+    origin = 2**60 + 1
+    data_config = DataConfig(
+        channels=(
+            TimestampedChannel(
+                timestamps=np.array([origin, origin + 1], dtype=np.int64),
+            ),
+        ),
+        observation_start=origin,
+        observation_stop=origin + 8,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=0.0,
+        f_max=1.0,
+        m=2,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    runtime = _build_runtime(data_config, spectrum_config, [(0,)])
+
+    assert runtime.window_plan.observation_start == origin
+    assert runtime.window_plan.observation_stop == origin + 8
+    assert type(runtime.window_plan.observation_start) is int
+    assert type(runtime.window_plan.observation_stop) is int
+
+
 @pytest.mark.parametrize(
     ("df", "f_max"),
     [

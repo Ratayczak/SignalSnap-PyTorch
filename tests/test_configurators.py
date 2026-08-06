@@ -360,6 +360,22 @@ def test_data_config_rejects_unordered_observation_interval(start, stop):
         )
 
 
+def test_data_config_preserves_large_numpy_integer_observation_bounds():
+    origin = 2**60 + 1
+    channel = TimestampedChannel(timestamps=np.array([origin], dtype=np.int64))
+
+    config = DataConfig(
+        channels=(channel,),
+        observation_start=np.int64(origin),
+        observation_stop=np.int64(origin + 8),
+    )
+
+    assert config.observation_start == origin
+    assert config.observation_stop == origin + 8
+    assert type(config.observation_start) is int
+    assert type(config.observation_stop) is int
+
+
 @pytest.mark.parametrize(
     ("dataset", "selection", "message"),
     [

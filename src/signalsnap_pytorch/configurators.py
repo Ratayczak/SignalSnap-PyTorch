@@ -12,7 +12,15 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from ._core.utils import TimeUnits as _TimeUnits
 
@@ -262,8 +270,8 @@ class DataConfig(BaseModel):
     model_config = _SHARED_CONFIG
 
     channels: Annotated[tuple[SampledChannel | TimestampedChannel, ...], Field(min_length=1)]
-    observation_start: float | None = None
-    observation_stop: float | None = None
+    observation_start: StrictInt | StrictFloat | None = None
+    observation_stop: StrictInt | StrictFloat | None = None
     t_unit: _TimeUnits = "s"
 
     @field_validator("channels", mode="before")
@@ -282,6 +290,25 @@ class DataConfig(BaseModel):
                 )
 
         return channels
+
+    @field_validator("observation_start", "observation_stop", mode="before")
+    @classmethod
+    def normalize_observation_bound(cls, value: Any) -> Any:
+        """Preserve integral origins while normalizing NumPy scalar bounds."""
+
+        if value is None:
+            return None
+
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("Observation bounds must be finite real numbers.")
+
+        if isinstance(value, np.integer):
+            return int(value)
+
+        if isinstance(value, np.floating):
+            return float(value)
+
+        return value
 
     @model_validator(mode="after")
     def validate_observation_interval(self) -> DataConfig:

@@ -4,11 +4,13 @@ import pytest
 import torch
 
 from signalsnap_pytorch import DataConfig, HDF5Source, SampledChannel, TimestampedChannel
+from signalsnap_pytorch._core import data_access as _data_access
 from signalsnap_pytorch._core.data_access import (
     HDF5SourceState,
     get_source_length,
     open_channels,
     read_source,
+    validate_timestamp_source,
 )
 from tests._helpers import sampled_data_config
 
@@ -146,6 +148,85 @@ def test_empty_timestamped_hdf5_source_has_zero_logical_length(tmp_path):
 
     assert actual.shape == (0,)
     assert actual.dtype == np.dtype(np.float64)
+
+
+def test_timestamp_validation_accepts_start_duplicates_and_values_before_stop():
+    values = np.array([10, 10, 11], dtype=np.int64)
+
+    validate_timestamp_source(values, 10, 12, label="Timestamped channel 0")
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param(np.array([9, 10]), id="before-start"),
+        pytest.param(np.array([10, 12]), id="at-stop"),
+    ],
+)
+def test_timestamp_validation_rejects_values_outside_half_open_observation(values):
+    with pytest.raises(ValueError, match=r"half-open observation interval \[10, 12\)"):
+        validate_timestamp_source(values, 10, 12, label="Timestamped channel 0")
+
+
+def test_timestamp_validation_rejects_distinct_float64_offset_collapse():
+    values = np.array([0, 1], dtype=np.int64)
+    origin = -(2**60)
+
+    with pytest.raises(ValueError, match="distinct timestamps.*collapse"):
+        validate_timestamp_source(
+            values,
+            origin,
+            2,
+            label="Timestamped channel 0",
+        )
+
+
+@pytest.mark.parametrize(
+    ("values", "expect_error"),
+    [
+        pytest.param([[0, 1], [1, 2]], False, id="duplicate-across-boundary"),
+        pytest.param([[0, 2], [1, 3]], True, id="decrease-across-boundary"),
+    ],
+)
+def test_timestamped_hdf5_validation_carries_order_across_c_order_chunks(
+    tmp_path,
+    monkeypatch,
+    values,
+    expect_error,
+):
+    path = tmp_path / "timestamps.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("/timestamps", data=np.asarray(values, dtype=np.int64))
+
+    config = DataConfig(
+        channels=(
+            TimestampedChannel(
+                timestamps=HDF5Source(
+                    file=path,
+                    dataset="/timestamps",
+                    selection=(slice(None), slice(None)),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(_data_access, "_TIMESTAMP_VALIDATION_CHUNK_SIZE", 2)
+
+    with _open_all_channels(config) as sources:
+        if expect_error:
+            with pytest.raises(ValueError, match="nondecreasing in flattened C order"):
+                validate_timestamp_source(
+                    sources[0],
+                    0,
+                    4,
+                    label="Timestamped channel 0",
+                )
+        else:
+            validate_timestamp_source(
+                sources[0],
+                0,
+                4,
+                label="Timestamped channel 0",
+            )
 
 
 def test_open_channels_builds_hdf5_state(hdf5_file):
