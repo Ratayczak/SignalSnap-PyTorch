@@ -17,6 +17,7 @@ from ._core import data_access as _data_access
 from ._core import fft as _fft
 from ._core import planning as _planning
 from ._core import spectra as _spectra
+from ._core import timestamps as _timestamps
 from .configurators import DataConfig, SpectrumConfig
 from .results import SpectrumResultStore
 
@@ -83,42 +84,74 @@ def calculate_spectra(
             spectrum_config=spectrum_config,
             spectra_channels=spectra_channels,
         )
-        timestamped_channels = tuple(
-            channel
-            for channel, channel_plan in runtime.channel_plans.items()
-            if isinstance(channel_plan, _planning.TimestampedChannelPlan)
+        has_sampled_channels = any(
+            isinstance(channel_plan, _planning.SampledChannelPlan)
+            for channel_plan in runtime.channel_plans.values()
         )
-        if timestamped_channels:
-            raise NotImplementedError(
-                "Timestamped channel coefficient preparation is not implemented yet."
-            )
+        has_timestamped_channels = any(
+            isinstance(channel_plan, _planning.TimestampedChannelPlan)
+            for channel_plan in runtime.channel_plans.values()
+        )
+
+        if has_sampled_channels and has_timestamped_channels:
+            raise NotImplementedError("Mixed sampled/timestamped execution is not enabled yet.")
+
+        if has_timestamped_channels and any(
+            channel_plan.weighting != "unit"
+            for channel_plan in runtime.channel_plans.values()
+            if isinstance(channel_plan, _planning.TimestampedChannelPlan)
+        ):
+            raise NotImplementedError("Exponential timestamp weighting is not implemented yet.")
+
         selected_frequency_plans = tuple(runtime.spectrum_frequency_plans.values())
         common_frequency_plan = selected_frequency_plans[0]
-
-        if not isinstance(common_frequency_plan, _planning.SampledFrequencyPlan):
-            raise TypeError(
-                "Internal error: sampled coefficient preparation requires a SampledFrequencyPlan."
-            )
 
         if any(plan is not common_frequency_plan for plan in selected_frequency_plans[1:]):
             raise NotImplementedError(
                 "Multiple spectrum frequency views are not connected to "
                 "coefficient preparation yet."
             )
-        first_channel = runtime.active_data_channels[0]
-        first_channel_plan = runtime.channel_plans[first_channel]
-        assert isinstance(first_channel_plan, _planning.SampledChannelPlan)
 
-        window_buffer = _fft.prepare_window(
-            runtime,
-            dt=first_channel_plan.dt,
-            window_points=common_frequency_plan.window_points,
-        )
-        third_order_cache = (
-            _spectra.build_third_order_cache(runtime, common_frequency_plan)
-            if any(len(channels) == 3 for channels in runtime.spectrum_frequency_plans)
-            else None
-        )
+        has_third_order = any(len(channels) == 3 for channels in runtime.spectrum_frequency_plans)
+        timestamp_cursors: dict[int, _timestamps.TimestampCursor] = {}
+
+        if has_timestamped_channels:
+            if not isinstance(common_frequency_plan, _planning.TimestampFrequencyPlan):
+                raise TypeError(
+                    "Timestamp coefficient preparation requires a TimestampFrequencyPlan."
+                )
+
+            window_buffer = _fft.prepare_timestamp_window(runtime)
+            third_order_cache = (
+                _spectra.build_timestamp_third_order_cache(runtime, common_frequency_plan)
+                if has_third_order
+                else None
+            )
+            timestamp_cursors = {
+                channel: _timestamps.TimestampCursor(
+                    channels[channel],
+                    runtime.window_plan.observation_start,
+                )
+                for channel in runtime.active_data_channels
+            }
+        else:
+            if not isinstance(common_frequency_plan, _planning.SampledFrequencyPlan):
+                raise TypeError("Sampled coefficient preparation requires a SampledFrequencyPlan.")
+
+            first_channel = runtime.active_data_channels[0]
+            first_channel_plan = runtime.channel_plans[first_channel]
+            assert isinstance(first_channel_plan, _planning.SampledChannelPlan)
+
+            window_buffer = _fft.prepare_window(
+                runtime,
+                dt=first_channel_plan.dt,
+                window_points=common_frequency_plan.window_points,
+            )
+            third_order_cache = (
+                _spectra.build_third_order_cache(runtime, common_frequency_plan)
+                if has_third_order
+                else None
+            )
         accumulator_store = _accumulation.initialize_accumulator_store(runtime)
 
         failed_spectra: set[tuple[int, ...]] = set()
@@ -134,42 +167,73 @@ def calculate_spectra(
             disable=not show_progress,
         ) as progress:
             for batch in _planning.iter_window_batches(plan):
-                coeffs_by_channel = {}
-
-                # Compute Fourier coefficients for each active channel.
-                for channel_index in runtime.active_data_channels:
-                    channel_plan = runtime.channel_plans[channel_index]
-                    assert isinstance(channel_plan, _planning.SampledChannelPlan)
-
-                    channel_window_points = round(batch.duration / channel_plan.dt)
-                    start = round(float(batch.relative_starts[0, 0]) / channel_plan.dt)
-                    end = (
-                        start
-                        + batch.estimate_count
-                        * runtime.window_plan.windows_per_estimate
-                        * channel_window_points
+                if has_timestamped_channels:
+                    assert isinstance(common_frequency_plan, _planning.TimestampFrequencyPlan)
+                    assert isinstance(
+                        window_buffer,
+                        (_fft.DefaultTimestampWindow, _fft.LegacyTimestampWindow),
                     )
-                    data = _data_access.read_source(channels[channel_index], start, end)
-                    chunk = _fft.reshape_window_chunk(
-                        chunk=data,
-                        estimate_count=batch.estimate_count,
-                        windows_per_estimate=plan.windows_per_estimate,
-                        window_points=channel_window_points,
+                    assert third_order_cache is None or isinstance(
+                        third_order_cache,
+                        _spectra.TimestampThirdOrderFrequencyCache,
                     )
-                    chunk = _fft.to_device(chunk, runtime)
-                    coeffs_by_channel[channel_index] = _fft.compute_fft(
-                        chunk=chunk,
-                        window=window_buffer.window,
-                        dt=channel_plan.dt,
+                    coefficient_batch = _spectra.CoefficientBatch(
+                        by_channel={
+                            channel: (
+                                _timestamps.materialize_unit_timestamp_coefficients(
+                                    _timestamps.prepare_timestamp_batch(
+                                        timestamp_cursors[channel],
+                                        batch,
+                                    ),
+                                    common_frequency_plan,
+                                    window_buffer,
+                                    runtime,
+                                    third_order_cache,
+                                )
+                            )
+                            for channel in runtime.active_data_channels
+                        }
                     )
+                else:
+                    assert isinstance(common_frequency_plan, _planning.SampledFrequencyPlan)
+                    assert isinstance(window_buffer, _fft.WindowBuffer)
+                    assert third_order_cache is None or isinstance(
+                        third_order_cache, _spectra.ThirdOrderIndexCache
+                    )
+                    coeffs_by_channel = {}
 
-                coefficient_batch = _spectra.build_coefficient_batch(
-                    frequency_plan=common_frequency_plan,
-                    coeffs_by_channel=coeffs_by_channel,
-                    third_order_cache=third_order_cache,
-                )
-                # Release full FFT banks after extracting compact coefficients.
-                del coeffs_by_channel
+                    for channel_index in runtime.active_data_channels:
+                        channel_plan = runtime.channel_plans[channel_index]
+                        assert isinstance(channel_plan, _planning.SampledChannelPlan)
+
+                        channel_window_points = round(batch.duration / channel_plan.dt)
+                        start = round(float(batch.relative_starts[0, 0]) / channel_plan.dt)
+                        end = (
+                            start
+                            + batch.estimate_count
+                            * runtime.window_plan.windows_per_estimate
+                            * channel_window_points
+                        )
+                        data = _data_access.read_source(channels[channel_index], start, end)
+                        chunk = _fft.reshape_window_chunk(
+                            chunk=data,
+                            estimate_count=batch.estimate_count,
+                            windows_per_estimate=plan.windows_per_estimate,
+                            window_points=channel_window_points,
+                        )
+                        chunk = _fft.to_device(chunk, runtime)
+                        coeffs_by_channel[channel_index] = _fft.compute_fft(
+                            chunk=chunk,
+                            window=window_buffer.window,
+                            dt=channel_plan.dt,
+                        )
+
+                    coefficient_batch = _spectra.build_coefficient_batch(
+                        frequency_plan=common_frequency_plan,
+                        coeffs_by_channel=coeffs_by_channel,
+                        third_order_cache=third_order_cache,
+                    )
+                    del coeffs_by_channel
 
                 realization_sums: dict[tuple[int, ...], torch.Tensor] = {}
 

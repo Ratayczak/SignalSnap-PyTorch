@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
-from .fft import WindowBuffer
+from .fft import TimestampWindow, WindowBuffer
 from .planning import RuntimeConfig, SampledFrequencyPlan, TimestampFrequencyPlan
 
 
@@ -210,7 +210,7 @@ def build_coefficient_batch(
 def compute_spectral_estimates(
     channels: tuple[int, ...],
     coefficient_batch: CoefficientBatch,
-    window_buffer: WindowBuffer,
+    window_buffer: WindowBuffer | TimestampWindow,
     runtime: RuntimeConfig,
 ) -> Tensor:
     """Compute normalized spectral estimates from channel Fourier coefficients.
