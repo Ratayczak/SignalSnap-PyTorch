@@ -22,6 +22,7 @@ from .planning import (
     RuntimeConfig,
     SampledChannelPlan,
     SampledFrequencyPlan,
+    TimestampedChannelPlan,
     TimestampFrequencyPlan,
     WindowBatch,
 )
@@ -100,13 +101,31 @@ class ThirdOrderCoefficients:
 class ChannelCoefficients:
     """Prepared source-independent coefficients for one channel."""
 
-    dc: Tensor
-    output: Tensor
+    dc: Tensor | None
+    output: Tensor | None
     third_order: ThirdOrderCoefficients | None = None
     _centered_output: Tensor | None = field(default=None, init=False, repr=False)
 
+    @property
+    def realization_count(self) -> int:
+        """Return the size of the shared realization axis."""
+
+        if self.dc is not None:
+            return int(self.dc.shape[0])
+
+        if self.output is not None:
+            return int(self.output.shape[0])
+
+        if self.third_order is not None:
+            return int(self.third_order.values.shape[0])
+
+        raise RuntimeError("No channel coefficients were prepared.")
+
     def centered_output(self, conjugated: bool = False) -> Tensor:
         """Return output coefficients centered only over ``m``."""
+
+        if self.output is None:
+            raise RuntimeError("Output-band coefficients were not prepared.")
 
         if self._centered_output is None:
             self._centered_output = self.output - self.output.mean(dim=-2, keepdim=True)
@@ -122,6 +141,35 @@ class CoefficientBatch:
     """Compact coefficients for every active channel in one batch."""
 
     by_channel: dict[int, ChannelCoefficients]
+
+
+def build_normalization_windows(
+    runtime: RuntimeConfig,
+    sampled_window: WindowBuffer | None,
+    timestamp_window: TimestampWindow | None,
+) -> dict[tuple[int, ...], WindowBuffer | TimestampWindow]:
+    """Select the prepared normalization window for every requested spectrum."""
+
+    normalization_windows: dict[tuple[int, ...], WindowBuffer | TimestampWindow] = {}
+
+    for spectrum_channels in runtime.spectrum_frequency_plans:
+        contains_timestamped_channel = any(
+            isinstance(runtime.channel_plans[channel], TimestampedChannelPlan)
+            for channel in spectrum_channels
+        )
+
+        if contains_timestamped_channel:
+            if timestamp_window is None:
+                raise RuntimeError("Timestamp normalization was not prepared.")
+
+            normalization_windows[spectrum_channels] = timestamp_window
+        else:
+            if sampled_window is None:
+                raise RuntimeError("Sampled normalization was not prepared.")
+
+            normalization_windows[spectrum_channels] = sampled_window
+
+    return normalization_windows
 
 
 def build_third_order_cache(
@@ -291,8 +339,8 @@ def expand_deterministic_coefficient_batch(
             )
 
         expanded_channels[channel] = ChannelCoefficients(
-            dc=expand(coefficients.dc),
-            output=expand(coefficients.output),
+            dc=expand(coefficients.dc) if coefficients.dc is not None else None,
+            output=expand(coefficients.output) if coefficients.output is not None else None,
             third_order=third_order,
         )
 
@@ -340,6 +388,9 @@ def compute_spectral_estimates(
 
     if order == 1:
         coefficients = coefficient_batch.by_channel[channels[0]]
+        if coefficients.dc is None:
+            raise RuntimeError("DC coefficients were not prepared.")
+
         cumulants = coefficients.dc.mean(dim=-1, keepdim=True)
 
     elif order == 2:

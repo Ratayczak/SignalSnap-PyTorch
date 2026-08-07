@@ -11,7 +11,7 @@ import math
 import secrets
 import warnings
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import numpy as np
@@ -182,6 +182,59 @@ class RuntimeConfig:
     complex_dtype: torch.dtype
     device: torch.device
     old_window: bool
+
+
+@dataclass(slots=True)
+class FrequencyPlanRequirements:
+    """Coefficient requirements for spectra sharing one frequency-plan type."""
+
+    frequency_plan: FrequencyPlan
+    channels: set[int] = field(default_factory=set)
+    timestamped_channels: tuple[int, ...] = ()
+    dc_channels: set[int] = field(default_factory=set)
+    output_channels: set[int] = field(default_factory=set)
+    third_order_channels: set[int] = field(default_factory=set)
+
+
+def build_frequency_plan_requirements(
+    runtime: RuntimeConfig,
+) -> dict[type[SampledFrequencyPlan | TimestampFrequencyPlan], FrequencyPlanRequirements]:
+    """Group channel coefficient requirements by frequency-plan type."""
+
+    requirements_by_type: dict[
+        type[SampledFrequencyPlan | TimestampFrequencyPlan],
+        FrequencyPlanRequirements,
+    ] = {}
+
+    for spectrum_channels, frequency_plan in runtime.spectrum_frequency_plans.items():
+        plan_type = type(frequency_plan)
+        requirements = requirements_by_type.get(plan_type)
+
+        if requirements is None:
+            requirements = FrequencyPlanRequirements(frequency_plan=frequency_plan)
+            requirements_by_type[plan_type] = requirements
+        elif requirements.frequency_plan is not frequency_plan:
+            raise RuntimeError(f"Multiple {plan_type.__name__} instances were planned.")
+
+        requirements.channels.update(spectrum_channels)
+        order = len(spectrum_channels)
+
+        if order == 1:
+            requirements.dc_channels.add(spectrum_channels[0])
+        elif order == 3:
+            requirements.output_channels.update(spectrum_channels[:2])
+            requirements.third_order_channels.add(spectrum_channels[2])
+        else:
+            requirements.output_channels.update(spectrum_channels)
+
+    for requirements in requirements_by_type.values():
+        requirements.timestamped_channels = tuple(
+            channel
+            for channel, channel_plan in runtime.channel_plans.items()
+            if channel in requirements.channels and isinstance(channel_plan, TimestampedChannelPlan)
+        )
+
+    return requirements_by_type
 
 
 def _resolve_device(device_name: str) -> torch.device:

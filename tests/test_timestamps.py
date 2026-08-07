@@ -502,6 +502,67 @@ def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
     )
 
 
+@pytest.mark.parametrize(
+    ("needs_dc", "needs_output", "expected_frequencies"),
+    [
+        pytest.param(True, False, [[0.0]], id="dc-only"),
+        pytest.param(False, True, [[-1.0, 0.0, 1.0]], id="output-only"),
+    ],
+)
+def test_timestamp_coefficients_only_transform_requested_frequency_roles(
+    monkeypatch,
+    needs_dc,
+    needs_output,
+    expected_frequencies,
+):
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.array([0.5]),
+        window_indices=np.array([0], dtype=np.int64),
+        global_event_indices=np.array([0], dtype=np.int64),
+        estimate_count=1,
+        windows_per_estimate=1,
+    )
+    frequency_plan = TimestampFrequencyPlan(
+        actual_df=1.0,
+        grid_indices=np.arange(-1, 2, dtype=np.int64),
+        band_frequencies=np.arange(-1, 2, dtype=np.float64),
+    )
+    runtime = _runtime()
+    transformed_frequencies = []
+
+    def recording_transform(prepared, frequencies, event_weights, runtime):
+        transformed_frequencies.append(frequencies.tolist())
+        return torch.zeros(
+            event_weights.shape[0],
+            prepared.estimate_count,
+            prepared.windows_per_estimate,
+            frequencies.size,
+            dtype=runtime.complex_dtype,
+            device=runtime.device,
+        )
+
+    monkeypatch.setattr(
+        _timestamps,
+        "direct_timestamp_transform",
+        recording_transform,
+    )
+
+    coefficients = materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        prepare_default_timestamp_window(runtime),
+        runtime,
+        third_order_cache=None,
+        event_amplitudes=np.ones((1, 1)),
+        needs_dc=needs_dc,
+        needs_output=needs_output,
+    )
+
+    assert transformed_frequencies == expected_frequencies
+    assert (coefficients.dc is not None) is needs_dc
+    assert (coefficients.output is not None) is needs_output
+
+
 def test_timestamp_coefficients_accept_sampled_output_frequency_view():
     prepared = PreparedTimestampBatch(
         relative_event_times=np.array([0.5]),

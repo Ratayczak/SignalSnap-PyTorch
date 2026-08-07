@@ -359,6 +359,9 @@ def materialize_timestamp_coefficients(
     runtime: RuntimeConfig,
     third_order_cache: TimestampThirdOrderFrequencyCache | None,
     event_amplitudes: NDArray[np.float64],
+    *,
+    needs_dc: bool = True,
+    needs_output: bool = True,
 ) -> ChannelCoefficients:
     """Materialize the timestamp coefficients from a shared amplitude matrix."""
 
@@ -389,18 +392,23 @@ def materialize_timestamp_coefficients(
     window_weights = timestamp_window.evaluate(relative_times)
     event_weights = amplitudes * window_weights.unsqueeze(0)
 
-    dc = direct_timestamp_transform(
-        prepared,
-        frequencies=np.zeros(1, dtype=np.float64),
-        event_weights=event_weights,
-        runtime=runtime,
-    )[..., 0]
-    output = direct_timestamp_transform(
-        prepared,
-        frequencies=frequency_plan.band_frequencies,
-        event_weights=event_weights,
-        runtime=runtime,
-    )
+    dc = None
+    if needs_dc:
+        dc = direct_timestamp_transform(
+            prepared,
+            frequencies=np.zeros(1, dtype=np.float64),
+            event_weights=event_weights,
+            runtime=runtime,
+        )[..., 0]
+
+    output = None
+    if needs_output:
+        output = direct_timestamp_transform(
+            prepared,
+            frequencies=frequency_plan.band_frequencies,
+            event_weights=event_weights,
+            runtime=runtime,
+        )
 
     third_order = None
     if third_order_cache is not None:
@@ -438,6 +446,7 @@ def materialize_unit_timestamp_coefficients(
         event_amplitudes,
     )
 
+
 def materialize_timestamp_event_amplitudes(
     prepared: PreparedTimestampBatch,
     channel_index: int,
@@ -469,9 +478,7 @@ def materialize_timestamp_event_amplitudes(
             scale=channel_plan.scale,
         )
 
-    raise RuntimeError(
-        f"Unknown timestamp weighting model {channel_plan.weighting!r}."
-    )
+    raise RuntimeError(f"Unknown timestamp weighting model {channel_plan.weighting!r}.")
 
 
 def materialize_timestamp_channel_coefficients(
