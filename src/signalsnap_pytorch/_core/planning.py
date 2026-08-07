@@ -12,7 +12,7 @@ import secrets
 import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import torch
@@ -109,31 +109,58 @@ class WindowBatch:
 
 
 @dataclass(frozen=True, slots=True)
-class SampledFrequencyPlan:
-    """Resolved shifted FFT grid and hard-bounded sampled band view."""
+class FFTFrequencyPlan:
+    """Resolved shifted FFT grid and hard-bounded sampled band view.
 
-    full_fft_frequencies: NDArray[np.floating[Any]]
-    band_frequencies: NDArray[np.floating[Any]]
+    Attributes
+    ----------
+    shifted_full_fft_frequencies : NDArray[np.floating[Any]]
+        Full frequency grid of the FFT after ``fftshift``.
+    band_start, band_stop : int
+        Half-open slice bounds such that
+        ``band_frequencies = shifted_full_fft_frequencies[band_start:band_stop]``. The slice
+        contains the FFT frequencies within the requested frequency bounds.
+    """
+
+    shifted_full_fft_frequencies: NDArray[np.floating[Any]]
     band_start: int
     band_stop: int
+
+    @property
+    def band_frequencies(self) -> NDArray[np.floating[Any]]:
+        """Return the frequencies inside the requested frequency bounds."""
+        return self.shifted_full_fft_frequencies[self.band_start : self.band_stop]
 
     @property
     def window_points(self) -> int:
         """Return the number of frequencies in the complete shifted FFT grid."""
 
-        return int(self.full_fft_frequencies.size)
+        return int(self.shifted_full_fft_frequencies.size)
 
 
 @dataclass(frozen=True, slots=True)
-class TimestampFrequencyPlan:
-    """Resolved hard-bounded direct-transform frequency grid."""
+class DirectFrequencyPlan:
+    """Resolved hard-bounded direct-transform frequency grid.
+
+    Attributes
+    ----------
+    actual_df : float
+        Resolved grid spacing, equal to ``1 / window_duration``.
+    grid_indices : NDArray[np.int64]
+        Integer Fourier-grid coordinates specifying the frequencies inside the requested frequency
+        bounds: ``band_frequencies = grid_indices * actual_df``.
+    """
 
     actual_df: float
     grid_indices: NDArray[np.int64]
-    band_frequencies: NDArray[np.float64]
+
+    @property
+    def band_frequencies(self) -> NDArray[np.float64]:
+        """Return the frequencies inside the requested frequency bounds."""
+        return cast(NDArray[np.float64], self.grid_indices * self.actual_df)
 
 
-FrequencyPlan = SampledFrequencyPlan | TimestampFrequencyPlan
+FrequencyPlan = FFTFrequencyPlan | DirectFrequencyPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,17 +168,30 @@ class RuntimeConfig:
     """Resolved calculation settings derived from user configuration.
 
     :class:`SpectrumConfig` and :class:`DataConfig` describe what the user asked for;
-    :class:`RuntimeConfig` describes what the calculation will actually use after defaults,
-    data-size constraints, frequency axes, and device details have been resolved.
+    :class:`RuntimeConfig` describes what the calculation will actually use after defaults, data
+    constraints, frequency grids, batching, numerical precision, and device availability have been
+    resolved.
 
     Attributes
     ----------
     active_data_channels : tuple[int, ...]
-        Data-channel indices used by the calculation.
-    spectrum_frequency_plans : dict[tuple[ChannelIndex, ...], FrequencyPlan]
-        Selected frequency plan for each requested spectrum tuple, in request order.
+        Unique data-channel indices referenced by ``requested_spectra``, in first-use order.
+    requested_spectra : tuple[tuple[ChannelIndex, ...], ...]
+        Validated channel tuples identifying the requested spectra, in request order.
+    fft_frequency_plan : FFTFrequencyPlan | None
+        Shared shifted-FFT frequency plan used by every spectrum containing at least one sampled
+        channel. ``None`` when no sampled channel is active.
+    direct_frequency_plan : DirectFrequencyPlan | None
+        Shared direct-transform frequency plan used by timestamp-only spectra. ``None`` when no
+        timestamped channel is active.
+    channel_plans : dict[int, ChannelPlan]
+        Resolved source metadata and processing options for each active data channel.
+    window_plan : WindowPlan
+        Shared observation interval, physical-window layout, interlacing, estimate counts, and
+        processing batch size.
     repetition_plan : RepetitionPlan
-        Shared amplitude-realization count, bounded batch size, and resolved seed.
+        Shared amplitude-realization count, repetition batch size, and resolved random seed.
+        Sampled data and unit-weighted timestamp data use a single deterministic realization.
     uncertainty_estimation : Literal["global", "short_term"]
         Uncertainty-estimation method.
     m_var : int
@@ -171,7 +211,9 @@ class RuntimeConfig:
     """
 
     active_data_channels: tuple[int, ...]
-    spectrum_frequency_plans: dict[tuple[ChannelIndex, ...], FrequencyPlan]
+    requested_spectra: tuple[tuple[ChannelIndex, ...], ...]
+    fft_frequency_plan: FFTFrequencyPlan | None
+    direct_frequency_plan: DirectFrequencyPlan | None
     channel_plans: dict[int, ChannelPlan]
     window_plan: WindowPlan
     repetition_plan: RepetitionPlan
@@ -183,58 +225,91 @@ class RuntimeConfig:
     device: torch.device
     old_window: bool
 
+    def frequency_plan_for(self, channels: tuple[ChannelIndex, ...]) -> FrequencyPlan:
+        """Return the frequency plan used for a spectrum channel tuple.
+
+        Spectra containing at least one sampled channel use ``fft_frequency_plan``.
+        Timestamp-only spectra use ``direct_frequency_plan``.
+
+        Parameters
+        ----------
+        channels : tuple[ChannelIndex, ...]
+            Data-channel indices identifying the spectrum.
+
+        Returns
+        -------
+        FrequencyPlan
+            Shared frequency plan applicable to the spectrum.
+
+        Raises
+        ------
+        RuntimeError
+            If the required frequency plan was not created.
+        """
+        if any(isinstance(self.channel_plans[channel], SampledChannelPlan) for channel in channels):
+            plan = self.fft_frequency_plan
+        else:
+            plan = self.direct_frequency_plan
+
+        if plan is None:
+            raise RuntimeError(f"No frequency plan is available for {channels}.")
+
+        return plan
+
 
 @dataclass(slots=True)
-class FrequencyPlanRequirements:
-    """Coefficient requirements for spectra sharing one frequency-plan type."""
+class CoefficientPreparationPlan:
+    """Resolved coefficient-preparation plan for spectra sharing one frequency-plan type.
+
+    Connects for which channel what coefficients need to be calculated under the ``FrequencyPlan``.
+    """
 
     frequency_plan: FrequencyPlan
-    channels: set[int] = field(default_factory=set)
-    timestamped_channels: tuple[int, ...] = ()
-    dc_channels: set[int] = field(default_factory=set)
-    output_channels: set[int] = field(default_factory=set)
-    third_order_channels: set[int] = field(default_factory=set)
+    required_channels: set[int] = field(default_factory=set)
+    direct_transform_channels: tuple[int, ...] = ()
+    band_coefficient_channels: set[int] = field(default_factory=set)
+    third_order_closing_frequency_channels: set[int] = field(default_factory=set)
 
 
-def build_frequency_plan_requirements(
+def build_coefficient_preparation_plans(
     runtime: RuntimeConfig,
-) -> dict[type[SampledFrequencyPlan | TimestampFrequencyPlan], FrequencyPlanRequirements]:
-    """Group channel coefficient requirements by frequency-plan type."""
+) -> dict[type[FFTFrequencyPlan | DirectFrequencyPlan], CoefficientPreparationPlan]:
+    """Build coefficient-preparation plans grouped by frequency-plan type."""
 
-    requirements_by_type: dict[
-        type[SampledFrequencyPlan | TimestampFrequencyPlan],
-        FrequencyPlanRequirements,
+    preparation_plans_by_type: dict[
+        type[FFTFrequencyPlan | DirectFrequencyPlan],
+        CoefficientPreparationPlan,
     ] = {}
 
-    for spectrum_channels, frequency_plan in runtime.spectrum_frequency_plans.items():
+    for spectrum_channels in runtime.requested_spectra:
+        frequency_plan = runtime.frequency_plan_for(spectrum_channels)
         plan_type = type(frequency_plan)
-        requirements = requirements_by_type.get(plan_type)
+        preparation_plan = preparation_plans_by_type.get(plan_type)
 
-        if requirements is None:
-            requirements = FrequencyPlanRequirements(frequency_plan=frequency_plan)
-            requirements_by_type[plan_type] = requirements
-        elif requirements.frequency_plan is not frequency_plan:
+        if preparation_plan is None:
+            preparation_plan = CoefficientPreparationPlan(frequency_plan=frequency_plan)
+            preparation_plans_by_type[plan_type] = preparation_plan
+        elif preparation_plan.frequency_plan is not frequency_plan:
             raise RuntimeError(f"Multiple {plan_type.__name__} instances were planned.")
 
-        requirements.channels.update(spectrum_channels)
+        preparation_plan.required_channels.update(spectrum_channels)
         order = len(spectrum_channels)
 
-        if order == 1:
-            requirements.dc_channels.add(spectrum_channels[0])
-        elif order == 3:
-            requirements.output_channels.update(spectrum_channels[:2])
-            requirements.third_order_channels.add(spectrum_channels[2])
-        else:
-            requirements.output_channels.update(spectrum_channels)
+        if order == 3:
+            preparation_plan.band_coefficient_channels.update(spectrum_channels[:2])
+            preparation_plan.third_order_closing_frequency_channels.add(spectrum_channels[2])
+        elif order > 1:
+            preparation_plan.band_coefficient_channels.update(spectrum_channels)
 
-    for requirements in requirements_by_type.values():
-        requirements.timestamped_channels = tuple(
+    for preparation_plan  in preparation_plans_by_type.values():
+        preparation_plan .direct_transform_channels = tuple(
             channel
             for channel, channel_plan in runtime.channel_plans.items()
-            if channel in requirements.channels and isinstance(channel_plan, TimestampedChannelPlan)
+            if channel in preparation_plan.required_channels
+            and isinstance(channel_plan, TimestampedChannelPlan)
         )
 
-    return requirements_by_type
+    return preparation_plans_by_type
 
 
 def _resolve_device(device_name: str) -> torch.device:
@@ -355,7 +430,7 @@ def normalize_channel_index(channel: object, channel_count: int) -> int:
     return normalized
 
 
-def resolve_channels(
+def resolve_requested_spectra(
     requested_spectra: list[tuple[int, ...]] | None,
     channel_count: int,
 ) -> tuple[tuple[tuple[int, ...], ...], tuple[int, ...]]:
@@ -548,7 +623,7 @@ def _resolve_observation_interval(
 def resolve_sampled_frequencies(
     spectrum_config: SpectrumConfig,
     dt: float,
-) -> tuple[int, SampledFrequencyPlan]:
+) -> tuple[int, FFTFrequencyPlan]:
     """Resolve the sampled FFT grid and hard-bounded output band.
 
     Parameters
@@ -560,7 +635,7 @@ def resolve_sampled_frequencies(
 
     Returns
     -------
-    tuple[int, SampledFrequencyPlan]
+    tuple[int, FFTFrequencyPlan]
         Resolved sampled window length and frequency plan.
 
     Raises
@@ -599,11 +674,9 @@ def resolve_sampled_frequencies(
 
     band_start = int(band_indices[0])
     band_stop = int(band_indices[-1]) + 1
-    band_frequencies = freq_all[band_start:band_stop]
 
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=freq_all,
-        band_frequencies=band_frequencies,
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=freq_all,
         band_start=band_start,
         band_stop=band_stop,
     )
@@ -616,7 +689,7 @@ def resolve_timestamp_frequencies(
     f_min: float,
     f_max: float,
     window_duration: float,
-) -> TimestampFrequencyPlan:
+) -> DirectFrequencyPlan:
     """Resolve the direct-transform grid inside inclusive hard bounds."""
 
     actual_df = 1.0 / window_duration
@@ -635,10 +708,9 @@ def resolve_timestamp_frequencies(
             "any timestamp frequencies at the resolved frequency spacing."
         )
 
-    return TimestampFrequencyPlan(
+    return DirectFrequencyPlan(
         actual_df=actual_df,
         grid_indices=band_grid_indices,
-        band_frequencies=band_frequencies,
     )
 
 
@@ -827,7 +899,7 @@ def build_runtime_config(
         if spectrum_config.df is None or spectrum_config.f_max is None:
             raise ValueError("Timestamp-only calculations require explicit df and f_max.")
 
-        sampled_frequency_plan = None
+        fft_frequency_plan = None
         window_duration = 1.0 / spectrum_config.df
         interlacing_offset = window_duration / 2.0
         observation_duration = observation_stop - observation_start
@@ -838,7 +910,7 @@ def build_runtime_config(
             window_duration,
         )
     else:
-        window_points, sampled_frequency_plan = resolve_sampled_frequencies(
+        window_points, fft_frequency_plan = resolve_sampled_frequencies(
             spectrum_config,
             sampled_plan.dt,
         )
@@ -863,34 +935,18 @@ def build_runtime_config(
         orders=orders,
     )
 
-    timestamp_frequency_plan = None
+    direct_frequency_plan = None
     if has_timestamped_channel:
         timestamp_f_max = spectrum_config.f_max
         if timestamp_f_max is None:
             assert sampled_plan is not None
             timestamp_f_max = 1.0 / (2.0 * sampled_plan.dt)
 
-        timestamp_frequency_plan = resolve_timestamp_frequencies(
+        direct_frequency_plan = resolve_timestamp_frequencies(
             f_min=spectrum_config.f_min,
             f_max=timestamp_f_max,
             window_duration=window_duration,
         )
-
-    spectrum_frequency_plans: dict[tuple[ChannelIndex, ...], FrequencyPlan] = {}
-
-    for channels in spectra_channels:
-        contains_sampled_channel = any(
-            isinstance(channel_plans[channel], SampledChannelPlan) for channel in channels
-        )
-
-        if contains_sampled_channel:
-            assert sampled_frequency_plan is not None
-            frequency_plan: FrequencyPlan = sampled_frequency_plan
-        else:
-            assert timestamp_frequency_plan is not None
-            frequency_plan = timestamp_frequency_plan
-
-        spectrum_frequency_plans[tuple(channels)] = frequency_plan
 
     device = _resolve_device(spectrum_config.device)
 
@@ -911,7 +967,9 @@ def build_runtime_config(
 
     return RuntimeConfig(
         active_data_channels=active_data_channels,
-        spectrum_frequency_plans=spectrum_frequency_plans,
+        requested_spectra=spectra_channels,
+        fft_frequency_plan=fft_frequency_plan,
+        direct_frequency_plan=direct_frequency_plan,
         channel_plans=channel_plans,
         window_plan=window_plan,
         repetition_plan=repetition_plan,

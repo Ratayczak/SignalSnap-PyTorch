@@ -15,11 +15,11 @@ from signalsnap_pytorch import (
 from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
-    SampledChannelPlan,
-    SampledFrequencyPlan,
-    TimestampFrequencyPlan,
-    TimestampedChannelPlan,
     _MAX_AMPLITUDE_REPETITIONS_PER_BATCH,
+    DirectFrequencyPlan,
+    FFTFrequencyPlan,
+    SampledChannelPlan,
+    TimestampedChannelPlan,
     _build_channel_plans,
     _count_complete_windows,
     _resolve_device,
@@ -27,7 +27,7 @@ from signalsnap_pytorch._core.planning import (
     build_runtime_config,
     iter_window_batches,
     physical_estimate_count,
-    resolve_channels,
+    resolve_requested_spectra,
     resolve_sampled_frequencies,
     resolve_timestamp_frequencies,
 )
@@ -37,7 +37,7 @@ auto_spectra = [(0,), (0, 0)]
 
 
 def _build_runtime(data_config, spectrum_config, requested_spectra):
-    spectra_channels, active_data_channels = resolve_channels(
+    spectra_channels, active_data_channels = resolve_requested_spectra(
         requested_spectra,
         channel_count=len(data_config.channels),
     )
@@ -284,12 +284,12 @@ def test_accumulator_store_receives_resolved_uncertainty_configuration():
 
     store = initialize_accumulator_store(runtime)
 
-    assert len(tuple(store)) == len(runtime.spectrum_frequency_plans)
+    assert len(tuple(store)) == len(runtime.requested_spectra)
     for accumulator in store:
         assert accumulator.uncertainty_estimation == "short_term"
         assert accumulator.m_var == 3
 
-        frequency_plan = runtime.spectrum_frequency_plans[accumulator.channels]
+        frequency_plan = runtime.frequency_plan_for(accumulator.channels)
         expected_frequencies = (
             np.asarray([0.0])
             if len(accumulator.channels) == 1
@@ -395,7 +395,8 @@ def test_window_slices_respect_interlacing(
 
     runtime = _build_runtime(data_config, spectrum_config, auto_spectra)
     batches = list(iter_window_batches(runtime.window_plan))
-    frequency_plan = next(iter(runtime.spectrum_frequency_plans.values()))
+    frequency_plan = runtime.fft_frequency_plan
+    assert frequency_plan is not None
 
     assert runtime.window_plan.unshifted_estimate_count == expected_spectral_estimates
     assert physical_estimate_count(runtime.window_plan) == sum(
@@ -557,7 +558,7 @@ def test_pipeline_produces_short_term_uncertainty():
         ),
     ],
 )
-def test_sampled_frequency_plan_applies_exact_inclusive_hard_bounds(
+def test_fft_frequency_plan_applies_exact_inclusive_hard_bounds(
     f_min,
     f_max,
     expected_start,
@@ -581,19 +582,19 @@ def test_sampled_frequency_plan_applies_exact_inclusive_hard_bounds(
     )
     np.testing.assert_array_equal(
         frequency_plan.band_frequencies,
-        frequency_plan.full_fft_frequencies[expected_start:expected_stop],
+        frequency_plan.shifted_full_fft_frequencies[expected_start:expected_stop],
     )
     assert np.all(frequency_plan.band_frequencies >= f_min)
     assert np.all(frequency_plan.band_frequencies <= f_max)
 
     if expected_start > 0:
-        assert frequency_plan.full_fft_frequencies[expected_start - 1] < f_min
+        assert frequency_plan.shifted_full_fft_frequencies[expected_start - 1] < f_min
 
     if expected_stop < window_points:
-        assert frequency_plan.full_fft_frequencies[expected_stop] > f_max
+        assert frequency_plan.shifted_full_fft_frequencies[expected_stop] > f_max
 
 
-def test_sampled_frequency_plan_uses_actual_odd_fft_support():
+def test_fft_frequency_plan_uses_actual_odd_fft_support():
     spectrum_config = SpectrumConfig(
         f_min=-0.5,
         f_max=0.5,
@@ -604,14 +605,14 @@ def test_sampled_frequency_plan_uses_actual_odd_fft_support():
 
     assert window_points == 5
     np.testing.assert_allclose(
-        frequency_plan.full_fft_frequencies,
+        frequency_plan.shifted_full_fft_frequencies,
         [-0.4, -0.2, 0.0, 0.2, 0.4],
         rtol=0.0,
         atol=1e-15,
     )
     np.testing.assert_array_equal(
         frequency_plan.band_frequencies,
-        frequency_plan.full_fft_frequencies,
+        frequency_plan.shifted_full_fft_frequencies,
     )
 
 
@@ -633,7 +634,7 @@ def test_resolve_sampled_frequencies_rejects_band_without_fft_frequency():
         pytest.param(-1.0, -0.6, id="entirely-below-sampled-support"),
     ],
 )
-def test_sampled_frequency_plan_rejects_band_disjoint_from_fft_support(f_min, f_max):
+def test_fft_frequency_plan_rejects_band_disjoint_from_fft_support(f_min, f_max):
     spectrum_config = SpectrumConfig(
         f_min=f_min,
         f_max=f_max,
@@ -681,7 +682,7 @@ def test_sampled_frequency_plan_rejects_band_disjoint_from_fft_support(f_min, f_
         ),
     ],
 )
-def test_timestamp_frequency_plan_applies_exact_inclusive_hard_bounds(
+def test_direct_frequency_plan_applies_exact_inclusive_hard_bounds(
     f_min,
     f_max,
     expected_band,
@@ -692,7 +693,7 @@ def test_timestamp_frequency_plan_applies_exact_inclusive_hard_bounds(
         window_duration=8.0,
     )
 
-    assert isinstance(frequency_plan, TimestampFrequencyPlan)
+    assert isinstance(frequency_plan, DirectFrequencyPlan)
     assert frequency_plan.actual_df == 0.125
     np.testing.assert_array_equal(
         frequency_plan.band_frequencies,
@@ -728,7 +729,7 @@ def test_timestamp_grid_indices_give_compact_closing_frequency_identity():
     )
 
 
-def test_timestamp_frequency_plan_rejects_band_without_grid_frequency():
+def test_direct_frequency_plan_rejects_band_without_grid_frequency():
     with pytest.raises(ValueError, match="does not contain any timestamp frequencies"):
         resolve_timestamp_frequencies(
             f_min=0.1,
@@ -921,7 +922,7 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
     runtime = _build_runtime(data_config, spectrum_config, None)
 
     assert runtime.active_data_channels == (0, 1)
-    assert tuple(runtime.spectrum_frequency_plans) == (
+    assert runtime.requested_spectra == (
         (0,),
         (0, 0),
         (0, 0, 0),
@@ -931,8 +932,12 @@ def test_runtime_config_defaults_to_all_auto_spectra_for_all_channels():
         (1, 1, 1),
         (1, 1, 1, 1),
     )
-    frequency_plans = tuple(runtime.spectrum_frequency_plans.values())
-    assert all(plan is frequency_plans[0] for plan in frequency_plans[1:])
+    assert isinstance(runtime.fft_frequency_plan, FFTFrequencyPlan)
+    assert runtime.direct_frequency_plan is None
+    assert all(
+        runtime.frequency_plan_for(channels) is runtime.fft_frequency_plan
+        for channels in runtime.requested_spectra
+    )
 
 
 def test_runtime_config_validates_dt_for_active_sampled_channels_only():
@@ -1125,10 +1130,10 @@ def test_timestamp_only_runtime_uses_complete_event_free_tail_windows():
     )
 
     runtime = _build_runtime(data_config, spectrum_config, [(0,)])
-    frequency_plan = runtime.spectrum_frequency_plans[(0,)]
+    frequency_plan = runtime.frequency_plan_for((0,))
     batches = list(iter_window_batches(runtime.window_plan))
 
-    assert isinstance(frequency_plan, TimestampFrequencyPlan)
+    assert isinstance(frequency_plan, DirectFrequencyPlan)
     np.testing.assert_array_equal(
         frequency_plan.band_frequencies,
         [-0.5, 0.0, 0.5, 1.0],
@@ -1174,12 +1179,14 @@ def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
         [(1, 1), (0, 1), (0, 0)],
     )
 
-    timestamp_plan = runtime.spectrum_frequency_plans[(1, 1)]
-    mixed_plan = runtime.spectrum_frequency_plans[(0, 1)]
-    sampled_plan = runtime.spectrum_frequency_plans[(0, 0)]
+    timestamp_plan = runtime.frequency_plan_for((1, 1))
+    mixed_plan = runtime.frequency_plan_for((0, 1))
+    sampled_plan = runtime.frequency_plan_for((0, 0))
 
-    assert isinstance(timestamp_plan, TimestampFrequencyPlan)
-    assert isinstance(mixed_plan, SampledFrequencyPlan)
+    assert isinstance(timestamp_plan, DirectFrequencyPlan)
+    assert isinstance(mixed_plan, FFTFrequencyPlan)
+    assert timestamp_plan is runtime.direct_frequency_plan
+    assert mixed_plan is runtime.fft_frequency_plan
     assert mixed_plan is sampled_plan
     assert timestamp_plan.band_frequencies[0] == -1.0
     assert timestamp_plan.band_frequencies[-1] == 1.0
@@ -1350,15 +1357,19 @@ def test_runtime_config_rejects_out_of_bounds_spectra_channel_indices():
         ),
     ],
 )
-def test_resolve_channels_rejects_invalid_requests(requested_spectra, exception_type, message):
+def test_resolve_requested_spectra_rejects_invalid_requests(
+    requested_spectra,
+    exception_type,
+    message,
+):
     with pytest.raises(exception_type, match=message):
-        resolve_channels(requested_spectra, channel_count=2)
+        resolve_requested_spectra(requested_spectra, channel_count=2)
 
 
-def test_resolve_channels_normalizes_numpy_integer_indices():
+def test_resolve_requested_spectra_normalizes_numpy_integer_indices():
     requested_spectra = [(np.int64(0),), (np.int32(0), np.int64(1))]
 
-    spectra_channels, active_data_channels = resolve_channels(
+    spectra_channels, active_data_channels = resolve_requested_spectra(
         requested_spectra,
         channel_count=2,
     )
@@ -1368,8 +1379,8 @@ def test_resolve_channels_normalizes_numpy_integer_indices():
     assert all(type(channel) is int for spectrum in spectra_channels for channel in spectrum)
 
 
-def test_resolve_channels_preserves_first_seen_active_data_channel_order():
-    spectra_channels, active_data_channels = resolve_channels(
+def test_resolve_requested_spectra_preserves_first_seen_active_data_channel_order():
+    spectra_channels, active_data_channels = resolve_requested_spectra(
         [(2, 0), (1, 2, 1)],
         channel_count=3,
     )
@@ -1378,9 +1389,9 @@ def test_resolve_channels_preserves_first_seen_active_data_channel_order():
     assert active_data_channels == (2, 0, 1)
 
 
-def test_resolve_channels_rejects_missing_data_channels():
+def test_resolve_requested_spectra_rejects_missing_data_channels():
     with pytest.raises(ValueError, match="At least one.*channel"):
-        resolve_channels(None, channel_count=0)
+        resolve_requested_spectra(None, channel_count=0)
 
 
 def test_resolve_device_accepts_cpu():

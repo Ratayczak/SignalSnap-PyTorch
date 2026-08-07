@@ -18,12 +18,12 @@ from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4
 from .data_access import RuntimeSource, read_source
 from .fft import TimestampWindow, WindowBuffer, compute_fft, reshape_window_chunk, to_device
 from .planning import (
+    DirectFrequencyPlan,
+    FFTFrequencyPlan,
     FrequencyPlan,
     RuntimeConfig,
     SampledChannelPlan,
-    SampledFrequencyPlan,
     TimestampedChannelPlan,
-    TimestampFrequencyPlan,
     WindowBatch,
 )
 
@@ -101,7 +101,7 @@ class ThirdOrderCoefficients:
 class ChannelCoefficients:
     """Prepared source-independent coefficients for one channel."""
 
-    dc: Tensor | None
+    dc: Tensor
     output: Tensor | None
     third_order: ThirdOrderCoefficients | None = None
     _centered_output: Tensor | None = field(default=None, init=False, repr=False)
@@ -110,16 +110,7 @@ class ChannelCoefficients:
     def realization_count(self) -> int:
         """Return the size of the shared realization axis."""
 
-        if self.dc is not None:
-            return int(self.dc.shape[0])
-
-        if self.output is not None:
-            return int(self.output.shape[0])
-
-        if self.third_order is not None:
-            return int(self.third_order.values.shape[0])
-
-        raise RuntimeError("No channel coefficients were prepared.")
+        return int(self.dc.shape[0])
 
     def centered_output(self, conjugated: bool = False) -> Tensor:
         """Return output coefficients centered only over ``m``."""
@@ -136,13 +127,6 @@ class ChannelCoefficients:
         return self._centered_output
 
 
-@dataclass(slots=True)
-class CoefficientBatch:
-    """Compact coefficients for every active channel in one batch."""
-
-    by_channel: dict[int, ChannelCoefficients]
-
-
 def build_normalization_windows(
     runtime: RuntimeConfig,
     sampled_window: WindowBuffer | None,
@@ -152,7 +136,7 @@ def build_normalization_windows(
 
     normalization_windows: dict[tuple[int, ...], WindowBuffer | TimestampWindow] = {}
 
-    for spectrum_channels in runtime.spectrum_frequency_plans:
+    for spectrum_channels in runtime.requested_spectra:
         contains_timestamped_channel = any(
             isinstance(runtime.channel_plans[channel], TimestampedChannelPlan)
             for channel in spectrum_channels
@@ -174,7 +158,7 @@ def build_normalization_windows(
 
 def build_third_order_cache(
     runtime: RuntimeConfig,
-    frequency_plan: SampledFrequencyPlan,
+    frequency_plan: FFTFrequencyPlan,
 ) -> ThirdOrderIndexCache:
     """Build the frequency-index mapping reused by all third-order spectra.
 
@@ -182,7 +166,7 @@ def build_third_order_cache(
     ----------
     runtime : RuntimeConfig
         Resolved frequency band, FFT length, and device.
-    frequency_plan : SampledFrequencyPlan
+    frequency_plan : FFTFrequencyPlan
         Common sampled frequency plan used by the current coefficient preparation path.
 
     Returns
@@ -218,16 +202,19 @@ def build_timestamp_third_order_cache(
 ) -> TimestampThirdOrderFrequencyCache:
     """Build compact timestamp closing frequencies for either output view."""
 
-    if isinstance(frequency_plan, TimestampFrequencyPlan):
+    if isinstance(frequency_plan, DirectFrequencyPlan):
         grid_indices = frequency_plan.grid_indices
         actual_df = frequency_plan.actual_df
-    elif isinstance(frequency_plan, SampledFrequencyPlan):
+    elif isinstance(frequency_plan, FFTFrequencyPlan):
         grid_indices = (
             np.arange(frequency_plan.band_start, frequency_plan.band_stop, dtype=np.int64)
             - frequency_plan.window_points // 2
         )
         actual_df = float(
-            abs(frequency_plan.full_fft_frequencies[1] - frequency_plan.full_fft_frequencies[0])
+            abs(
+                frequency_plan.shifted_full_fft_frequencies[1]
+                - frequency_plan.shifted_full_fft_frequencies[0]
+            )
         )
     else:
         raise TypeError(f"Unsupported frequency plan {type(frequency_plan).__name__}.")
@@ -248,10 +235,10 @@ def build_timestamp_third_order_cache(
 
 
 def build_coefficient_batch(
-    frequency_plan: SampledFrequencyPlan,
+    frequency_plan: FFTFrequencyPlan,
     coeffs_by_channel: dict[int, Tensor],
     third_order_cache: ThirdOrderIndexCache | None,
-) -> CoefficientBatch:
+) -> dict[int, ChannelCoefficients]:
     """Select compact source-independent coefficients from sampled FFTs."""
 
     by_channel: dict[int, ChannelCoefficients] = {}
@@ -273,7 +260,7 @@ def build_coefficient_batch(
             third_order=third_order,
         )
 
-    return CoefficientBatch(by_channel=by_channel)
+    return by_channel
 
 
 def prepare_sampled_channel_coefficients(
@@ -281,7 +268,7 @@ def prepare_sampled_channel_coefficients(
     source: RuntimeSource,
     channel_plan: SampledChannelPlan,
     batch: WindowBatch,
-    frequency_plan: SampledFrequencyPlan,
+    frequency_plan: FFTFrequencyPlan,
     window_buffer: WindowBuffer,
     runtime: RuntimeConfig,
     third_order_cache: ThirdOrderIndexCache | None,
@@ -300,25 +287,25 @@ def prepare_sampled_channel_coefficients(
     )
     chunk = to_device(chunk, runtime)
     coefficients = compute_fft(chunk=chunk, window=window_buffer.window, dt=channel_plan.dt)
-    coefficient_batch = build_coefficient_batch(
+    coefficients_by_channel = build_coefficient_batch(
         frequency_plan=frequency_plan,
         coeffs_by_channel={channel_index: coefficients},
         third_order_cache=third_order_cache,
     )
-    return coefficient_batch.by_channel[channel_index]
+    return coefficients_by_channel[channel_index]
 
 
-def expand_deterministic_coefficient_batch(
-    coefficient_batch: CoefficientBatch,
+def expand_deterministic_coefficients(
+    coefficients_by_channel: dict[int, ChannelCoefficients],
     realization_count: int,
-) -> CoefficientBatch:
+) -> dict[int, ChannelCoefficients]:
     """Expand deterministic sampled coefficients across realizations as views."""
 
     if realization_count < 1:
         raise ValueError("At least one realization is required.")
 
     if realization_count == 1:
-        return coefficient_batch
+        return coefficients_by_channel
 
     def expand(values: Tensor) -> Tensor:
         if values.shape[0] != 1:
@@ -328,7 +315,7 @@ def expand_deterministic_coefficient_batch(
 
     expanded_channels = {}
 
-    for channel, coefficients in coefficient_batch.by_channel.items():
+    for channel, coefficients in coefficients_by_channel.items():
         third_order = coefficients.third_order
 
         if third_order is not None:
@@ -339,17 +326,17 @@ def expand_deterministic_coefficient_batch(
             )
 
         expanded_channels[channel] = ChannelCoefficients(
-            dc=expand(coefficients.dc) if coefficients.dc is not None else None,
+            dc=expand(coefficients.dc),
             output=expand(coefficients.output) if coefficients.output is not None else None,
             third_order=third_order,
         )
 
-    return CoefficientBatch(by_channel=expanded_channels)
+    return expanded_channels
 
 
 def compute_spectral_estimates(
     channels: tuple[int, ...],
-    coefficient_batch: CoefficientBatch,
+    coefficients_by_channel: dict[int, ChannelCoefficients],
     window_buffer: WindowBuffer | TimestampWindow,
     runtime: RuntimeConfig,
 ) -> Tensor:
@@ -363,7 +350,7 @@ def compute_spectral_estimates(
     channels : tuple[int, ...]
         Specifies the corresponding channels of the spectrum, e.g. ``(0, 0, 0)`` for a
         third-order auto-spectrum.
-    coefficient_batch : :class:`CoefficientBatch`
+    coefficient_batch : dict[int, ChannelCoefficients]
         Stores the precomputed Fourier coefficients and bands for the current slice.
     window_buffer : :class:`WindowBuffer`
         Stores all information related to the window function.
@@ -387,28 +374,25 @@ def compute_spectral_estimates(
     windows_per_estimate = runtime.window_plan.windows_per_estimate
 
     if order == 1:
-        coefficients = coefficient_batch.by_channel[channels[0]]
-        if coefficients.dc is None:
-            raise RuntimeError("DC coefficients were not prepared.")
-
+        coefficients = coefficients_by_channel[channels[0]]
         cumulants = coefficients.dc.mean(dim=-1, keepdim=True)
 
     elif order == 2:
         cumulants = c2_factorized(
             windows_per_estimate,
-            coefficient_batch.by_channel[channels[0]].centered_output(),
-            coefficient_batch.by_channel[channels[1]].centered_output(conjugated=True),
+            coefficients_by_channel[channels[0]].centered_output(),
+            coefficients_by_channel[channels[1]].centered_output(conjugated=True),
         )
 
     elif order == 3:
-        third_order = coefficient_batch.by_channel[channels[2]].third_order
+        third_order = coefficients_by_channel[channels[2]].third_order
         if third_order is None:
             raise ValueError("Third-order coefficients were not prepared.")
 
         cumulants = c3_factorized(
             windows_per_estimate,
-            coefficient_batch.by_channel[channels[0]].centered_output(),
-            coefficient_batch.by_channel[channels[1]].centered_output(),
+            coefficients_by_channel[channels[0]].centered_output(),
+            coefficients_by_channel[channels[1]].centered_output(),
             third_order.gathered_centered_values(),
         )
 
@@ -418,10 +402,10 @@ def compute_spectral_estimates(
     elif order == 4:
         cumulants = c4_factorized(
             windows_per_estimate,
-            coefficient_batch.by_channel[channels[0]].centered_output(),
-            coefficient_batch.by_channel[channels[1]].centered_output(conjugated=True),
-            coefficient_batch.by_channel[channels[2]].centered_output(),
-            coefficient_batch.by_channel[channels[3]].centered_output(conjugated=True),
+            coefficients_by_channel[channels[0]].centered_output(),
+            coefficients_by_channel[channels[1]].centered_output(conjugated=True),
+            coefficients_by_channel[channels[2]].centered_output(),
+            coefficients_by_channel[channels[3]].centered_output(conjugated=True),
         )
     else:
         raise ValueError(f"Unsupported spectrum order: {order}.")

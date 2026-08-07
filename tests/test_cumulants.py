@@ -12,21 +12,20 @@ from signalsnap_pytorch._core.cumulants import (
 )
 from signalsnap_pytorch._core.fft import WindowBuffer
 from signalsnap_pytorch._core.planning import (
+    DirectFrequencyPlan,
+    FFTFrequencyPlan,
     RepetitionPlan,
     SampledChannelPlan,
-    SampledFrequencyPlan,
-    TimestampFrequencyPlan,
     WindowBatch,
 )
 from signalsnap_pytorch._core.spectra import (
     ChannelCoefficients,
-    CoefficientBatch,
     ThirdOrderCoefficients,
     build_coefficient_batch,
     build_third_order_cache,
     build_timestamp_third_order_cache,
     compute_spectral_estimates,
-    expand_deterministic_coefficient_batch,
+    expand_deterministic_coefficients,
     prepare_sampled_channel_coefficients,
 )
 
@@ -128,9 +127,8 @@ def test_third_order_gather_preserves_all_leading_axes():
 
 
 def test_third_order_cache_retains_only_unique_valid_closing_coefficients():
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=np.arange(8, dtype=np.float64),
-        band_frequencies=np.arange(4, 8, dtype=np.float64),
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=np.arange(8, dtype=np.float64),
         band_start=4,
         band_stop=8,
     )
@@ -156,10 +154,9 @@ def test_third_order_cache_retains_only_unique_valid_closing_coefficients():
 
 def test_timestamp_third_order_cache_maps_every_pair_to_compact_closing_frequency():
     grid_indices = np.arange(-2, 3, dtype=np.int64)
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=0.1,
         grid_indices=grid_indices,
-        band_frequencies=grid_indices.astype(np.float64) * 0.1,
     )
     runtime = SimpleNamespace(device=torch.device("cpu"))
 
@@ -189,9 +186,8 @@ def test_timestamp_third_order_cache_maps_every_pair_to_compact_closing_frequenc
 
 def test_timestamp_closing_cache_accepts_sampled_view_beyond_fft_support():
     full_frequencies = np.arange(-3.0, 3.0)
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=full_frequencies,
-        band_frequencies=full_frequencies[2:6],
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=full_frequencies,
         band_start=2,
         band_stop=6,
     )
@@ -252,9 +248,8 @@ def test_third_order_coefficients_center_only_over_window_axis():
 
 def test_coefficient_batch_is_compact_and_independent_of_full_fft_storage():
     full_fft = torch.arange(2 * 3 * 4 * 8, dtype=torch.float64).reshape(2, 3, 4, 8)
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=np.arange(8, dtype=np.float64),
-        band_frequencies=np.arange(3, 6, dtype=np.float64),
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=np.arange(8, dtype=np.float64),
         band_start=3,
         band_stop=6,
     )
@@ -266,7 +261,7 @@ def test_coefficient_batch_is_compact_and_independent_of_full_fft_storage():
         coeffs_by_channel={7: full_fft},
         third_order_cache=third_order_cache,
     )
-    coefficients = batch.by_channel[7]
+    coefficients = batch[7]
     expected_dc = full_fft[..., 4].clone()
     expected_output = full_fft[..., 3:6].clone()
     expected_closing = full_fft[..., third_order_cache.closing_fft_indices].clone()
@@ -287,9 +282,8 @@ def test_sampled_channel_producer_matches_independent_fft_reference():
     dt = 0.5
     window_points = 4
     full_frequencies = np.fft.fftshift(np.fft.fftfreq(window_points, d=dt))
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=full_frequencies,
-        band_frequencies=full_frequencies[1:4],
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=full_frequencies,
         band_start=1,
         band_stop=4,
     )
@@ -352,10 +346,13 @@ def test_deterministic_coefficient_expansion_uses_zero_stride_views():
             valid_mask=valid_mask,
         ),
     )
-    batch = CoefficientBatch(by_channel={4: coefficients})
+    coefficients_by_channel = {4: coefficients}
 
-    expanded = expand_deterministic_coefficient_batch(batch, realization_count=7)
-    actual = expanded.by_channel[4]
+    expanded = expand_deterministic_coefficients(
+        coefficients_by_channel,
+        realization_count=7,
+    )
+    actual = expanded[4]
 
     for original_values, expanded_values in (
         (coefficients.dc, actual.dc),
@@ -376,33 +373,32 @@ def test_deterministic_coefficient_expansion_uses_zero_stride_views():
 
 
 def test_deterministic_coefficient_expansion_returns_original_for_one_realization():
-    batch = CoefficientBatch(
-        by_channel={
-            0: ChannelCoefficients(
-                dc=torch.ones((1, 2, 3)),
-                output=torch.ones((1, 2, 3, 4)),
-            )
-        }
-    )
+    coefficients_by_channel = {
+        0: ChannelCoefficients(
+            dc=torch.ones((1, 2, 3)),
+            output=torch.ones((1, 2, 3, 4)),
+        )
+    }
 
-    assert expand_deterministic_coefficient_batch(batch, 1) is batch
+    assert (
+        expand_deterministic_coefficients(coefficients_by_channel, 1)
+        is coefficients_by_channel
+    )
 
 
 def test_deterministic_coefficient_expansion_rejects_invalid_axes():
-    batch = CoefficientBatch(
-        by_channel={
-            0: ChannelCoefficients(
-                dc=torch.ones((2, 2, 3)),
-                output=torch.ones((2, 2, 3, 4)),
-            )
-        }
-    )
+    coefficients_by_channel = {
+        0: ChannelCoefficients(
+            dc=torch.ones((2, 2, 3)),
+            output=torch.ones((2, 2, 3, 4)),
+        )
+    }
 
     with pytest.raises(ValueError, match="At least one realization"):
-        expand_deterministic_coefficient_batch(batch, 0)
+        expand_deterministic_coefficients(coefficients_by_channel, 0)
 
     with pytest.raises(RuntimeError, match="exactly one realization"):
-        expand_deterministic_coefficient_batch(batch, 3)
+        expand_deterministic_coefficients(coefficients_by_channel, 3)
 
 
 def test_channel_coefficients_cache_output_centered_only_over_windows():
@@ -451,34 +447,30 @@ def test_average_is_applied_to_spectra_instead_of_coefficients():
     runtime = SimpleNamespace(
         window_plan=SimpleNamespace(windows_per_estimate=2),
     )
-    coefficient_batch = CoefficientBatch(
-        by_channel={
-            0: ChannelCoefficients(
-                dc=torch.zeros(2, 1, 2, dtype=torch.float64),
-                output=output,
-            )
-        }
-    )
+    coefficients_by_channel = {
+        0: ChannelCoefficients(
+            dc=torch.zeros(2, 1, 2, dtype=torch.float64),
+            output=output,
+        )
+    }
 
     estimates = compute_spectral_estimates(
         channels=(0, 0),
-        coefficient_batch=coefficient_batch,
+        coefficients_by_channel=coefficients_by_channel,
         window_buffer=window_buffer,
         runtime=runtime,
     )
     spectrum_average = estimates.mean(dim=0)
 
-    averaged_coefficient_batch = CoefficientBatch(
-        by_channel={
-            0: ChannelCoefficients(
-                dc=torch.zeros(1, 1, 2, dtype=torch.float64),
-                output=output.mean(dim=0, keepdim=True),
-            )
-        }
-    )
+    averaged_coefficients_by_channel = {
+        0: ChannelCoefficients(
+            dc=torch.zeros(1, 1, 2, dtype=torch.float64),
+            output=output.mean(dim=0, keepdim=True),
+        )
+    }
     coefficient_average = compute_spectral_estimates(
         channels=(0, 0),
-        coefficient_batch=averaged_coefficient_batch,
+        coefficients_by_channel=averaged_coefficients_by_channel,
         window_buffer=window_buffer,
         runtime=runtime,
     ).squeeze(0)

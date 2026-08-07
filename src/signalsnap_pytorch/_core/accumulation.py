@@ -184,7 +184,8 @@ def initialize_accumulator_store(runtime: RuntimeConfig) -> SpectrumAccumulatorS
     """
 
     store = SpectrumAccumulatorStore()
-    for channels, frequency_plan in runtime.spectrum_frequency_plans.items():
+    for channels in runtime.requested_spectra:
+        frequency_plan = runtime.frequency_plan_for(channels)
         freq = np.asarray([0.0]) if len(channels) == 1 else frequency_plan.band_frequencies
         store.add(
             SpectrumAccumulator(

@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 import pytest
 
-from signalsnap_pytorch import DataConfig, SpectrumConfig, calculate_spectra
+from signalsnap_pytorch import SpectrumConfig, calculate_spectra
 from tests._helpers import (
     TEST_SPECTRAL_ESTIMATES_PER_BATCH,
     align_legacy_spectrum_region,

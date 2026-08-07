@@ -10,9 +10,9 @@ from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.fft import prepare_default_timestamp_window
 from signalsnap_pytorch._core.planning import (
-    SampledFrequencyPlan,
+    DirectFrequencyPlan,
+    FFTFrequencyPlan,
     TimestampedChannelPlan,
-    TimestampFrequencyPlan,
     WindowBatch,
 )
 from signalsnap_pytorch._core.spectra import build_timestamp_third_order_cache
@@ -423,10 +423,9 @@ def test_unit_timestamp_coefficients_apply_window_to_dc_output_and_closing_roles
         windows_per_estimate=1,
     )
     grid_indices = np.arange(-1, 2, dtype=np.int64)
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=grid_indices,
-        band_frequencies=grid_indices.astype(np.float64),
     )
     runtime = _runtime()
     timestamp_window = prepare_default_timestamp_window(runtime)
@@ -469,10 +468,9 @@ def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
         windows_per_estimate=2,
     )
     grid_indices = np.arange(-1, 2, dtype=np.int64)
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=grid_indices,
-        band_frequencies=grid_indices.astype(np.float64),
     )
     runtime = _runtime()
     third_order_cache = build_timestamp_third_order_cache(runtime, frequency_plan)
@@ -503,15 +501,18 @@ def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
 
 
 @pytest.mark.parametrize(
-    ("needs_dc", "needs_output", "expected_frequencies"),
+    ("needs_output", "expected_frequencies"),
     [
-        pytest.param(True, False, [[0.0]], id="dc-only"),
-        pytest.param(False, True, [[-1.0, 0.0, 1.0]], id="output-only"),
+        pytest.param(False, [[0.0]], id="dc-only"),
+        pytest.param(
+            True,
+            [[0.0], [-1.0, 0.0, 1.0]],
+            id="dc-and-output",
+        ),
     ],
 )
-def test_timestamp_coefficients_only_transform_requested_frequency_roles(
+def test_timestamp_coefficients_always_transform_dc_and_only_requested_output(
     monkeypatch,
-    needs_dc,
     needs_output,
     expected_frequencies,
 ):
@@ -522,10 +523,9 @@ def test_timestamp_coefficients_only_transform_requested_frequency_roles(
         estimate_count=1,
         windows_per_estimate=1,
     )
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.arange(-1, 2, dtype=np.int64),
-        band_frequencies=np.arange(-1, 2, dtype=np.float64),
     )
     runtime = _runtime()
     transformed_frequencies = []
@@ -554,12 +554,11 @@ def test_timestamp_coefficients_only_transform_requested_frequency_roles(
         runtime,
         third_order_cache=None,
         event_amplitudes=np.ones((1, 1)),
-        needs_dc=needs_dc,
         needs_output=needs_output,
     )
 
     assert transformed_frequencies == expected_frequencies
-    assert (coefficients.dc is not None) is needs_dc
+    assert coefficients.dc.shape == (1, 1, 1)
     assert (coefficients.output is not None) is needs_output
 
 
@@ -572,9 +571,8 @@ def test_timestamp_coefficients_accept_sampled_output_frequency_view():
         windows_per_estimate=1,
     )
     full_frequencies = np.array([-2.0, -1.0, 0.0, 1.0])
-    frequency_plan = SampledFrequencyPlan(
-        full_fft_frequencies=full_frequencies,
-        band_frequencies=full_frequencies[1:],
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=full_frequencies,
         band_start=1,
         band_stop=4,
     )
@@ -599,10 +597,9 @@ def test_timestamp_coefficients_accept_sampled_output_frequency_view():
 
 def test_unit_timestamp_materializer_delegates_to_shared_amplitude_contract():
     prepared = _prepared_events(np.arange(2))
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.array([0, 1], dtype=np.int64),
-        band_frequencies=np.array([0.0, 1.0]),
     )
     runtime = _runtime()
     timestamp_window = prepare_default_timestamp_window(runtime)
@@ -637,10 +634,9 @@ def test_unit_timestamp_materializer_delegates_to_shared_amplitude_contract():
 )
 def test_timestamp_materializer_rejects_invalid_amplitude_shape(amplitudes, message):
     prepared = _prepared_events(np.arange(2))
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.array([0], dtype=np.int64),
-        band_frequencies=np.array([0.0]),
     )
 
     with pytest.raises(ValueError, match=message):
@@ -662,10 +658,9 @@ def test_timestamp_channel_dispatch_materializes_unit_realization_batch():
         estimate_count=1,
         windows_per_estimate=2,
     )
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.array([0], dtype=np.int64),
-        band_frequencies=np.array([0.0]),
     )
     runtime = _runtime()
 
@@ -696,10 +691,9 @@ def test_timestamp_channel_dispatch_keys_exponential_amplitudes(monkeypatch):
         estimate_count=1,
         windows_per_estimate=2,
     )
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.array([0], dtype=np.int64),
-        band_frequencies=np.array([0.0]),
     )
     runtime = _runtime()
     runtime.repetition_plan = SimpleNamespace(resolved_seed=91)
@@ -756,10 +750,9 @@ def test_unit_timestamp_coefficients_keep_empty_windows_and_omit_third_order_sto
         estimate_count=2,
         windows_per_estimate=3,
     )
-    frequency_plan = TimestampFrequencyPlan(
+    frequency_plan = DirectFrequencyPlan(
         actual_df=1.0,
         grid_indices=np.array([0, 1], dtype=np.int64),
-        band_frequencies=np.array([0.0, 1.0]),
     )
     runtime = _runtime(torch.float32)
 
