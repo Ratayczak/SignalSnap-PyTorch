@@ -24,12 +24,12 @@ from signalsnap_pytorch._core.planning import (
     _count_complete_windows,
     _resolve_device,
     _resolve_repetition_plan,
+    _resolve_timestamp_frequencies,
     build_runtime_config,
     iter_window_batches,
     physical_estimate_count,
     resolve_requested_spectra,
     resolve_sampled_frequencies,
-    resolve_timestamp_frequencies,
 )
 from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
@@ -687,7 +687,7 @@ def test_direct_frequency_plan_applies_exact_inclusive_hard_bounds(
     f_max,
     expected_band,
 ):
-    frequency_plan = resolve_timestamp_frequencies(
+    frequency_plan = _resolve_timestamp_frequencies(
         f_min=f_min,
         f_max=f_max,
         window_duration=8.0,
@@ -708,7 +708,7 @@ def test_direct_frequency_plan_applies_exact_inclusive_hard_bounds(
 
 
 def test_timestamp_grid_indices_give_compact_closing_frequency_identity():
-    frequency_plan = resolve_timestamp_frequencies(
+    frequency_plan = _resolve_timestamp_frequencies(
         f_min=-2.0,
         f_max=2.0,
         window_duration=10.0,
@@ -731,7 +731,7 @@ def test_timestamp_grid_indices_give_compact_closing_frequency_identity():
 
 def test_direct_frequency_plan_rejects_band_without_grid_frequency():
     with pytest.raises(ValueError, match="does not contain any timestamp frequencies"):
-        resolve_timestamp_frequencies(
+        _resolve_timestamp_frequencies(
             f_min=0.1,
             f_max=0.2,
             window_duration=2.0,

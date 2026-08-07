@@ -190,7 +190,7 @@ def _default_timestamp_normalizations(duration: float) -> tuple[float, ...]:
     return tuple(duration * 0.5 * torch.dot(weights, window**order).item() for order in range(1, 5))
 
 
-def prepare_default_timestamp_window(runtime: RuntimeConfig) -> DefaultTimestampWindow:
+def _prepare_default_timestamp_window(runtime: RuntimeConfig) -> DefaultTimestampWindow:
     """Prepare the default continuous window for a timestamp calculation."""
 
     duration = runtime.window_plan.duration
@@ -224,7 +224,7 @@ def _legacy_timestamp_raw_numpy(reference_positions: np.ndarray) -> np.ndarray:
     )
 
 
-def prepare_legacy_timestamp_window(runtime: RuntimeConfig) -> LegacyTimestampWindow:
+def _prepare_legacy_timestamp_window(runtime: RuntimeConfig) -> LegacyTimestampWindow:
     """Prepare the exact fixed-grid v1 timestamp window convention."""
 
     duration = runtime.window_plan.duration
@@ -258,12 +258,29 @@ TimestampWindow = DefaultTimestampWindow | LegacyTimestampWindow
 
 
 def prepare_timestamp_window(runtime: RuntimeConfig) -> TimestampWindow:
-    """Prepare the selected default or legacy timestamp window convention."""
+    """Prepare timestamp event weights and order-dependent normalizations.
+
+    The returned object evaluates the selected window at event times relative to a physical-window
+    start and supplies normalization factors for spectrum orders one through four.
+    ``runtime.old_window`` selects the fixed-grid legacy convention; otherwise, the default
+    continuous timestamp-window convention is used.
+
+    Parameters
+    ----------
+    runtime : RuntimeConfig
+        Resolved window duration, numeric dtype, calculation device, and compatibility setting.
+
+    Returns
+    -------
+    DefaultTimestampWindow | LegacyTimestampWindow
+        Prepared timestamp window whose normalization tensors use ``runtime.real_dtype`` on
+        ``runtime.device``.
+    """
 
     if runtime.old_window:
-        return prepare_legacy_timestamp_window(runtime)
+        return _prepare_legacy_timestamp_window(runtime)
 
-    return prepare_default_timestamp_window(runtime)
+    return _prepare_default_timestamp_window(runtime)
 
 
 def _gaussian(x: Tensor, N: int, sigma_t_prefactor: float) -> Tensor:

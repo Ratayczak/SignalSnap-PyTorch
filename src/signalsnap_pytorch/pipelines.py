@@ -60,7 +60,7 @@ def calculate_spectra(
     Returns
     -------
     SpectrumResultStore
-        Finalized spectra indexed by ``channels``.
+        Successfully finalized spectra indexed by their resolved channel tuples.
 
     Warns
     -----
@@ -172,7 +172,7 @@ def calculate_spectra(
                 for channel in timestamped_data_channels
             }
 
-        normalization_windows = _spectra.build_normalization_windows(
+        normalization_windows = _spectra.select_normalization_windows(
             runtime,
             sampled_window=sampled_window_buffer,
             timestamp_window=timestamp_window_buffer,
@@ -193,7 +193,8 @@ def calculate_spectra(
             disable=not show_progress,
         ) as progress:
             # Process physical windows in batches. Sampled-channel coefficients are computed once
-            # per physical-window batch, while timestamp-channel coefficients are generated for each # amplitude realization batch. Both are reused across all applicable spectra.
+            # per physical-window batch, while timestamp-channel coefficients are generated for each
+            # amplitude realization batch. Both are reused across all applicable spectra.
             for batch in _planning.iter_window_batches(plan):
 
                 # Compute Fourier coefficients for sampled data channels.

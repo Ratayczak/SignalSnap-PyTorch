@@ -238,7 +238,7 @@ def test_exponential_pipeline_averages_spectra_instead_of_coefficients(monkeypat
 
     monkeypatch.setattr(
         _timestamps,
-        "generate_keyed_exponential_amplitudes",
+        "_generate_keyed_exponential_amplitudes",
         fixed_amplitudes,
     )
     data_config = DataConfig(

@@ -53,14 +53,37 @@ ChannelPlan = SampledChannelPlan | TimestampedChannelPlan
 
 @dataclass(frozen=True, slots=True)
 class RepetitionPlan:
-    """Resolved calculation-wide amplitude-realization iteration."""
+    """Resolved calculation-wide amplitude-realization plan.
+
+    Attributes
+    ----------
+    count : int
+        Total number of amplitude realizations. Calculations without exponential timestamp
+        weighting use one realization; exponential weighting uses the configured repetition
+        count.
+    batch_size : int
+        Maximum number of realizations processed together.
+    resolved_seed : int | None
+        Seed used for keyed exponential amplitudes. This is the configured seed or a seed generated
+        during planning. It is ``None`` when exponential weighting is not active.
+    """
 
     count: int
     batch_size: int
     resolved_seed: int | None
 
     def iter_batches(self) -> Iterator[range]:
-        """Yield bounded batches of stable realization IDs."""
+        """Yield consecutive batches of calculation-wide realization IDs.
+
+        The IDs cover ``range(count)`` exactly once, in ascending order, with no batch larger than
+        ``batch_size``. They remain independent of repetition batching so that keyed timestamp
+        amplitudes are reproducible when the batch size changes.
+
+        Yields
+        ------
+        range
+            Consecutive realization IDs for one repetition batch.
+        """
 
         for start in range(0, self.count, self.batch_size):
             stop = min(start + self.batch_size, self.count)
@@ -92,7 +115,29 @@ def _resolve_repetition_plan(photon_options: PhotonOptions | None) -> Repetition
 
 @dataclass(frozen=True, slots=True)
 class WindowPlan:
-    """Resolved half-open observation interval, physical-window, and batching settings."""
+    """Resolved observation interval, physical-window layout, and batching plan.
+
+    Attributes
+    ----------
+    observation_start, observation_stop : float
+        Bounds of the common half-open observation interval.
+    duration : float
+        Duration of one physical window, in the configured time unit.
+    windows_per_estimate : int
+        Effective number of physical windows combined into one spectral estimate. This may be lower
+        than the requested ``SpectrumConfig.m`` when insufficient data is available.
+    unshifted_estimate_count : int
+        Number of complete unshifted spectral estimates to calculate after applying
+        ``SpectrumConfig.spectral_estimates_max``.
+    shifted_estimate_count : int
+        Number of complete interlaced estimates to calculate. Zero when interlacing is disabled.
+    estimates_per_batch : int
+        Effective maximum number of spectral estimates processed together. In short-term
+        uncertainty mode, this may be reduced to a multiple of the effective ``m_var``.
+    interlacing_offset : float
+        Offset of the shifted placement relative to the unshifted placement. For sampled data, this
+        is aligned to a sample boundary.
+    """
 
     observation_start: float
     observation_stop: float
@@ -106,7 +151,21 @@ class WindowPlan:
 
 @dataclass(frozen=True, slots=True)
 class WindowBatch:
-    """One batch of shared physical windows."""
+    """One batch of physical windows from a single placement group.
+
+    Attributes
+    ----------
+    relative_starts : NDArray[np.float64]
+        Physical-window start times relative to ``WindowPlan.observation_start``, with shape
+        ``(B, m)``. Rows identify spectral estimates and columns identify the physical windows
+        belonging to each estimate.
+    duration : float
+        Duration of every physical window in the batch.
+    estimate_count : int
+        Number of spectral estimates in the batch, equal to ``B``.
+    shifted : bool
+        Whether the batch belongs to the shifted interlacing placement.
+    """
 
     relative_starts: NDArray[np.float64]
     duration: float
@@ -265,9 +324,25 @@ class RuntimeConfig:
 
 @dataclass(slots=True)
 class CoefficientPreparationPlan:
-    """Resolved coefficient-preparation plan for spectra sharing one frequency-plan type.
+    """Coefficient requirements for spectra sharing one frequency plan.
 
-    Connects for which channel what coefficients need to be calculated under the ``FrequencyPlan``.
+    Attributes
+    ----------
+    frequency_plan : FFTFrequencyPlan | DirectFrequencyPlan
+        Frequency grid shared by the associated requested spectra.
+    required_channels : set[int]
+        All channels referenced by those spectra. Every required channel needs a zero-frequency
+        coefficient.
+    direct_transform_channels : tuple[int, ...]
+        Required timestamped channels whose coefficients must be calculated by direct
+        transformation.
+    band_coefficient_channels : set[int]
+        Channels requiring coefficients on the output-frequency band. This includes every channel
+        in second- and fourth-order spectra and the first two channel positions in third-order
+        spectra.
+    third_order_closing_frequency_channels : set[int]
+        Channels occurring in the third position of a third-order spectrum and therefore requiring
+        coefficients at ``f3 = -(f1 + f2)``.
     """
 
     frequency_plan: FrequencyPlan
@@ -280,7 +355,38 @@ class CoefficientPreparationPlan:
 def build_coefficient_preparation_plans(
     runtime: RuntimeConfig,
 ) -> dict[type[FFTFrequencyPlan | DirectFrequencyPlan], CoefficientPreparationPlan]:
-    """Build coefficient-preparation plans grouped by frequency-plan type."""
+    """Plan the Fourier coefficients required for every requested spectrum.
+
+    Requested spectra are grouped by frequency-plan type because mixed calculations can use an FFT
+    grid for spectra containing sampled channels and a direct-transform grid for timestamp-only
+    spectra.
+
+    For first-order spectra, only the zero-frequency coefficient is required. For second- and
+    fourth-order spectra, every referenced channel requires output-band coefficients. For
+    third-order spectra, the first two channels require output-band coefficients and the third
+    requires coefficients at the closing frequencies ``f3 = -(f1 + f2)``.
+
+    All required timestamped channels are marked for direct transformation. Sampled channels are
+    transformed separately by the FFT path.
+
+    Parameters
+    ----------
+    runtime : RuntimeConfig
+        Resolved channel types, requested spectra, and frequency plans.
+
+    Returns
+    -------
+    dict[type[FFTFrequencyPlan | DirectFrequencyPlan], CoefficientPreparationPlan]
+        One preparation plan for each frequency-plan type used by the requested spectra. Each plan
+        records all required channels, timestamped channels that require direct transformation,
+        channels needing output-band coefficients, and channels needing third-order
+        closing-frequency coefficients.
+
+    Raises
+    ------
+    RuntimeError
+        If different frequency-plan objects of the same type occur in one runtime configuration.
+    """
 
     preparation_plans_by_type: dict[
         type[FFTFrequencyPlan | DirectFrequencyPlan],
@@ -574,7 +680,36 @@ def _resolve_observation_interval(
     data_config: DataConfig,
     channel_plans: Mapping[int, ChannelPlan],
 ) -> tuple[float, float]:
-    """Resolve the common half-open observation interval."""
+    """Resolve and validate the common half-open observation interval.
+
+    Timestamped calculations require both bounds explicitly. For sampled-only calculations,
+    ``observation_start`` defaults to zero and ``observation_stop`` defaults to
+    ``observation_start + sample_count * dt``.
+
+    Whenever a sampled channel is active, the resolved interval duration must match the
+    sampled-data duration. Only differences consistent with ULP-scale floating-point rounding are
+    tolerated.
+
+    Parameters
+    ----------
+    data_config : DataConfig
+        Configured observation bounds and channel definitions.
+    channel_plans : Mapping[int, ChannelPlan]
+        Resolved plans for the active channels.
+
+    Returns
+    -------
+    tuple[float, float]
+        Resolved ``(observation_start, observation_stop)`` bounds.
+
+    Raises
+    ------
+    ValueError
+        If a timestamped calculation lacks an explicit bound, or if the observation duration does
+        not match the duration of an active sampled channel.
+    RuntimeError
+        If no active sampled or timestamped channel plan is available.
+    """
 
     has_timestamped_channel = any(
         isinstance(plan, TimestampedChannelPlan) for plan in channel_plans.values()
@@ -630,25 +765,35 @@ def resolve_sampled_frequencies(
     spectrum_config: SpectrumConfig,
     dt: float,
 ) -> tuple[int, FFTFrequencyPlan]:
-    """Resolve the sampled FFT grid and hard-bounded output band.
+    """Resolve the sampled FFT grid and selected output-frequency band.
+
+    When ``SpectrumConfig.df`` is given, the physical-window length is calculated as
+    ``round(1 / (dt * df))`` samples. Because this length must be an integer, the actual frequency
+    spacing is ``1 / (window_points * dt)`` and may differ from the requested value. If ``df`` is
+    omitted, the window length defaults to 1000 samples.
+
+    The complete FFT grid is zero-anchored and shifted into ascending order. The output band
+    contains every available FFT frequency within the inclusive configured bounds. An omitted
+    ``f_max`` uses the sampled Nyquist bound.
 
     Parameters
     ----------
-    spectrum_config : :class:`SpectrumConfig`
-        Spectrum configuration options.
+    spectrum_config : SpectrumConfig
+        Requested frequency spacing and inclusive frequency bounds.
     dt : float
-        Time step of the specified data channels.
+        Positive sampling interval shared by the active sampled channels.
 
     Returns
     -------
     tuple[int, FFTFrequencyPlan]
-        Resolved sampled window length and frequency plan.
+        Resolved number of samples per physical window and the shifted FFT plan containing the
+        complete grid and selected output-band slice.
 
     Raises
     ------
     ValueError
-        If the resolved window length is zero or the intersection of the requested
-        band and sampled FFT support contains no frequencies.
+        If the requested spacing resolves to a nonpositive window length, or if the requested
+        frequency bounds contain no frequency on the resolved FFT grid.
     """
     # An omitted upper bound retains the sampled-only Nyquist default. Explicit
     # bounds may extend beyond sampled support because mixed calculations can also
@@ -690,13 +835,36 @@ def resolve_sampled_frequencies(
     return window_points, frequency_plan
 
 
-def resolve_timestamp_frequencies(
+def _resolve_timestamp_frequencies(
     *,
     f_min: float,
     f_max: float,
     window_duration: float,
 ) -> DirectFrequencyPlan:
-    """Resolve the direct-transform grid inside inclusive hard bounds."""
+    """Resolve the direct-transform frequency grid inside inclusive bounds.
+
+    The grid is anchored at zero and consists of integer multiples of
+    ``actual_df = 1 / window_duration``. In mixed calculations, this spacing is determined by the
+    resolved sampled window and may differ from the originally requested ``SpectrumConfig.df``.
+
+    Parameters
+    ----------
+    f_min, f_max : float
+        Inclusive lower and upper frequency bounds.
+    window_duration : float
+        Positive duration of one physical window.
+
+    Returns
+    -------
+    DirectFrequencyPlan
+        Resolved frequency spacing and the ascending integer grid coordinates whose frequencies lie
+        within ``[f_min, f_max]``.
+
+    Raises
+    ------
+    ValueError
+        If the requested bounds contain no frequency on the resolved grid.
+    """
 
     actual_df = 1.0 / window_duration
     first_candidate = math.floor(f_min / actual_df) - 1
@@ -750,7 +918,56 @@ def _resolve_window_plan(
     available_shifted_windows: int,
     orders: tuple[int, ...],
 ) -> tuple[WindowPlan, int]:
-    """Resolve shared physical estimates, batching, and uncertainty grouping."""
+    """Resolve estimate counts, interlacing, batching, and uncertainty grouping.
+
+    The effective number of physical windows per estimate is initially ``SpectrumConfig.m`` and is
+    reduced when fewer unshifted windows are available. It must still be at least the highest
+    requested spectrum order.
+
+    Complete physical windows are grouped into estimates, and the number of unshifted estimates is
+    limited by ``spectral_estimates_max``. When interlacing is enabled, the shifted count is
+    limited to the smaller of the available shifted and selected unshifted counts.
+
+    In short-term uncertainty mode, ``m_var`` may be reduced to the available unshifted estimate
+    count. A processing batch large enough to contain a complete uncertainty group is rounded down
+    to a multiple of the effective ``m_var``.
+
+    Parameters
+    ----------
+    spectrum_config : SpectrumConfig
+        Requested window count, estimate limit, batching, interlacing, and
+        uncertainty settings.
+    observation_start, observation_stop : float
+        Bounds of the common half-open observation interval.
+    window_duration : float
+        Duration of one physical window.
+    interlacing_offset : float
+        Offset applied to shifted physical windows.
+    available_unshifted_windows : int
+        Number of complete physical windows in the unshifted placement.
+    available_shifted_windows : int
+        Number of complete physical windows in the shifted placement.
+    orders : tuple[int, ...]
+        Distinct requested spectrum orders.
+
+    Returns
+    -------
+    tuple[WindowPlan, int]
+        Resolved window plan and effective ``m_var``.
+
+    Warns
+    -----
+    UserWarning
+        If ``m`` is reduced because too few physical windows are available, or if
+        ``m_var`` is reduced because too few unshifted estimates are available.
+
+    Raises
+    ------
+    ValueError
+        If the effective number of windows per estimate is below the highest
+        requested order, or if interlacing is requested but no complete shifted
+        estimate fits.
+    """
 
     if available_unshifted_windows < spectrum_config.m:
         windows_per_estimate = available_unshifted_windows
@@ -823,44 +1040,56 @@ def build_runtime_config(
     spectrum_config: SpectrumConfig,
     spectra_channels: tuple[tuple[int, ...], ...],
 ) -> RuntimeConfig:
-    """Resolve user configuration into immutable runtime calculation settings.
+    """Resolve user configuration and active sources into runtime calculation settings.
 
-    Validates active channels, resolves shared physical windows and per-spectrum frequency views,
-    and selects the calculation dtypes and device.
+    Only channels present in ``opened_channels`` participate in planning. The function validates
+    their shared timing constraints, resolves the observation interval, constructs sampled and
+    direct frequency grids, determines the physical window layout and batching, resolves timestamp
+    amplitude repetitions, checks the requested device, and selects the calculation dtypes.
+
+    Active sampled channels must have equal lengths and sampling intervals. Their sample count and
+    interval must span the configured observation interval. Timestamped calculations require
+    explicit observation bounds, and timestamp-only calculations additionally require explicit
+    ``df`` and ``f_max``.
 
     Parameters
     ----------
-    data_config : :class:`DataConfig`
-        Data configurations containing the input data and sampling metadata.
-    opened_channels : Mapping[int, Any | HDF5SourceState]
-        Opened runtime representation of ``data_config.channels``. Array channels are retained
-        directly; HDF5 channels are represented by
-        :class:`~signalsnap_pytorch._core.data_access.HDF5SourceState` instances.
-    spectrum_config : :class:`SpectrumConfig`
-        User configuration for frequency bounds, precision, device, windowing, and
-        related calculation options.
+    data_config : DataConfig
+        Channel definitions, observation bounds, and shared time unit.
+    opened_channels : Mapping[int, RuntimeSource]
+        Opened runtime sources keyed by their indices in ``data_config.channels``. Only these
+        channels are considered active.
+    spectrum_config : SpectrumConfig
+        Requested frequency bounds, windowing, repetition, uncertainty, precision, batching,
+        interlacing, and device options.
     spectra_channels : tuple[tuple[int, ...], ...]
-        Specifies which (multi-channel) spectra will be calculated. Each tuple represents one auto-
-        or cross-correlation spectrum. Each tuple entry is a channel index which matches the index
-        in ``data_config.channels``.
+        Validated channel tuples identifying the requested spectra.
 
     Returns
     -------
     RuntimeConfig
-        Resolved runtime configuration.
+        Resolved channel plans, frequency plans, window and repetition plans, uncertainty settings,
+        frequency unit, dtypes, and calculation device.
 
     Warns
     -----
     UserWarning
-        If the configured ``m`` requires more samples than are available and is reduced at runtime.
+        If ``m`` is reduced because too few physical windows are available, or if ``m_var`` is
+        reduced because too few unshifted spectral estimates are available.
 
     Raises
     ------
+    TypeError
+        If an active timestamp source contains Boolean values or an active channel has an
+        unsupported type.
     ValueError
-        If active channels have unequal lengths, frequency resolution fails, the effective ``m`` is
-        below the highest requested order, or interlacing cannot produce a shifted estimate.
+        If channel timing is inconsistent; timestamp options or observation bounds are invalid; an
+        active timestamp lies outside the observation interval or cannot be represented safely;
+        frequency or window resolution fails; the effective ``m`` is below the highest requested
+        order; interlacing cannot produce an estimate; or the device specification is invalid.
     RuntimeError
-        If the requested accelerator is unavailable or its device index is invalid.
+        If the requested accelerator is unavailable, its device index is invalid, or the runtime
+        configuration is internally inconsistent.
     """
 
     # Validate and read the channels, number of data points, and the time step from the
@@ -948,7 +1177,7 @@ def build_runtime_config(
             assert sampled_plan is not None
             timestamp_f_max = 1.0 / (2.0 * sampled_plan.dt)
 
-        direct_frequency_plan = resolve_timestamp_frequencies(
+        direct_frequency_plan = _resolve_timestamp_frequencies(
             f_min=spectrum_config.f_min,
             f_max=timestamp_f_max,
             window_duration=window_duration,
@@ -996,7 +1225,28 @@ def physical_estimate_count(plan: WindowPlan) -> int:
 
 
 def iter_window_batches(plan: WindowPlan) -> Iterator[WindowBatch]:
-    """Yield shared physical-window batches in relative observation time."""
+    """Yield physical-window batches in observation-relative time.
+
+    Each row of ``WindowBatch.relative_starts`` describes one spectral estimate and contains the
+    starts of its ``m = plan.windows_per_estimate`` consecutive physical windows. Starts are
+    measured relative to ``plan.observation_start``.
+
+    Unshifted batches are yielded first in chronological order. If interlacing is enabled, shifted
+    batches follow in chronological order with ``plan.interlacing_offset`` applied. Each batch
+    contains at most ``plan.estimates_per_batch`` estimates.
+
+    Parameters
+    ----------
+    plan : WindowPlan
+        Resolved window duration, placement counts, interlacing offset, windows per estimate, and
+        estimate batch size.
+
+    Yields
+    ------
+    WindowBatch
+        A batch whose ``relative_starts`` has shape ``(B, m)``, where ``B`` equals
+        ``estimate_count``. The ``shifted`` flag identifies its placement group.
+    """
 
     def iter_placement(
         estimate_count: int,

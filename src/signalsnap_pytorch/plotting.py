@@ -36,6 +36,16 @@ except ModuleNotFoundError as exc:
         'Install it with: pip install "signalsnap-pytorch[plotting]"'
     ) from None
 
+__all__ = [
+    "PlotStyle",
+    "SpectrumFigure",
+    "build_order_1_table",
+    "create_first_window_figure",
+    "create_spectrum_figure",
+    "create_spectrum_figures",
+    "save_figures",
+]
+
 
 class PlotStyle(BaseModel):
     """Configuration for plotting calculated polyspectra.
@@ -77,14 +87,14 @@ class PlotStyle(BaseModel):
 
     @field_validator("plot_format")
     @classmethod
-    def ensure_unique_formats(cls, v: list[_PlotComponent]) -> list[_PlotComponent]:
+    def _ensure_unique_formats(cls, v: list[_PlotComponent]) -> list[_PlotComponent]:
         """Ensure plot_format does not contain duplicate components."""
         if len(v) != len(set(v)):
             raise ValueError("plot_format cannot contain duplicate elements.")
         return v
 
     @model_validator(mode="after")
-    def validate_limits(self) -> PlotStyle:
+    def _validate_limits(self) -> PlotStyle:
         """Require the displayed lower frequency bound to precede the upper bound."""
         if self.f_min >= self.f_max:
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")

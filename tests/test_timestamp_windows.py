@@ -7,8 +7,8 @@ import torch
 from signalsnap_pytorch._core.fft import (
     DefaultTimestampWindow,
     LegacyTimestampWindow,
-    prepare_default_timestamp_window,
-    prepare_legacy_timestamp_window,
+    _prepare_default_timestamp_window,
+    _prepare_legacy_timestamp_window,
     prepare_timestamp_window,
 )
 
@@ -78,7 +78,7 @@ def test_default_timestamp_window_matches_independent_formula(dtype):
     duration = 2.5
     normalized_times = np.array([0.0, 0.125, 0.5, 0.875, 1.0])
     relative_times = torch.tensor(normalized_times * duration, dtype=dtype)
-    prepared = prepare_default_timestamp_window(_runtime(duration, dtype))
+    prepared = _prepare_default_timestamp_window(_runtime(duration, dtype))
 
     actual = prepared.evaluate(relative_times)
     expected = torch.tensor(_reference_default_window(normalized_times), dtype=dtype)
@@ -91,7 +91,7 @@ def test_default_timestamp_window_matches_independent_formula(dtype):
 
 def test_default_timestamp_normalizations_match_higher_order_quadrature():
     duration = 2.5
-    prepared = prepare_default_timestamp_window(_runtime(duration))
+    prepared = _prepare_default_timestamp_window(_runtime(duration))
     nodes, weights = np.polynomial.legendre.leggauss(512)
     window = _reference_default_window((nodes + 1.0) / 2.0)
 
@@ -105,8 +105,8 @@ def test_default_timestamp_normalizations_match_higher_order_quadrature():
 
 
 def test_default_timestamp_normalizations_scale_with_duration():
-    first = prepare_default_timestamp_window(_runtime(2.5))
-    second = prepare_default_timestamp_window(_runtime(5.0))
+    first = _prepare_default_timestamp_window(_runtime(2.5))
+    second = _prepare_default_timestamp_window(_runtime(5.0))
 
     for order in range(1, 5):
         torch.testing.assert_close(second.norm(order), 2.0 * first.norm(order))
@@ -120,7 +120,7 @@ def test_legacy_timestamp_window_matches_independent_v1_formula(dtype):
         relative_times,
         duration,
     )
-    prepared = prepare_legacy_timestamp_window(_runtime(duration, dtype))
+    prepared = _prepare_legacy_timestamp_window(_runtime(duration, dtype))
 
     actual = prepared.evaluate(torch.tensor(relative_times, dtype=dtype))
 
@@ -134,7 +134,7 @@ def test_legacy_timestamp_window_matches_independent_v1_formula(dtype):
 
 
 def test_legacy_second_order_reference_normalization_is_one():
-    prepared = prepare_legacy_timestamp_window(_runtime(3.5))
+    prepared = _prepare_legacy_timestamp_window(_runtime(3.5))
 
     assert prepared.norm(2).item() == pytest.approx(1.0, rel=1e-14)
 

@@ -39,24 +39,6 @@ def build_s3_target_indices(axis_indices: Tensor, fft_freq_count: int) -> tuple[
     return safe_indices, valid_mask
 
 
-def gather_s3_third_factor(coeffs: Tensor, target_indices: Tensor) -> Tensor:
-    """Gather coefficients at ``w3 = -(w1 + w2)`` for a third-order cumulant.
-
-    Parameters
-    ----------
-    coeffs : Tensor
-        Full shifted Fourier coefficients with shape ``(..., m, N)``.
-    target_indices : Tensor
-        Target-bin grid with shape ``(F, F)``.
-
-    Returns
-    -------
-    Tensor
-        Gathered coefficients with shape ``(..., m, F, F)``.
-    """
-    return coeffs[..., target_indices]
-
-
 def _mean_outer(m: int, a: Tensor, b: Tensor) -> Tensor:
     """Compute an average outer product over the window axis.
 

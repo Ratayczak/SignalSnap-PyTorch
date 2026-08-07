@@ -219,7 +219,7 @@ class HDF5SourceState:
         return result
 
 
-def normalize_hdf5_selection(
+def _normalize_hdf5_selection(
     dataset: h5py.Dataset, source: HDF5Source
 ) -> tuple[tuple[NormalizedSelector, ...], tuple[int, ...]]:
     """Normalize and validate an HDF5 source selection against its dataset.
@@ -391,7 +391,7 @@ def open_channels(
                 files[path] = stack.enter_context(h5py.File(path, mode="r"))
 
             dataset = _validate_hdf5_dataset(files[path], source)
-            selection, selected_shape = normalize_hdf5_selection(dataset, source)
+            selection, selected_shape = _normalize_hdf5_selection(dataset, source)
 
             opened_channels[channel_index] = HDF5SourceState(
                 dataset=dataset,

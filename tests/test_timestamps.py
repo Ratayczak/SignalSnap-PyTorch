@@ -8,7 +8,7 @@ import torch
 from signalsnap_pytorch import DataConfig, HDF5Source, TimestampedChannel
 from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch._core.data_access import open_channels
-from signalsnap_pytorch._core.fft import prepare_default_timestamp_window
+from signalsnap_pytorch._core.fft import _prepare_default_timestamp_window
 from signalsnap_pytorch._core.planning import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
@@ -19,11 +19,10 @@ from signalsnap_pytorch._core.spectra import build_timestamp_third_order_cache
 from signalsnap_pytorch._core.timestamps import (
     PreparedTimestampBatch,
     TimestampCursor,
-    direct_timestamp_transform,
-    generate_keyed_exponential_amplitudes,
-    materialize_timestamp_channel_coefficients,
+    _direct_timestamp_transform,
+    _generate_keyed_exponential_amplitudes,
     materialize_timestamp_coefficients,
-    materialize_unit_timestamp_coefficients,
+    materialize_timestamp_event_amplitudes,
     prepare_timestamp_batch,
 )
 
@@ -77,7 +76,7 @@ def _prepared_events(global_event_indices):
 def test_keyed_exponential_amplitudes_lock_philox_stream_and_transform():
     prepared = _prepared_events(np.arange(3, 9))
 
-    actual = generate_keyed_exponential_amplitudes(
+    actual = _generate_keyed_exponential_amplitudes(
         prepared,
         range(2, 5),
         resolved_seed=1234,
@@ -117,7 +116,7 @@ def test_keyed_exponential_amplitudes_lock_philox_stream_and_transform():
 
 
 def test_keyed_exponential_amplitudes_are_batch_and_repetition_chunk_invariant():
-    full = generate_keyed_exponential_amplitudes(
+    full = _generate_keyed_exponential_amplitudes(
         _prepared_events(np.arange(3, 12)),
         range(2, 5),
         resolved_seed=91,
@@ -126,14 +125,14 @@ def test_keyed_exponential_amplitudes_are_batch_and_repetition_chunk_invariant()
     )
     event_chunks = np.concatenate(
         [
-            generate_keyed_exponential_amplitudes(
+            _generate_keyed_exponential_amplitudes(
                 _prepared_events(np.arange(3, 7)),
                 range(2, 5),
                 resolved_seed=91,
                 channel_index=4,
                 scale=0.75,
             ),
-            generate_keyed_exponential_amplitudes(
+            _generate_keyed_exponential_amplitudes(
                 _prepared_events(np.arange(7, 12)),
                 range(2, 5),
                 resolved_seed=91,
@@ -145,7 +144,7 @@ def test_keyed_exponential_amplitudes_are_batch_and_repetition_chunk_invariant()
     )
     repetition_chunks = np.concatenate(
         [
-            generate_keyed_exponential_amplitudes(
+            _generate_keyed_exponential_amplitudes(
                 _prepared_events(np.arange(3, 12)),
                 realization_ids,
                 resolved_seed=91,
@@ -163,21 +162,21 @@ def test_keyed_exponential_amplitudes_are_batch_and_repetition_chunk_invariant()
 
 def test_keyed_exponential_amplitudes_separate_channels_events_and_scale():
     prepared = _prepared_events(np.arange(4))
-    channel_zero = generate_keyed_exponential_amplitudes(
+    channel_zero = _generate_keyed_exponential_amplitudes(
         prepared,
         range(2),
         resolved_seed=17,
         channel_index=0,
         scale=1.0,
     )
-    channel_one = generate_keyed_exponential_amplitudes(
+    channel_one = _generate_keyed_exponential_amplitudes(
         prepared,
         range(2),
         resolved_seed=17,
         channel_index=1,
         scale=1.0,
     )
-    scaled = generate_keyed_exponential_amplitudes(
+    scaled = _generate_keyed_exponential_amplitudes(
         prepared,
         range(2),
         resolved_seed=17,
@@ -192,7 +191,7 @@ def test_keyed_exponential_amplitudes_separate_channels_events_and_scale():
 
 
 def test_keyed_exponential_amplitudes_preserve_empty_event_axis():
-    actual = generate_keyed_exponential_amplitudes(
+    actual = _generate_keyed_exponential_amplitudes(
         _prepared_events(np.empty(0, dtype=np.int64)),
         range(3, 5),
         resolved_seed=8,
@@ -302,7 +301,7 @@ def test_direct_transform_uses_positive_sign_and_window_relative_phase():
     cursor = TimestampCursor(np.array([12.25]), observation_start=10.0)
     prepared = prepare_timestamp_batch(cursor, _batch([[2.0]], duration=1.0))
 
-    actual = direct_timestamp_transform(
+    actual = _direct_timestamp_transform(
         prepared,
         frequencies=np.array([0.0, 1.0]),
         event_weights=torch.ones((1, 1), dtype=torch.float64),
@@ -326,7 +325,7 @@ def test_direct_transform_sums_duplicates_per_window_and_realization():
     frequencies = np.array([-1.0, 0.0, 0.5])
     weights = np.array([[1.0, 2.0, 3.0, 4.0], [0.5, 1.0, 1.5, 2.0]])
 
-    actual = direct_timestamp_transform(
+    actual = _direct_timestamp_transform(
         prepared,
         frequencies=frequencies,
         event_weights=torch.from_numpy(weights),
@@ -355,7 +354,7 @@ def test_direct_transform_empty_events_preserve_shape_dtype_and_device():
         windows_per_estimate=3,
     )
 
-    actual = direct_timestamp_transform(
+    actual = _direct_timestamp_transform(
         prepared,
         frequencies=np.array([-1.0, 0.0, 1.0]),
         event_weights=torch.empty((2, 0)),
@@ -379,11 +378,11 @@ def test_direct_transform_is_invariant_to_event_and_frequency_chunking(monkeypat
     )
     frequencies = np.linspace(-2.0, 2.0, 9)
     weights = torch.arange(1, 21, dtype=torch.float64).reshape(2, 10) / 10.0
-    expected = direct_timestamp_transform(prepared, frequencies, weights, _runtime())
+    expected = _direct_timestamp_transform(prepared, frequencies, weights, _runtime())
 
     monkeypatch.setattr(_timestamps, "_MAX_DIRECT_PHASE_ELEMENTS", 4)
     monkeypatch.setattr(_timestamps, "_MAX_DIRECT_FREQUENCIES_PER_CHUNK", 2)
-    actual = direct_timestamp_transform(prepared, frequencies, weights, _runtime())
+    actual = _direct_timestamp_transform(prepared, frequencies, weights, _runtime())
 
     torch.testing.assert_close(actual, expected, rtol=1e-14, atol=1e-14)
 
@@ -406,7 +405,7 @@ def test_direct_transform_rejects_invalid_event_weights(weights, message):
     )
 
     with pytest.raises(ValueError, match=message):
-        direct_timestamp_transform(
+        _direct_timestamp_transform(
             prepared,
             frequencies=np.array([1.0]),
             event_weights=weights,
@@ -428,15 +427,16 @@ def test_unit_timestamp_coefficients_apply_window_to_dc_output_and_closing_roles
         grid_indices=grid_indices,
     )
     runtime = _runtime()
-    timestamp_window = prepare_default_timestamp_window(runtime)
+    timestamp_window = _prepare_default_timestamp_window(runtime)
     third_order_cache = build_timestamp_third_order_cache(runtime, frequency_plan)
 
-    coefficients = materialize_unit_timestamp_coefficients(
+    coefficients = materialize_timestamp_coefficients(
         prepared,
         frequency_plan,
         timestamp_window,
         runtime,
         third_order_cache,
+        event_amplitudes=np.ones((1, 2)),
     )
 
     output_expected = np.exp(1j * np.pi * frequency_plan.band_frequencies)
@@ -479,7 +479,7 @@ def test_timestamp_coefficients_reuse_each_amplitude_for_every_frequency_role():
     coefficients = materialize_timestamp_coefficients(
         prepared,
         frequency_plan,
-        prepare_default_timestamp_window(runtime),
+        _prepare_default_timestamp_window(runtime),
         runtime,
         third_order_cache,
         amplitudes,
@@ -543,14 +543,14 @@ def test_timestamp_coefficients_always_transform_dc_and_only_requested_output(
 
     monkeypatch.setattr(
         _timestamps,
-        "direct_timestamp_transform",
+        "_direct_timestamp_transform",
         recording_transform,
     )
 
     coefficients = materialize_timestamp_coefficients(
         prepared,
         frequency_plan,
-        prepare_default_timestamp_window(runtime),
+        _prepare_default_timestamp_window(runtime),
         runtime,
         third_order_cache=None,
         event_amplitudes=np.ones((1, 1)),
@@ -581,7 +581,7 @@ def test_timestamp_coefficients_accept_sampled_output_frequency_view():
     coefficients = materialize_timestamp_coefficients(
         prepared,
         frequency_plan,
-        prepare_default_timestamp_window(runtime),
+        _prepare_default_timestamp_window(runtime),
         runtime,
         third_order_cache=None,
         event_amplitudes=np.array([[2.5]]),
@@ -593,35 +593,6 @@ def test_timestamp_coefficients_accept_sampled_output_frequency_view():
         expected.reshape(1, 1, 1, -1),
         atol=1e-14,
     )
-
-
-def test_unit_timestamp_materializer_delegates_to_shared_amplitude_contract():
-    prepared = _prepared_events(np.arange(2))
-    frequency_plan = DirectFrequencyPlan(
-        actual_df=1.0,
-        grid_indices=np.array([0, 1], dtype=np.int64),
-    )
-    runtime = _runtime()
-    timestamp_window = prepare_default_timestamp_window(runtime)
-
-    unit = materialize_unit_timestamp_coefficients(
-        prepared,
-        frequency_plan,
-        timestamp_window,
-        runtime,
-        third_order_cache=None,
-    )
-    shared = materialize_timestamp_coefficients(
-        prepared,
-        frequency_plan,
-        timestamp_window,
-        runtime,
-        third_order_cache=None,
-        event_amplitudes=np.ones((1, 2)),
-    )
-
-    torch.testing.assert_close(unit.dc, shared.dc)
-    torch.testing.assert_close(unit.output, shared.output)
 
 
 @pytest.mark.parametrize(
@@ -643,14 +614,14 @@ def test_timestamp_materializer_rejects_invalid_amplitude_shape(amplitudes, mess
         materialize_timestamp_coefficients(
             prepared,
             frequency_plan,
-            prepare_default_timestamp_window(_runtime()),
+            _prepare_default_timestamp_window(_runtime()),
             _runtime(),
             third_order_cache=None,
             event_amplitudes=amplitudes,
         )
 
 
-def test_timestamp_channel_dispatch_materializes_unit_realization_batch():
+def test_timestamp_event_materializer_creates_unit_realization_batch():
     prepared = PreparedTimestampBatch(
         relative_event_times=np.array([0.5, 0.5]),
         window_indices=np.array([0, 1], dtype=np.int64),
@@ -658,13 +629,9 @@ def test_timestamp_channel_dispatch_materializes_unit_realization_batch():
         estimate_count=1,
         windows_per_estimate=2,
     )
-    frequency_plan = DirectFrequencyPlan(
-        actual_df=1.0,
-        grid_indices=np.array([0], dtype=np.int64),
-    )
     runtime = _runtime()
 
-    coefficients = materialize_timestamp_channel_coefficients(
+    amplitudes = materialize_timestamp_event_amplitudes(
         prepared,
         channel_index=3,
         channel_plan=TimestampedChannelPlan(
@@ -673,27 +640,20 @@ def test_timestamp_channel_dispatch_materializes_unit_realization_batch():
             scale=None,
         ),
         realization_ids=range(2),
-        frequency_plan=frequency_plan,
-        timestamp_window=prepare_default_timestamp_window(runtime),
         runtime=runtime,
-        third_order_cache=None,
     )
 
-    assert coefficients.dc.shape == (2, 1, 2)
-    torch.testing.assert_close(coefficients.dc, torch.ones_like(coefficients.dc))
+    assert amplitudes.shape == (2, 2)
+    np.testing.assert_array_equal(amplitudes, np.ones((2, 2)))
 
 
-def test_timestamp_channel_dispatch_keys_exponential_amplitudes(monkeypatch):
+def test_timestamp_event_materializer_keys_exponential_amplitudes(monkeypatch):
     prepared = PreparedTimestampBatch(
         relative_event_times=np.array([0.5, 0.5]),
         window_indices=np.array([0, 1], dtype=np.int64),
         global_event_indices=np.array([4, 5], dtype=np.int64),
         estimate_count=1,
         windows_per_estimate=2,
-    )
-    frequency_plan = DirectFrequencyPlan(
-        actual_df=1.0,
-        grid_indices=np.array([0], dtype=np.int64),
     )
     runtime = _runtime()
     runtime.repetition_plan = SimpleNamespace(resolved_seed=91)
@@ -716,11 +676,11 @@ def test_timestamp_channel_dispatch_keys_exponential_amplitudes(monkeypatch):
 
     monkeypatch.setattr(
         _timestamps,
-        "generate_keyed_exponential_amplitudes",
+        "_generate_keyed_exponential_amplitudes",
         fake_amplitudes,
     )
 
-    coefficients = materialize_timestamp_channel_coefficients(
+    amplitudes = materialize_timestamp_event_amplitudes(
         prepared,
         channel_index=6,
         channel_plan=TimestampedChannelPlan(
@@ -729,17 +689,10 @@ def test_timestamp_channel_dispatch_keys_exponential_amplitudes(monkeypatch):
             scale=1.5,
         ),
         realization_ids=range(2, 4),
-        frequency_plan=frequency_plan,
-        timestamp_window=prepare_default_timestamp_window(runtime),
         runtime=runtime,
-        third_order_cache=None,
     )
 
-    np.testing.assert_allclose(
-        coefficients.dc.numpy(),
-        expected_amplitudes[:, None, :],
-        atol=1e-14,
-    )
+    np.testing.assert_array_equal(amplitudes, expected_amplitudes)
 
 
 def test_unit_timestamp_coefficients_keep_empty_windows_and_omit_third_order_storage():
@@ -756,12 +709,13 @@ def test_unit_timestamp_coefficients_keep_empty_windows_and_omit_third_order_sto
     )
     runtime = _runtime(torch.float32)
 
-    coefficients = materialize_unit_timestamp_coefficients(
+    coefficients = materialize_timestamp_coefficients(
         prepared,
         frequency_plan,
-        prepare_default_timestamp_window(runtime),
+        _prepare_default_timestamp_window(runtime),
         runtime,
         third_order_cache=None,
+        event_amplitudes=np.ones((1, 0)),
     )
 
     assert coefficients.dc.shape == (1, 2, 3)

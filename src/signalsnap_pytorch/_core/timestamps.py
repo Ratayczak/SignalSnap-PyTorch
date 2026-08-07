@@ -31,7 +31,24 @@ _OPEN_UNIT_FLOAT64_SCALE = 2.0**-52
 
 @dataclass(frozen=True, slots=True)
 class PreparedTimestampBatch:
-    """Events assigned to one physical ``(B, m)`` window batch."""
+    """Timestamp events assigned to one physical ``(B, m)`` window batch.
+
+    Attributes
+    ----------
+    relative_event_times : NDArray[np.float64]
+        Event times relative to their physical-window starts, with shape ``(E,)``. Values lie in the
+        half-open interval ``[0, window_duration)``.
+    window_indices : NDArray[np.int64]
+        Row-major flattened physical-window indices with shape ``(E,)``. Values identify windows in
+        ``range(B * m)``.
+    global_event_indices : NDArray[np.int64]
+        Stable indices into the original flattened timestamp source, with shape ``(E,)``. These
+        identities are used to generate batching-independent random amplitudes.
+    estimate_count : int
+        Number of spectral estimates in the batch, equal to ``B``.
+    windows_per_estimate : int
+        Number of physical windows in each estimate, equal to ``m``.
+    """
 
     relative_event_times: NDArray[np.float64]
     window_indices: NDArray[np.int64]
@@ -40,7 +57,7 @@ class PreparedTimestampBatch:
     windows_per_estimate: int
 
 
-def generate_keyed_exponential_amplitudes(
+def _generate_keyed_exponential_amplitudes(
     prepared: PreparedTimestampBatch,
     realization_ids: range,
     *,
@@ -98,7 +115,21 @@ def generate_keyed_exponential_amplitudes(
 
 
 class TimestampCursor:
-    """Sequential bounded reader for one validated timestamp source."""
+    """Sequential bounded reader for one validated timestamp source.
+
+    The cursor reads a source in bounded chunks, rebases timestamps relative to the observation
+    start, and returns stable indices into the original flattened source. Forward, nonoverlapping
+    interval reads reuse the current source position. If a requested interval starts before the
+    preceding interval ended, the cursor resets; this supports the second traversal introduced by
+    interlacing.
+
+    Parameters
+    ----------
+    source : RuntimeSource
+        Validated, nondecreasing timestamp source.
+    observation_start : float
+        Origin subtracted from timestamps to obtain observation-relative offsets.
+    """
 
     def __init__(self, source: RuntimeSource, observation_start: float) -> None:
         self.source = source
@@ -153,7 +184,29 @@ class TimestampCursor:
         start: float,
         stop: float,
     ) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
-        """Read canonical offsets and stable indices in ``[start, stop)``."""
+        """Read timestamp offsets and source indices from a half-open interval.
+
+        ``start`` and ``stop`` are measured relative to the cursor's observation origin. Forward,
+        nonoverlapping calls continue from the current source position. If ``start`` precedes the
+        previous interval's stop, the cursor resets and traverses the source again.
+
+        Parameters
+        ----------
+        start, stop : float
+            Bounds of the observation-relative half-open interval ``[start, stop)``.
+
+        Returns
+        -------
+        tuple[NDArray[np.float64], NDArray[np.int64]]
+            Observation-relative timestamp offsets and their corresponding indices in the original
+            flattened source. Both arrays have shape ``(E,)`` and preserve source order. Empty
+            arrays are returned when the interval contains no events.
+
+        Raises
+        ------
+        ValueError
+            If ``stop`` is less than ``start``.
+        """
 
         if stop < start:
             raise ValueError("Timestamp cursor interval stop cannot precede its start.")
@@ -197,7 +250,28 @@ class TimestampCursor:
 
 
 def prepare_timestamp_batch(cursor: TimestampCursor, batch: WindowBatch) -> PreparedTimestampBatch:
-    """Assign sequential source events to the batch's half-open windows."""
+    """Assign timestamp events to a batch of half-open physical windows.
+
+    The standard batches produced by :func:`~signalsnap_pytorch._core.planning.iter_window_batches`
+    contain consecutive, nonoverlapping windows. Events at a window start are included in that
+    window; events at its stop are assigned to the following window.
+
+    Parameters
+    ----------
+    cursor : TimestampCursor
+        Cursor for a validated timestamp source.
+    batch : WindowBatch
+        Physical windows whose relative starts have shape ``(B, m)``.
+
+    Returns
+    -------
+    PreparedTimestampBatch
+        Flattened event data for the batch. ``relative_event_times`` has shape ``(E,)`` and contains
+        times relative to each event's physical-window start. ``window_indices`` has shape ``(E,)``
+        and identifies the row-major flattened window in ``range(B * m)``. ``global_event_indices``
+        has shape ``(E,)`` and preserves each event's index in the source. ``estimate_count`` and
+        ``windows_per_estimate`` retain ``B`` and ``m``.
+    """
 
     starts = np.asarray(batch.relative_starts, dtype=np.float64)
     estimate_count, windows_per_estimate = starts.shape
@@ -243,7 +317,7 @@ def prepare_timestamp_batch(cursor: TimestampCursor, batch: WindowBatch) -> Prep
     )
 
 
-def direct_timestamp_transform(
+def _direct_timestamp_transform(
     prepared: PreparedTimestampBatch,
     frequencies: NDArray[np.floating[Any]],
     event_weights: Tensor,
@@ -362,7 +436,43 @@ def materialize_timestamp_coefficients(
     *,
     needs_output: bool = True,
 ) -> ChannelCoefficients:
-    """Materialize the timestamp coefficients from a shared amplitude matrix."""
+    """Apply event amplitudes and directly transform one prepared timestamp batch.
+
+    Window weights are evaluated at the prepared relative event times and multiplied by the supplied
+    amplitudes. Zero-frequency coefficients are always calculated. Output-band and compact
+    third-order closing-frequency coefficients are calculated only when requested.
+
+    Parameters
+    ----------
+    prepared : PreparedTimestampBatch
+        Events assigned to a physical ``(B, m)`` window batch.
+    frequency_plan : FFTFrequencyPlan | DirectFrequencyPlan
+        Frequency grid used for output-band coefficients.
+    timestamp_window : TimestampWindow
+        Timestamp window used for event weighting.
+    runtime : RuntimeConfig
+        Calculation device and numeric dtypes.
+    third_order_cache : TimestampThirdOrderFrequencyCache | None
+        Compact closing frequencies and output-grid mapping, if required.
+    event_amplitudes : NDArray[np.float64]
+        CPU amplitude matrix with shape ``(R, E)``, where ``R`` is the realization
+        count and ``E`` is the number of prepared events.
+    needs_output : bool, default=True
+        Whether to calculate coefficients on the output-frequency band.
+
+    Returns
+    -------
+    ChannelCoefficients
+        ``dc`` has shape ``(R, B, m)``. ``output`` has shape ``(R, B, m, F)`` when requested and is
+        otherwise ``None``. When a third-order cache is supplied, ``third_order.values`` has shape
+        ``(R, B, m, K)``.
+
+    Raises
+    ------
+    ValueError
+        If the amplitude matrix is not two-dimensional, contains no realizations, or has a different
+        event count from ``prepared``.
+    """
 
     event_count = prepared.global_event_indices.size
 
@@ -391,7 +501,7 @@ def materialize_timestamp_coefficients(
     window_weights = timestamp_window.evaluate(relative_times)
     event_weights = amplitudes * window_weights.unsqueeze(0)
 
-    dc = direct_timestamp_transform(
+    dc = _direct_timestamp_transform(
         prepared,
         frequencies=np.zeros(1, dtype=np.float64),
         event_weights=event_weights,
@@ -400,7 +510,7 @@ def materialize_timestamp_coefficients(
 
     output = None
     if needs_output:
-        output = direct_timestamp_transform(
+        output = _direct_timestamp_transform(
             prepared,
             frequencies=frequency_plan.band_frequencies,
             event_weights=event_weights,
@@ -409,7 +519,7 @@ def materialize_timestamp_coefficients(
 
     third_order = None
     if third_order_cache is not None:
-        closing_values = direct_timestamp_transform(
+        closing_values = _direct_timestamp_transform(
             prepared,
             frequencies=third_order_cache.closing_frequencies,
             event_weights=event_weights,
@@ -424,26 +534,6 @@ def materialize_timestamp_coefficients(
     return ChannelCoefficients(dc=dc, output=output, third_order=third_order)
 
 
-def materialize_unit_timestamp_coefficients(
-    prepared: PreparedTimestampBatch,
-    frequency_plan: FrequencyPlan,
-    timestamp_window: TimestampWindow,
-    runtime: RuntimeConfig,
-    third_order_cache: TimestampThirdOrderFrequencyCache | None,
-) -> ChannelCoefficients:
-    """Materialize one unit-amplitude realization."""
-
-    event_amplitudes = np.ones((1, prepared.global_event_indices.size), dtype=np.float64)
-    return materialize_timestamp_coefficients(
-        prepared,
-        frequency_plan,
-        timestamp_window,
-        runtime,
-        third_order_cache,
-        event_amplitudes,
-    )
-
-
 def materialize_timestamp_event_amplitudes(
     prepared: PreparedTimestampBatch,
     channel_index: int,
@@ -451,7 +541,40 @@ def materialize_timestamp_event_amplitudes(
     realization_ids: range,
     runtime: RuntimeConfig,
 ) -> NDArray[np.float64]:
-    """Materialize one reusable timestamp amplitude matrix with shape (R, E)."""
+    """Materialize reusable amplitudes for one timestamp realization batch.
+
+    Unit weighting assigns one to every realization-event pair. Exponential weighting generates CPU
+    float64 amplitudes keyed by the resolved seed, channel index, realization ID, and stable global
+    event index. The keyed construction makes exponential amplitudes independent of physical-window
+    batching, repetition batching, and traversal order.
+
+    Parameters
+    ----------
+    prepared : PreparedTimestampBatch
+        Prepared events and their stable source indices.
+    channel_index : int
+        Channel identity used to derive an independent random stream.
+    channel_plan : TimestampedChannelPlan
+        Resolved weighting model and exponential scale.
+    realization_ids : range
+        Stable calculation-wide IDs for the current realization batch.
+    runtime : RuntimeConfig
+        Runtime repetition plan containing the resolved random seed.
+
+    Returns
+    -------
+    NDArray[np.float64]
+        CPU amplitude matrix with shape ``(R, E)``, where ``R`` is the number of realization IDs and
+        ``E`` is the number of prepared events.
+
+    Raises
+    ------
+    ValueError
+        If exponential weighting receives no realization IDs.
+    RuntimeError
+        If exponential weighting lacks a scale or resolved seed, or if the weighting model is
+        unsupported.
+    """
 
     if channel_plan.weighting == "unit":
         return np.ones(
@@ -467,7 +590,7 @@ def materialize_timestamp_event_amplitudes(
                 "Exponential timestamp weighting requires a scale and resolved seed."
             )
 
-        return generate_keyed_exponential_amplitudes(
+        return _generate_keyed_exponential_amplitudes(
             prepared,
             realization_ids,
             resolved_seed=resolved_seed,
@@ -476,32 +599,3 @@ def materialize_timestamp_event_amplitudes(
         )
 
     raise RuntimeError(f"Unknown timestamp weighting model {channel_plan.weighting!r}.")
-
-
-def materialize_timestamp_channel_coefficients(
-    prepared: PreparedTimestampBatch,
-    channel_index: int,
-    channel_plan: TimestampedChannelPlan,
-    realization_ids: range,
-    frequency_plan: FrequencyPlan,
-    timestamp_window: TimestampWindow,
-    runtime: RuntimeConfig,
-    third_order_cache: TimestampThirdOrderFrequencyCache | None,
-) -> ChannelCoefficients:
-    """Materialize one timestamp channel for a stable realization batch."""
-
-    event_amplitudes = materialize_timestamp_event_amplitudes(
-        prepared,
-        channel_index,
-        channel_plan,
-        realization_ids,
-        runtime,
-    )
-    return materialize_timestamp_coefficients(
-        prepared,
-        frequency_plan,
-        timestamp_window,
-        runtime,
-        third_order_cache,
-        event_amplitudes,
-    )

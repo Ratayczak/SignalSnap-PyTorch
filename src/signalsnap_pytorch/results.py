@@ -14,6 +14,8 @@ import numpy as np
 
 from ._core.utils import FrequencyUnits as _FrequencyUnits
 
+__all__ = ["SpectrumResult", "SpectrumResultStore"]
+
 
 @dataclass(frozen=True, slots=True)
 class SpectrumResult:

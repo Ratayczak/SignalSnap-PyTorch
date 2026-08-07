@@ -53,7 +53,20 @@ class ThirdOrderIndexCache:
 
 @dataclass(slots=True)
 class TimestampThirdOrderFrequencyCache:
-    """Compact closing-frequency mapping for a timestamp frequency grid."""
+    """Compact closing-frequency mapping for timestamp coefficients.
+
+    Attributes
+    ----------
+    closing_frequencies : NDArray[np.float64]
+        Sorted unique frequencies ``f3 = -(f1 + f2)`` required by the output grid, with shape
+        ``(K,)``.
+    gather_indices : Tensor
+        Integer tensor with shape ``(F, F)`` mapping every output-frequency pair to the
+        corresponding entry on the compact ``K`` axis.
+    valid_mask : Tensor
+        Boolean tensor with shape ``(F, F)``. It is entirely true because timestamp coefficients can
+        be directly evaluated outside sampled FFT support.
+    """
 
     closing_frequencies: NDArray[np.float64]
     gather_indices: Tensor
@@ -99,7 +112,22 @@ class ThirdOrderCoefficients:
 
 @dataclass(slots=True)
 class ChannelCoefficients:
-    """Prepared source-independent coefficients for one channel."""
+    """Prepared source-independent Fourier coefficients for one channel.
+
+    The same representation is used for sampled FFT coefficients and directly transformed timestamp
+    coefficients.
+
+    Attributes
+    ----------
+    dc : Tensor
+        Zero-frequency coefficients with shape ``(R, B, m)``.
+    output : Tensor | None
+        Coefficients on the selected output-frequency band, with shape ``(R, B, m, F)``, or ``None``
+        when the output band was not required.
+    third_order : ThirdOrderCoefficients | None
+        Compact coefficients at third-order closing frequencies, or ``None`` when the channel is not
+        used as the closing-frequency factor.
+    """
 
     dc: Tensor
     output: Tensor | None
@@ -113,7 +141,27 @@ class ChannelCoefficients:
         return int(self.dc.shape[0])
 
     def centered_output(self, conjugated: bool = False) -> Tensor:
-        """Return output coefficients centered only over ``m``."""
+        """Return output-band coefficients centered over physical windows.
+
+        The mean is removed along the ``m`` axis while preserving the realization, estimate, and
+        frequency axes. The centered tensor is calculated lazily and cached for reuse by multiple
+        requested spectra.
+
+        Parameters
+        ----------
+        conjugated : bool, default=False
+            Return the complex conjugate of the centered coefficients.
+
+        Returns
+        -------
+        Tensor
+            Centered coefficients with the same ``(R, B, m, F)`` shape as ``output``.
+
+        Raises
+        ------
+        RuntimeError
+            If output-band coefficients were not prepared.
+        """
 
         if self.output is None:
             raise RuntimeError("Output-band coefficients were not prepared.")
@@ -127,12 +175,35 @@ class ChannelCoefficients:
         return self._centered_output
 
 
-def build_normalization_windows(
+def select_normalization_windows(
     runtime: RuntimeConfig,
     sampled_window: WindowBuffer | None,
     timestamp_window: TimestampWindow | None,
 ) -> dict[tuple[int, ...], WindowBuffer | TimestampWindow]:
-    """Select the prepared normalization window for every requested spectrum."""
+    """Select the normalization windows for every requested spectrum.
+
+    An all-sampled spectrum uses the sampled window. A spectrum containing at least one timestamped
+    channel uses the timestamp window, including a mixed sampled and timestamped spectrum.
+
+    Parameters
+    ----------
+    runtime : RuntimeConfig
+        Resolved requested spectra and active channel types.
+    sampled_window : WindowBuffer | None
+        Prepared sampled-data window, or ``None`` if no sampled channel is active.
+    timestamp_window : TimestampWindow | None
+        Prepared timestamp window, or ``None`` if no timestamped channel is active.
+
+    Returns
+    -------
+    dict[tuple[int, ...], WindowBuffer | TimestampWindow]
+        Normalization window keyed by requested spectrum tuple.
+
+    Raises
+    ------
+    RuntimeError
+        If a requested spectrum requires a window that was not prepared.
+    """
 
     normalization_windows: dict[tuple[int, ...], WindowBuffer | TimestampWindow] = {}
 
@@ -200,7 +271,35 @@ def build_timestamp_third_order_cache(
     runtime: RuntimeConfig,
     frequency_plan: FrequencyPlan,
 ) -> TimestampThirdOrderFrequencyCache:
-    """Build compact timestamp closing frequencies for either output view."""
+    """Build compact timestamp closing frequencies for a third-order output grid.
+
+    For every output-frequency pair ``(f1, f2)``, the third factor is evaluated at
+    ``f3 = -(f1 + f2)``. Unique closing frequencies are stored once and a gather map reconstructs
+    the full ``(F, F)`` grid.
+
+    Timestamp coefficients are evaluated by direct transformation, even when the output grid comes
+    from an FFT plan. Consequently, closing frequencies outside the sampled FFT support remain
+    valid.
+
+    Parameters
+    ----------
+    runtime : RuntimeConfig
+        Resolved calculation device.
+    frequency_plan : FFTFrequencyPlan | DirectFrequencyPlan
+        Output-frequency grid whose closing frequencies are required.
+
+    Returns
+    -------
+    TimestampThirdOrderFrequencyCache
+        ``closing_frequencies`` contains ``K`` unique frequencies. ``gather_indices`` has shape
+        ``(F, F)`` on ``runtime.device`` and maps each output pair to the compact ``K`` axis.
+        ``valid_mask`` has shape ``(F, F)`` and is entirely true.
+
+    Raises
+    ------
+    TypeError
+        If ``frequency_plan`` has an unsupported type.
+    """
 
     if isinstance(frequency_plan, DirectFrequencyPlan):
         grid_indices = frequency_plan.grid_indices
@@ -234,7 +333,7 @@ def build_timestamp_third_order_cache(
     )
 
 
-def build_coefficient_batch(
+def _build_coefficient_batch(
     frequency_plan: FFTFrequencyPlan,
     coeffs_by_channel: dict[int, Tensor],
     third_order_cache: ThirdOrderIndexCache | None,
@@ -273,7 +372,39 @@ def prepare_sampled_channel_coefficients(
     runtime: RuntimeConfig,
     third_order_cache: ThirdOrderIndexCache | None,
 ) -> ChannelCoefficients:
-    """Read and transform one sampled channel for a physical window batch."""
+    """Read and transform one sampled channel for a physical-window batch.
+
+    The function reads the contiguous source range covered by ``batch``, reshapes it to
+    ``(B, m, N)``, transfers it to the calculation device, applies the prepared window, and computes
+    shifted FFT coefficients. Here ``B`` is the number of estimates, ``m`` is the number of physical
+    windows per estimate, and ``N`` is the number of samples per physical window.
+
+    Parameters
+    ----------
+    channel_index : int
+        Index identifying the source channel.
+    source : RuntimeSource
+        Opened one-dimensional source for the channel.
+    channel_plan : SampledChannelPlan
+        Resolved sample count and sampling interval.
+    batch : WindowBatch
+        Physical windows to read and transform.
+    frequency_plan : FFTFrequencyPlan
+        Shifted FFT grid and selected output band.
+    window_buffer : WindowBuffer
+        Sampled window tensor and order-normalization factors.
+    runtime : RuntimeConfig
+        Resolved window layout, device, and numeric dtypes.
+    third_order_cache : ThirdOrderIndexCache | None
+        Closing-frequency selection for third-order spectra, if required.
+
+    Returns
+    -------
+    ChannelCoefficients
+        Coefficients with one deterministic realization. ``dc`` has shape ``(1, B, m)``, ``output``
+        has shape ``(1, B, m, F)``, and, when requested, ``third_order.values`` has shape
+        ``(1, B, m, K)``.
+    """
 
     window_points = round(batch.duration / channel_plan.dt)
     start = round(float(batch.relative_starts[0, 0]) / channel_plan.dt)
@@ -287,7 +418,7 @@ def prepare_sampled_channel_coefficients(
     )
     chunk = to_device(chunk, runtime)
     coefficients = compute_fft(chunk=chunk, window=window_buffer.window, dt=channel_plan.dt)
-    coefficients_by_channel = build_coefficient_batch(
+    coefficients_by_channel = _build_coefficient_batch(
         frequency_plan=frequency_plan,
         coeffs_by_channel={channel_index: coefficients},
         third_order_cache=third_order_cache,
@@ -299,7 +430,32 @@ def expand_deterministic_coefficients(
     coefficients_by_channel: dict[int, ChannelCoefficients],
     realization_count: int,
 ) -> dict[int, ChannelCoefficients]:
-    """Expand deterministic sampled coefficients across realizations as views."""
+    """Expand deterministic sampled coefficients across a realization batch.
+
+    Only the leading realization axis is expanded. For more than one realization, PyTorch expansion
+    views are used, so the coefficient data is not copied. Cache mapping tensors are shared
+    unchanged.
+
+    Parameters
+    ----------
+    coefficients_by_channel : dict[int, ChannelCoefficients]
+        Sampled coefficients whose leading realization axis has length one.
+    realization_count : int
+        Required length of the expanded realization axis.
+
+    Returns
+    -------
+    dict[int, ChannelCoefficients]
+        The original mapping when ``realization_count`` is one; otherwise, a new mapping containing
+        coefficient objects with expanded tensor views.
+
+    Raises
+    ------
+    ValueError
+        If ``realization_count`` is less than one.
+    RuntimeError
+        If a coefficient tensor does not have exactly one deterministic realization.
+    """
 
     if realization_count < 1:
         raise ValueError("At least one realization is required.")
@@ -340,36 +496,50 @@ def compute_spectral_estimates(
     window_buffer: WindowBuffer | TimestampWindow,
     runtime: RuntimeConfig,
 ) -> Tensor:
-    """Compute normalized spectral estimates from channel Fourier coefficients.
+    """Compute normalized spectral estimates from prepared Fourier coefficients.
 
-    Dispatches to the cumulant implementation for orders 1 through 4 and applies the matching window
+    The channel tuple determines both the spectrum order and the role of each coefficient:
+
+    - ``(a,)`` averages the zero-frequency coefficient of channel ``a``.
+    - ``(a, b)`` combines ``X_a(f)`` with ``conj(X_b(f))``.
+    - ``(a, b, c)`` combines ``X_a(f1)``, ``X_b(f2)``, and ``X_c(-(f1 + f2))``.
+    - ``(a, b, c, d)`` combines ``X_a(f1)``, ``conj(X_b(f1))``, ``X_c(f2)``, and ``conj(X_d(f2))``.
+
+    The appropriate unbiased multivariate cumulant estimator is evaluated over the ``m`` physical
+    windows in each spectral estimate and divided by the selected order-dependent window
     normalization.
 
     Parameters
     ----------
     channels : tuple[int, ...]
-        Specifies the corresponding channels of the spectrum, e.g. ``(0, 0, 0)`` for a
-        third-order auto-spectrum.
-    coefficient_batch : dict[int, ChannelCoefficients]
-        Stores the precomputed Fourier coefficients and bands for the current slice.
-    window_buffer : :class:`WindowBuffer`
-        Stores all information related to the window function.
-    runtime : :class:`RuntimeConfig`
-        Resolved calculation settings derived from user configuration.
+        One through four channel indices defining the spectrum and coefficient roles.
+    coefficients_by_channel : dict[int, ChannelCoefficients]
+        Prepared coefficients for every channel referenced by ``channels``.
+    window_buffer : WindowBuffer | TimestampWindow
+        Sampled or timestamp window providing the normalization for the spectrum.
+    runtime : RuntimeConfig
+        Resolved number of physical windows per estimate.
 
     Returns
     -------
     Tensor
-        Spectral estimates for the specified spectrum. Output shape depends on order: order 1
-        returns ``(R, B, 1)``, order 2 returns ``(R, B, F)``, and orders 3 and 4 return
-        ``(R, B, F, F)``, where ``F`` is the selected-band length. Invalid third-order points, where
-        ``w3 = -(w1 + w2)`` lies outside the shifted FFT support, are filled with ``NaN``.
+        Normalized estimates. Order one has shape ``(R, B, 1)``, order two has shape ``(R, B, F)``,
+        and orders three and four have shape ``(R, B, F, F)``. ``R`` is the realization count, ``B``
+        is the estimate batch size, and ``F`` is the output-band length. Third-order points whose
+        closing frequency lies outside sampled FFT support are filled with ``NaN``; timestamp
+        closing frequencies remain valid because they are transformed directly.
 
     Raises
     ------
+    KeyError
+        If coefficients for a referenced channel are missing.
     ValueError
-        If the channel tuple does not describe an order-one through order-four spectrum.
+        If the requested order is unsupported or required third-order coefficients were not
+        prepared.
+    RuntimeError
+        If required output-band coefficients were not prepared.
     """
+
     order = len(channels)
     windows_per_estimate = runtime.window_plan.windows_per_estimate
 

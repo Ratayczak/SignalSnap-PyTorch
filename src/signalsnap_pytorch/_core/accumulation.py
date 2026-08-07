@@ -167,20 +167,22 @@ class SpectrumAccumulatorStore:
 
 
 def initialize_accumulator_store(runtime: RuntimeConfig) -> SpectrumAccumulatorStore:
-    """Create an initialized :class:`SpectrumAccumulatorStore` for a list of spectrum tasks.
+    """Initialize one spectrum accumulator for every requested channel tuple.
 
-    Each task is converted into a :class:`SpectrumAccumulator` with matching channels.
+    Accumulators preserve the order of ``runtime.requested_spectra``. First-order spectra receive
+    the single zero-frequency coordinate ``[0.0]``; higher-order spectra use the band frequencies
+    from their applicable frequency plan.
 
     Parameters
     ----------
-    runtime : :class:`RuntimeConfig`
-        :class:`RuntimeConfig` that contains all necessary information to initialize a
-        :class:`SpectrumAccumulator`.
+    runtime : RuntimeConfig
+        Requested spectra, frequency plans, frequency unit, uncertainty method, and effective
+        short-term batch size.
 
     Returns
     -------
     SpectrumAccumulatorStore
-        Store containing one initialized :class:`SpectrumAccumulator` per task.
+        Store containing one initialized accumulator per requested spectrum.
     """
 
     store = SpectrumAccumulatorStore()

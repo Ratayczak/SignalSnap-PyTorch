@@ -8,7 +8,6 @@ from signalsnap_pytorch._core.cumulants import (
     c2_factorized,
     c3_factorized,
     c4_factorized,
-    gather_s3_third_factor,
 )
 from signalsnap_pytorch._core.fft import WindowBuffer
 from signalsnap_pytorch._core.planning import (
@@ -21,7 +20,7 @@ from signalsnap_pytorch._core.planning import (
 from signalsnap_pytorch._core.spectra import (
     ChannelCoefficients,
     ThirdOrderCoefficients,
-    build_coefficient_batch,
+    _build_coefficient_batch,
     build_third_order_cache,
     build_timestamp_third_order_cache,
     compute_spectral_estimates,
@@ -103,26 +102,6 @@ def test_c4_preserves_realization_and_physical_estimate_axes(centered_coefficien
     )
 
     assert actual.shape == (2, 3, 4, 4)
-    torch.testing.assert_close(actual, expected)
-
-
-def test_third_order_gather_preserves_all_leading_axes():
-    coefficients = torch.arange(2 * 3 * 5 * 7).reshape(2, 3, 5, 7)
-    target_indices = torch.tensor([[0, 2], [6, 1]])
-
-    actual = gather_s3_third_factor(coefficients, target_indices)
-    expected = torch.stack(
-        [
-            torch.stack(
-                [coefficients[..., frequency] for frequency in row],
-                dim=-1,
-            )
-            for row in target_indices
-        ],
-        dim=-2,
-    )
-
-    assert actual.shape == (2, 3, 5, 2, 2)
     torch.testing.assert_close(actual, expected)
 
 
@@ -256,7 +235,7 @@ def test_coefficient_batch_is_compact_and_independent_of_full_fft_storage():
     runtime = SimpleNamespace(device=torch.device("cpu"))
     third_order_cache = build_third_order_cache(runtime, frequency_plan)
 
-    batch = build_coefficient_batch(
+    batch = _build_coefficient_batch(
         frequency_plan=frequency_plan,
         coeffs_by_channel={7: full_fft},
         third_order_cache=third_order_cache,

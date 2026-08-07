@@ -24,6 +24,15 @@ from pydantic import (
 
 from ._core.utils import TimeUnits as _TimeUnits
 
+__all__ = [
+    "DataConfig",
+    "HDF5Source",
+    "PhotonOptions",
+    "SampledChannel",
+    "SpectrumConfig",
+    "TimestampedChannel",
+]
+
 _SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
@@ -58,7 +67,7 @@ class HDF5Source(BaseModel):
 
     @field_validator("dataset")
     @classmethod
-    def validate_dataset(cls, value: str) -> str:
+    def _validate_dataset(cls, value: str) -> str:
         """Reject an empty HDF5 dataset path."""
         if not value:
             raise ValueError("dataset cannot be empty.")
@@ -66,7 +75,7 @@ class HDF5Source(BaseModel):
 
     @field_validator("selection")
     @classmethod
-    def validate_selection(cls, value: tuple[Any, ...]) -> tuple[Any, ...]:
+    def _validate_selection(cls, value: tuple[Any, ...]) -> tuple[Any, ...]:
         """Validate selector syntax and normalize NumPy integer components."""
         if not value:
             raise ValueError("selection cannot be empty.")
@@ -211,7 +220,7 @@ class SampledChannel(BaseModel):
 
     @field_validator("data")
     @classmethod
-    def validate_data(cls, data: Any) -> Any:
+    def _validate_data(cls, data: Any) -> Any:
         """Validate sampled storage, shape, device, and dtype."""
 
         return _validate_stored_data(
@@ -223,7 +232,7 @@ class SampledChannel(BaseModel):
 
     @field_validator("dt", mode="before")
     @classmethod
-    def reject_boolean_dt(cls, value: Any) -> Any:
+    def _reject_boolean_dt(cls, value: Any) -> Any:
         """Reject Boolean sampling intervals before numeric coercion."""
 
         if isinstance(value, (bool, np.bool_)):
@@ -257,7 +266,7 @@ class TimestampedChannel(BaseModel):
 
     @field_validator("timestamps")
     @classmethod
-    def validate_timestamps(cls, timestamps: Any) -> Any:
+    def _validate_timestamps(cls, timestamps: Any) -> Any:
         """Validate timestamp storage, shape, device, dtype, and ordering."""
 
         timestamps = _validate_stored_data(
@@ -326,7 +335,7 @@ class DataConfig(BaseModel):
 
     @field_validator("channels", mode="before")
     @classmethod
-    def require_explicit_channels(cls, channels: Any) -> Any:
+    def _require_explicit_channels(cls, channels: Any) -> Any:
         """Reject bare arrays, tensors, HDF5 sources, and other implicit channels."""
 
         if not isinstance(channels, (list, tuple)):
@@ -343,7 +352,7 @@ class DataConfig(BaseModel):
 
     @field_validator("observation_start", "observation_stop", mode="before")
     @classmethod
-    def normalize_observation_bound(cls, value: Any) -> Any:
+    def _normalize_observation_bound(cls, value: Any) -> Any:
         """Preserve integral origins while normalizing NumPy scalar bounds."""
 
         if value is None:
@@ -361,7 +370,7 @@ class DataConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_observation_interval(self) -> DataConfig:
+    def _validate_observation_interval(self) -> DataConfig:
         """Require ordered bounds when both observation limits are explicit."""
 
         if (
@@ -415,7 +424,7 @@ class PhotonOptions(BaseModel):
 
     @field_validator("scale", mode="before")
     @classmethod
-    def reject_boolean_scale(cls, value: Any) -> Any:
+    def _reject_boolean_scale(cls, value: Any) -> Any:
         """Reject Boolean scales before numeric coercion."""
 
         if isinstance(value, (bool, np.bool_)):
@@ -424,7 +433,7 @@ class PhotonOptions(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_weighting_fields(self) -> PhotonOptions:
+    def _validate_weighting_fields(self) -> PhotonOptions:
         """Require only the fields belonging to the selected weighting."""
 
         exponential_fields = (self.scale, self.repetitions, self.repetitions_per_batch, self.seed)
@@ -432,7 +441,7 @@ class PhotonOptions(BaseModel):
         if self.weighting == "unit":
             if any(value is not None for value in exponential_fields):
                 raise ValueError(
-                    "Unit photon weighting does not accept scale, repetitions"
+                    "Unit photon weighting does not accept scale, repetitions, "
                     "repetitions_per_batch, or seed."
                 )
 
@@ -462,16 +471,21 @@ class SpectrumConfig(BaseModel):
     closest available frequency spacing. Check the frequency axis of the
     :class:`~signalsnap_pytorch.results.SpectrumResult` to see the true frequencies.
 
+    The specified frequency bounds and step use the reciprocal unit corresponding to
+    :attr:`DataConfig.t_unit`.
+
     Attributes
     ----------
     df : float | None
-        Requested frequency spacing in the specified frequency range. Must be positive. If omitted,
-        ``window_points`` is set to 1000.
+        Requested frequency spacing. Must be positive. For calculations containing sampled channels,
+        this may be omitted, in which case ``window_points`` defaults to 1000. Timestamp-only
+        calculations require an explicit ``df``.
     f_min : float = 0.0
         Lower frequency bound. If omitted, zero is used.
     f_max : float | None = None
-        Upper frequency bound. If omitted, the Nyquist frequency based on the active sampled
-        channels' common ``dt`` is used.
+        Upper frequency bound. For calculations containing sampled channels, this may be omitted, in
+        which case the Nyquist frequency determined by the active sampled channels' common ``dt`` is
+        used. Timestamp-only calculations require an explicit ``f_max``.
     photon_options : PhotonOptions | None = None
         Statistical weighting applied to every active timestamped channel. Planning requires this
         for calculations containing timestamped channels and rejects it for sampled-only
@@ -537,7 +551,7 @@ class SpectrumConfig(BaseModel):
     old_window: bool = False
 
     @model_validator(mode="after")
-    def validate_limits(self) -> SpectrumConfig:
+    def _validate_limits(self) -> SpectrumConfig:
         """Require the lower frequency bound to precede an explicit upper bound."""
         if self.f_max is not None and self.f_min >= self.f_max:
             raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
@@ -546,7 +560,7 @@ class SpectrumConfig(BaseModel):
 
     @field_validator("spectral_estimates_per_batch", mode="before")
     @classmethod
-    def reject_boolean_spectral_estimates_per_batch(cls, value: Any) -> Any:
+    def _reject_boolean_spectral_estimates_per_batch(cls, value: Any) -> Any:
         """Reject Booleans before Pydantic coerces them to integers."""
         if isinstance(value, (bool, np.bool_)):
             raise TypeError("spectral_estimates_per_batch must be a positive integer.")
@@ -554,7 +568,7 @@ class SpectrumConfig(BaseModel):
 
     @field_validator("device")
     @classmethod
-    def validate_device(cls, value: str) -> str:
+    def _validate_device(cls, value: str) -> str:
         """Validate device syntax without checking hardware availability."""
         try:
             device = torch.device(value)
