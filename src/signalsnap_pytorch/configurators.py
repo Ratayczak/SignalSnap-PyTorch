@@ -28,22 +28,26 @@ _SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
 class HDF5Source(BaseModel):
-    """Configuration for a lazily read HDF5 storage source.
+    """HDF5-backed storage configuration for one measurement channel.
 
-    The specified data channel inside the HDF5 file is loaded lazily to allow for inputs exceeding
-    system memory.
+    An :class:`HDF5Source` can be used as :attr:`SampledChannel.data` or
+    :attr:`TimestampedChannel.timestamps`. When the channel is active in a calculation, the selected
+    dataset is opened read-only and read in chunks rather than loaded into memory all at once. The
+    selected values are flattened in C order to form one logical channel. Dataset-dependent
+    validation is performed when the source is opened.
 
     Attributes
     ----------
     file : Path
-        File path of the HDF5 file.
+        Path to the HDF5 file. User-directory markers are expanded and the path is resolved when the
+        file is opened.
     dataset : str
-        Dataset path inside the HDF5 file.
+        Path of the dataset inside the HDF5 file.
     selection : tuple[Any, ...]
-        Selection of the data channel in the dataset. Can include integer and slice selectors. Slice
-        step must be 1. The selection must contain a non-empty, real-valued numeric or Boolean
-        output and can have at most two unfixed dimensions. The selected values are flattened in
-        C-order. Example: (slice(None), slice(None), 0).
+        Dataset selection containing one integer or slice for each dataset dimension. Integer
+        selectors fix a dimension; one or two dimensions must remain unfixed. Slice steps must be
+        one. The resulting real numeric or Boolean values are flattened in C order. For example,
+        ``(slice(None), slice(None), 0)`` selects one channel from the final dataset axis.
     """
 
     model_config = _SHARED_CONFIG
@@ -184,7 +188,20 @@ def _validate_stored_data(
 class SampledChannel(BaseModel):
     """Configuration for one sampled measurement channel.
 
-    The referenced data is retained without copying and must not be mutated during a calculation.
+    A :class:`SampledChannel` represents values recorded at a constant sampling interval. During a
+    spectrum calculation, active sampled channels are split into windows and transformed with an
+    FFT. All active sampled channels must have the same sampling interval and logical length.
+
+    In-memory data is retained without copying and must not be mutated during a calculation.
+
+    Attributes
+    ----------
+    data : numpy.ndarray | torch.Tensor | HDF5Source
+        Sample values for the channel. In-memory input must be a nonempty one-dimensional NumPy
+        array or CPU PyTorch tensor containing real numeric or Boolean values. An
+        :class:`HDF5Source` is read lazily and flattened into one logical channel.
+    dt : float
+        Positive time interval between consecutive samples, in units of :attr:`DataConfig.t_unit`.
     """
 
     model_config = _SHARED_CONFIG
@@ -218,8 +235,20 @@ class SampledChannel(BaseModel):
 class TimestampedChannel(BaseModel):
     """Configuration for one timestamped measurement channel.
 
-    The referenced timestamps are retained without copying and must not be mutated during a
-    calculation. Empty timestamp arrays and duplicate timestamps are valid.
+    A :class:`TimestampedChannel` represents discrete events by their occurrence times. Active
+    timestamped channels are transformed directly at the required frequencies, with event
+    amplitudes determined by :class:`PhotonOptions`. Their timestamps must lie within the explicit
+    observation interval configured by :class:`DataConfig`.
+
+    In-memory timestamps are retained without copying and must not be mutated during a calculation.
+
+    Attributes
+    ----------
+    timestamps : numpy.ndarray | torch.Tensor | HDF5Source
+        Event times in units of :attr:`DataConfig.t_unit`. In-memory input must be a one-dimensional
+        NumPy array or CPU PyTorch tensor containing finite, nondecreasing real numbers. Empty
+        inputs and duplicate timestamps are valid. An :class:`HDF5Source` is read lazily and
+        flattened in C order; the flattened timestamps must satisfy the same ordering constraints.
     """
 
     model_config = _SHARED_CONFIG
@@ -262,9 +291,30 @@ class TimestampedChannel(BaseModel):
 class DataConfig(BaseModel):
     """Configuration for sampled and timestamped measurement channels.
 
-    Observation bounds describe one common half-open physical interval. Sampled-only planning may
-    default the start to zero and infer the stop from the active channel length and sampling
-    interval.
+    :class:`DataConfig` groups the input channels and defines their shared time coordinate. Channel
+    positions become the indices used in ``requested_spectra``. Only channels required by the
+    requested spectra are opened and included when the runtime calculation is planned.
+
+    The observation bounds describe one common half-open interval. Timestamped calculations require
+    both bounds explicitly. For sampled-only calculations, the start can default to zero and the
+    stop can be inferred from the active channel length and sampling interval.
+
+    Attributes
+    ----------
+    channels : tuple[SampledChannel | TimestampedChannel, ...]
+        Ordered, nonempty collection of measurement channels. Their tuple positions define the
+        channel indices used to request auto- and cross-spectra.
+    observation_start : int | float | None = None
+        Start of the common observation interval, in ``t_unit``. Defaults to zero for sampled-only
+        calculations. Must be specified when any active channel is timestamped.
+    observation_stop : int | float | None = None
+        Exclusive end of the common observation interval, in ``t_unit``. For sampled-only
+        calculations, the default is ``observation_start + sample_count * dt``. Must be specified
+        when any active channel is timestamped.
+    t_unit : Literal["s", "ms", "us", "ns", "ps"] = "s"
+        Time unit used by sampling intervals, timestamps, and observation bounds. It determines the
+        corresponding result frequency unit: ``"Hz"``, ``"kHz"``, ``"MHz"``, ``"GHz"``, or
+        ``"THz"``.
     """
 
     model_config = _SHARED_CONFIG
@@ -327,8 +377,32 @@ class DataConfig(BaseModel):
 class PhotonOptions(BaseModel):
     """Statistical weighting options for active timestamped channels.
 
-    Unit weighting assigns every event an amplitude of one. Exponential weighting generates positive
-    random amplitudes with the configured scale for each repetition.
+    :class:`PhotonOptions` controls the amplitudes assigned to timestamped events before their
+    Fourier coefficients are calculated. Unit weighting assigns every event an amplitude of one.
+    Exponential weighting generates independent positive amplitudes for multiple realizations and
+    averages the resulting spectral estimates. The same options apply to every active timestamped
+    channel in a calculation.
+
+    Attributes
+    ----------
+    weighting : Literal["unit", "exponential"]
+        Event-amplitude model. ``"unit"`` performs one deterministic realization and does not
+        accept any of the optional fields. ``"exponential"`` requires ``scale`` and
+        ``repetitions``.
+    scale : float | None = None
+        Scale of the exponential amplitude distribution. Must be positive. Used only with
+        exponential weighting.
+    repetitions : int | None = None
+        Number of independent exponential-amplitude realizations to average. Must be positive. Used
+        only with exponential weighting.
+    repetitions_per_batch : int | None = None
+        Maximum number of amplitude realizations calculated in parallel. Larger values may improve
+        throughput while increasing memory use. If omitted, at most 10 realizations are calculated
+        per batch. Used only with exponential weighting.
+    seed : int | None = None
+        Nonnegative random seed for reproducible exponential amplitudes. If omitted, a random seed
+        is chosen for each calculation. Results for an explicit seed do not depend on the
+        configured repetition batch size. Used only with exponential weighting.
     """
 
     model_config = _SHARED_CONFIG
@@ -336,6 +410,7 @@ class PhotonOptions(BaseModel):
     weighting: Literal["unit", "exponential"]
     scale: Annotated[float, Field(gt=0)] | None = None
     repetitions: Annotated[StrictInt, Field(gt=0)] | None = None
+    repetitions_per_batch: Annotated[StrictInt, Field(gt=0)] | None = None
     seed: Annotated[StrictInt, Field(ge=0)] | None = None
 
     @field_validator("scale", mode="before")
@@ -352,12 +427,13 @@ class PhotonOptions(BaseModel):
     def validate_weighting_fields(self) -> PhotonOptions:
         """Require only the fields belonging to the selected weighting."""
 
-        exponential_fields = (self.scale, self.repetitions, self.seed)
+        exponential_fields = (self.scale, self.repetitions, self.repetitions_per_batch, self.seed)
 
         if self.weighting == "unit":
             if any(value is not None for value in exponential_fields):
                 raise ValueError(
-                    "Unit photon weighting does not accept scale, repetitions, or seed."
+                    "Unit photon weighting does not accept scale, repetitions"
+                    "repetitions_per_batch, or seed."
                 )
 
             return self

@@ -28,7 +28,7 @@ from ..configurators import (
 from .data_access import RuntimeSource, get_source_length, validate_timestamp_source
 from .utils import ChannelIndex, FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
-_MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 100
+_MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +77,15 @@ def _resolve_repetition_plan(photon_options: PhotonOptions | None) -> Repetition
 
     resolved_seed = photon_options.seed if photon_options.seed is not None else secrets.randbits(63)
 
+    requested_batch_size = (
+        photon_options.repetitions_per_batch
+        if photon_options.repetitions_per_batch is not None
+        else _MAX_AMPLITUDE_REPETITIONS_PER_BATCH
+    )
+
     return RepetitionPlan(
         count=photon_options.repetitions,
-        batch_size=min(photon_options.repetitions, _MAX_AMPLITUDE_REPETITIONS_PER_BATCH),
+        batch_size=min(photon_options.repetitions, requested_batch_size),
         resolved_seed=resolved_seed,
     )
 
@@ -301,8 +307,8 @@ def build_coefficient_preparation_plans(
         elif order > 1:
             preparation_plan.band_coefficient_channels.update(spectrum_channels)
 
-    for preparation_plan  in preparation_plans_by_type.values():
-        preparation_plan .direct_transform_channels = tuple(
+    for preparation_plan in preparation_plans_by_type.values():
+        preparation_plan.direct_transform_channels = tuple(
             channel
             for channel, channel_plan in runtime.channel_plans.items()
             if channel in preparation_plan.required_channels

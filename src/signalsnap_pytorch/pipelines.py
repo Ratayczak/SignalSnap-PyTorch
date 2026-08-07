@@ -104,7 +104,7 @@ def calculate_spectra(
 
         # Sampled channels use FFT coefficients, while timestamped channels are transformed
         # directly, including on an FFT-derived grid in mixed spectra. The
-        # CoefficientPreparationPlan objects group spectrum requests by frequency grid and record
+        # `CoefficientPreparationPlan` objects group spectrum requests by frequency grid and record
         # which channels need output-band or third-order closing coefficients.
         coefficient_preparation_plans_by_type = _planning.build_coefficient_preparation_plans(
             runtime
@@ -120,9 +120,8 @@ def calculate_spectra(
             else set()
         )
 
-        # Prepare reusable window buffers and mappings from output-frequency pairs to third-order
-        # closing coefficients. Timestamp cursors retain each source's sequential read position
-        # across batches.
+        # Initialize reusable window buffers and third-order coefficient caches. Timestamp cursors
+        # preserve each source’s sequential read position across batches.
         timestamp_cursors: dict[int, _timestamps.TimestampCursor] = {}
 
         sampled_window_buffer: _fft.WindowBuffer | None = None
@@ -183,8 +182,8 @@ def calculate_spectra(
         accumulator_store = _accumulation.initialize_accumulator_store(runtime)
         failed_spectra: set[tuple[int, ...]] = set()
 
-        # Each window batch contains estimate_count groups of plan.windows_per_estimate windows and
-        # produces that many estimates for every requested spectrum.
+        # Each window batch contains `estimate_count` groups of `windows_per_estimate` physical
+        # windows and produces one estimate per group for every requested spectrum.
         plan = runtime.window_plan
 
         with tqdm(
@@ -193,10 +192,11 @@ def calculate_spectra(
             unit="estimate",
             disable=not show_progress,
         ) as progress:
-            # Process input in batches of physical windows. Sampled coefficients are computed once
-            # per batch, while timestamp coefficients are materialized per amplitude-realization
-            # batch. The resulting coefficients are reused to compute all requested spectral.
+            # Process physical windows in batches. Sampled-channel coefficients are computed once
+            # per physical-window batch, while timestamp-channel coefficients are generated for each # amplitude realization batch. Both are reused across all applicable spectra.
             for batch in _planning.iter_window_batches(plan):
+
+                # Compute Fourier coefficients for sampled data channels.
                 sampled_coefficients_by_channel: dict[int, _spectra.ChannelCoefficients] | None = (
                     None
                 )
@@ -230,6 +230,7 @@ def calculate_spectra(
                             )
                         )
 
+                # Prepare timestamp events for the current physical-window batch.
                 prepared_timestamp_channels: dict[int, _timestamps.PreparedTimestampBatch] = {}
 
                 if has_timestamped_channels:
@@ -241,11 +242,17 @@ def calculate_spectra(
                         for channel in timestamped_data_channels
                     }
 
+                # Compute Fourier coefficients for timestamped data channels. Iterate over
+                # realizations in batches. If the timestamped channels are exponentially weighted,
+                #  multiple amplitude realizations are performed.
                 realization_sums: dict[tuple[int, ...], torch.Tensor] = {}
 
                 for realization_ids in runtime.repetition_plan.iter_batches():
                     event_amplitudes_by_channel = {}
 
+                    # Assign amplitudes to timestamp events. For unit weighting, this assigns 1 to
+                    # every event. For exponential weighting, this generates a random positive
+                    # amplitude for every (realization, event) pair.
                     if has_timestamped_channels:
                         for channel in timestamped_data_channels:
                             channel_plan = runtime.channel_plans[channel]
@@ -266,7 +273,7 @@ def calculate_spectra(
                         dict[int, _spectra.ChannelCoefficients],
                     ] = {}
 
-                    # Build one channel-to-coefficients mapping for each frequency-plan type.
+                    # Compute Fourier coefficients for channels in each frequency-plan type.
                     for (
                         plan_type,
                         preparation_plan,
@@ -277,8 +284,8 @@ def calculate_spectra(
                             _spectra.ChannelCoefficients,
                         ] = {}
 
-                        # Sampled coefficients are deterministic, so expand their
-                        # realization axis to match the current repetition batch.
+                        # Fourier coefficients of sampled channels are already computed, so expand
+                        # their realization axis to match the current repetition batch.
                         if (
                             isinstance(frequency_plan, _planning.FFTFrequencyPlan)
                             and sampled_coefficients_by_channel is not None
@@ -291,7 +298,8 @@ def calculate_spectra(
                             )
                             coefficients_by_channel.update(expanded_sampled_coefficients)
 
-                        # Timestamp coefficients depend on the current realization IDs.
+                        # Compute Fourier coefficients of timestamped channels. They depend on the
+                        # current realization IDs.
                         if preparation_plan.direct_transform_channels:
                             if timestamp_window_buffer is None:
                                 raise RuntimeError("Timestamp window was not prepared.")
@@ -332,8 +340,9 @@ def calculate_spectra(
 
                         coefficients_by_type[plan_type] = coefficients_by_channel
 
-                    # Calculate every requested spectrum using the mapping belonging
-                    # to its frequency-plan type.
+                    # Calculate spectral estimates based on the previously computed Fourier
+                    # coefficients. Sum the spectra of different realizations of the same
+                    # events.
                     for spectrum_channels in runtime.requested_spectra:
                         if spectrum_channels in failed_spectra:
                             continue
@@ -366,6 +375,8 @@ def calculate_spectra(
                                 stacklevel=2,
                             )
 
+                # Average over amplitude realizations, then update each spectrum’s running
+                # statistics.
                 for spectrum_channels, realization_sum in realization_sums.items():
                     if spectrum_channels in failed_spectra:
                         continue
