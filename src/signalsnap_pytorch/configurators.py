@@ -18,6 +18,7 @@ from pydantic import (
     Field,
     StrictFloat,
     StrictInt,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -418,19 +419,22 @@ class PhotonOptions(BaseModel):
 
     weighting: Literal["unit", "exponential"]
     scale: Annotated[float, Field(gt=0)] | None = None
-    repetitions: Annotated[StrictInt, Field(gt=0)] | None = None
-    repetitions_per_batch: Annotated[StrictInt, Field(gt=0)] | None = None
+    repetitions: Annotated[int, Field(gt=0)] | None = None
+    repetitions_per_batch: Annotated[int, Field(gt=0)] | None = None
     seed: Annotated[StrictInt, Field(ge=0)] | None = None
 
-    @field_validator("scale", mode="before")
+    @field_validator("scale", "repititions", "repititions_per_batch", mode="before")
     @classmethod
-    def _reject_boolean_scale(cls, value: Any) -> Any:
-        """Reject Boolean scales before numeric coercion."""
-
+    def _reject_boolean_numeric_fields(
+        cls,
+        value: Any,
+        info: ValidationInfo,
+    ) -> Any:
+        """Reject Booleans before numeric coercion."""
         if isinstance(value, (bool, np.bool_)):
-            raise TypeError("PhotonOptions scale must be a positive finite number.")
-
+            raise TypeError(f"{info.field_name} cannot be Boolean.")
         return value
+    
 
     @model_validator(mode="after")
     def _validate_weighting_fields(self) -> PhotonOptions:
@@ -558,12 +562,25 @@ class SpectrumConfig(BaseModel):
 
         return self
 
-    @field_validator("spectral_estimates_per_batch", mode="before")
+    @field_validator(
+        "df",
+        "f_min",
+        "f_max",
+        "m",
+        "m_var",
+        "spectral_estimates_max",
+        "spectral_estimates_per_batch",
+        mode="before",
+    )
     @classmethod
-    def _reject_boolean_spectral_estimates_per_batch(cls, value: Any) -> Any:
-        """Reject Booleans before Pydantic coerces them to integers."""
+    def _reject_boolean_numeric_fields(
+        cls,
+        value: Any,
+        info: ValidationInfo,
+    ) -> Any:
+        """Reject Booleans before numeric coercion."""
         if isinstance(value, (bool, np.bool_)):
-            raise TypeError("spectral_estimates_per_batch must be a positive integer.")
+            raise TypeError(f"{info.field_name} cannot be Boolean.")
         return value
 
     @field_validator("device")

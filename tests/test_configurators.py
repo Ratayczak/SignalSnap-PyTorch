@@ -137,19 +137,41 @@ def test_spectrum_config_accepts_multiple_spectral_estimates_per_batch():
 
 
 @pytest.mark.parametrize(
-    ("batch_size", "expected_error"),
+    "field",
     [
-        pytest.param(0, ValidationError, id="zero"),
-        pytest.param(-1, ValidationError, id="negative"),
-        pytest.param(1.5, ValidationError, id="non-integer"),
-        pytest.param(True, TypeError, id="boolean"),
+        "df",
+        "f_min",
+        "f_max",
+        "m",
+        "m_var",
+        "spectral_estimates_max",
+        "spectral_estimates_per_batch",
     ],
 )
-def test_spectrum_config_rejects_invalid_spectral_estimates_per_batch(
-    batch_size,
-    expected_error,
-):
-    with pytest.raises(expected_error, match="spectral_estimates_per_batch"):
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param(np.bool_(True), id="numpy-true"),
+        pytest.param(np.bool_(False), id="numpy-false"),
+    ],
+)
+def test_spectrum_config_rejects_boolean_numeric_fields(field, value):
+    with pytest.raises(TypeError, match=rf"^{field} cannot be Boolean\.$"):
+        SpectrumConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "batch_size",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param(1.5, id="non-integer"),
+    ],
+)
+def test_spectrum_config_rejects_invalid_spectral_estimates_per_batch(batch_size):
+    with pytest.raises(ValidationError, match="spectral_estimates_per_batch"):
         SpectrumConfig(spectral_estimates_per_batch=batch_size)
 
 
@@ -165,7 +187,7 @@ def test_spectrum_config_rejects_unknown_uncertainty_estimation():
         SpectrumConfig(uncertainty_estimation="local")
 
 
-@pytest.mark.parametrize("m_var", [1, 0, -1, 1.5, True])
+@pytest.mark.parametrize("m_var", [1, 0, -1, 1.5])
 def test_spectrum_config_rejects_invalid_m_var(m_var):
     with pytest.raises(ValidationError, match="m_var"):
         SpectrumConfig(uncertainty_estimation="short_term", m_var=m_var)
