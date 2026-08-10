@@ -51,19 +51,20 @@ def test_global_accumulation_keeps_shifted_and_unshifted_state_separate():
 
     torch.testing.assert_close(accumulator.unshifted.spectrum_sum, unshifted)
     torch.testing.assert_close(accumulator.shifted.spectrum_sum, shifted)
-    torch.testing.assert_close(
-        accumulator.unshifted.squared_sum,
-        torch.tensor([1 + 4j, 9 + 16j], dtype=torch.complex128),
-    )
-    torch.testing.assert_close(
-        accumulator.shifted.squared_sum,
-        torch.tensor([25 + 36j, 49 + 64j], dtype=torch.complex128),
-    )
     assert accumulator.unshifted.count == 1
     assert accumulator.shifted.count == 1
 
-    for group in (accumulator.unshifted, accumulator.shifted):
-        state = group.short_term
+    for group, expected in (
+        (accumulator.unshifted, unshifted),
+        (accumulator.shifted, shifted),
+    ):
+        global_state = group.global_state
+        torch.testing.assert_close(global_state.mean_re, expected.real)
+        torch.testing.assert_close(global_state.mean_im, expected.imag)
+        torch.testing.assert_close(global_state.m2_re, torch.zeros_like(expected.real))
+        torch.testing.assert_close(global_state.m2_im, torch.zeros_like(expected.imag))
+
+        state = group.short_term_state
         assert state.current_count == 0
         assert state.completed_batches == 0
         assert state.current_mean_re is None
@@ -147,12 +148,12 @@ def test_batched_accumulation_matches_single_estimate_accumulation(
     assert batched.unshifted.count == estimates.shape[0]
 
     if uncertainty_estimation == "short_term":
-        state = batched.unshifted.short_term
+        state = batched.unshifted.short_term_state
         assert state.completed_batches == 2
         assert state.current_count == 1
 
 
-def test_global_batch_accumulates_sums_and_componentwise_squared_sums():
+def test_global_batch_accumulates_componentwise_welford_state():
     accumulator = make_accumulator()
     estimates = torch.tensor(
         [
@@ -168,14 +169,24 @@ def test_global_batch_accumulates_sums_and_componentwise_squared_sums():
         accumulator.unshifted.spectrum_sum,
         estimates.sum(dim=0),
     )
-    torch.testing.assert_close(
-        accumulator.unshifted.squared_sum,
-        torch.complex(
-            torch.square(estimates.real).sum(dim=0),
-            torch.square(estimates.imag).sum(dim=0),
-        ),
-    )
-    assert accumulator.unshifted.count == 2
+    group = accumulator.unshifted
+    state = group.global_state
+
+    assert state.mean_re is not None
+    assert state.mean_im is not None
+    assert state.m2_re is not None
+    assert state.m2_im is not None
+
+    expected_mean_re = estimates.real.mean(dim=0)
+    expected_mean_im = estimates.imag.mean(dim=0)
+    expected_m2_re = torch.square(estimates.real - expected_mean_re).sum(dim=0)
+    expected_m2_im = torch.square(estimates.imag - expected_mean_im).sum(dim=0)
+
+    torch.testing.assert_close(state.mean_re, expected_mean_re)
+    torch.testing.assert_close(state.mean_im, expected_mean_im)
+    torch.testing.assert_close(state.m2_re, expected_m2_re)
+    torch.testing.assert_close(state.m2_im, expected_m2_im)
+    assert group.count == 2
 
 
 def test_batch_mean_m2_cpu_uses_two_pass_reduction(monkeypatch):
@@ -300,8 +311,16 @@ def test_short_term_finalization_calculates_one_complete_batch():
     np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 2j]))
 
     group = accumulator.unshifted
-    state = group.short_term
-    assert group.squared_sum is None
+    state = group.short_term_state
+    assert all(
+        value is None
+        for value in (
+            group.global_state.mean_re,
+            group.global_state.mean_im,
+            group.global_state.m2_re,
+            group.global_state.m2_im,
+        )
+    )
     assert group.count == 2
     assert state.current_count == 0
     assert state.completed_batches == 1
@@ -336,7 +355,7 @@ def test_short_term_finalization_averages_batch_variances_before_square_root():
     expected_uncertainty = np.sqrt(2.5) + 1j * np.sqrt(6.5)
     np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([expected_uncertainty]))
 
-    state = accumulator.unshifted.short_term
+    state = accumulator.unshifted.short_term_state
     assert state.current_count == 0
     assert state.completed_batches == 2
 
@@ -361,7 +380,7 @@ def test_incomplete_short_term_batch_affects_spectrum_but_not_uncertainty():
     assert result.spectrum_uncertainty is not None
     np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 0j]))
 
-    state = accumulator.unshifted.short_term
+    state = accumulator.unshifted.short_term_state
     assert state.completed_batches == 1
     assert state.current_count == 1
 
@@ -392,8 +411,8 @@ def test_short_term_groups_are_batched_separately_and_combined_componentwise():
     np.testing.assert_allclose(result.spectrum, np.asarray([7 + 3.5j]))
     assert result.spectrum_uncertainty is not None
     np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([2 + 3j]))
-    assert accumulator.unshifted.short_term.completed_batches == 1
-    assert accumulator.shifted.short_term.completed_batches == 1
+    assert accumulator.unshifted.short_term_state.completed_batches == 1
+    assert accumulator.shifted.short_term_state.completed_batches == 1
 
 
 def test_short_term_finalization_uses_qualified_group_and_count_weighted_spectrum():
@@ -421,9 +440,9 @@ def test_short_term_finalization_uses_qualified_group_and_count_weighted_spectru
     np.testing.assert_allclose(result.spectrum, np.asarray([14 / 3]))
     assert result.spectrum_uncertainty is not None
     np.testing.assert_allclose(result.spectrum_uncertainty, np.asarray([1 + 0j]))
-    assert accumulator.unshifted.short_term.completed_batches == 1
-    assert accumulator.shifted.short_term.completed_batches == 0
-    assert accumulator.shifted.short_term.current_count == 1
+    assert accumulator.unshifted.short_term_state.completed_batches == 1
+    assert accumulator.shifted.short_term_state.completed_batches == 0
+    assert accumulator.shifted.short_term_state.current_count == 1
 
 
 def test_short_term_finalization_without_complete_batch_warns_and_returns_no_uncertainty():
@@ -445,8 +464,8 @@ def test_short_term_finalization_without_complete_batch_warns_and_returns_no_unc
 
     np.testing.assert_allclose(result.spectrum, np.asarray([2 + 3j]))
     assert result.spectrum_uncertainty is None
-    assert accumulator.unshifted.short_term.current_count == 2
-    assert accumulator.unshifted.short_term.completed_batches == 0
+    assert accumulator.unshifted.short_term_state.current_count == 2
+    assert accumulator.unshifted.short_term_state.completed_batches == 0
 
 
 def test_short_term_batch_handles_prefix_complete_groups_and_suffix():
@@ -480,7 +499,7 @@ def test_short_term_batch_handles_prefix_complete_groups_and_suffix():
     accumulate_spectral_estimates(accumulator, estimates[:2])
     accumulate_spectral_estimates(accumulator, estimates[2:])
 
-    state = accumulator.unshifted.short_term
+    state = accumulator.unshifted.short_term_state
     complete_groups = estimates[:12].reshape(4, 3, 1)
     expected_variance_sum_re = (
         complete_groups.real.var(dim=1, correction=1) / 3
@@ -547,6 +566,49 @@ def test_short_term_welford_accumulation_is_stable_for_large_offsets(
     )
 
 
+@pytest.mark.parametrize(
+    ("batch_slices", "rtol"),
+    [
+        pytest.param(((0, 4),), 1e-12, id="single-batch"),
+        pytest.param(((0, 2), (2, 4)), 2e-5, id="two-batches"),
+        pytest.param(
+            ((0, 1), (1, 2), (2, 3), (3, 4)),
+            2e-5,
+            id="singleton-batches",
+        ),
+    ],
+)
+def test_global_welford_accumulation_is_stable_for_large_offsets(batch_slices, rtol):
+    accumulator = make_accumulator(
+        channels=(0,),
+        frequency_points=1,
+        uncertainty_estimation="global",
+    )
+    base = 1e12
+    estimates = torch.tensor(
+        [
+            [(base - 1) + 1j * (2 * base - 2)],
+            [(base + 1) + 1j * (2 * base + 2)],
+            [(base - 1) + 1j * (2 * base - 2)],
+            [(base + 1) + 1j * (2 * base + 2)],
+        ],
+        dtype=torch.complex128,
+    )
+
+    for start, stop in batch_slices:
+        accumulate_spectral_estimates(accumulator, estimates[start:stop])
+
+    result = finalize_result(accumulator)
+
+    assert result.spectrum_uncertainty is not None
+    expected = np.sqrt(1 / 3) + 1j * np.sqrt(4 / 3)
+    np.testing.assert_allclose(
+        result.spectrum_uncertainty,
+        np.asarray([expected]),
+        rtol=rtol,
+    )
+
+
 def test_finalize_result_rejects_empty_accumulator():
     accumulator = make_accumulator()
 
@@ -555,26 +617,39 @@ def test_finalize_result_rejects_empty_accumulator():
 
 
 @pytest.mark.parametrize(
-    ("spectrum_sum", "squared_sum", "count", "message"),
+    ("spectrum_sum", "state_values", "count", "message"),
     [
         pytest.param(
             None,
-            torch.ones(2, dtype=torch.complex128),
+            (torch.ones(2), torch.ones(2), torch.ones(2), torch.ones(2)),
             0,
             "inconsistent",
-            id="squares-without-sum",
+            id="welford-state-without-sum",
         ),
-        pytest.param(None, None, 1, "inconsistent", id="count-without-sum"),
         pytest.param(
-            torch.ones(2, dtype=torch.complex128),
             None,
+            (None, None, None, None),
             1,
-            "squared-sum",
-            id="sum-without-squares",
+            "inconsistent",
+            id="count-without-sum",
         ),
         pytest.param(
             torch.ones(2, dtype=torch.complex128),
+            (None, None, None, None),
+            1,
+            "missing required state",
+            id="sum-without-welford-state",
+        ),
+        pytest.param(
             torch.ones(2, dtype=torch.complex128),
+            (torch.ones(2), torch.ones(2), None, None),
+            1,
+            "missing required state",
+            id="incomplete-welford-state",
+        ),
+        pytest.param(
+            torch.ones(2, dtype=torch.complex128),
+            (torch.ones(2), torch.ones(2), torch.zeros(2), torch.zeros(2)),
             0,
             "inconsistent",
             id="sum-without-count",
@@ -583,14 +658,20 @@ def test_finalize_result_rejects_empty_accumulator():
 )
 def test_global_finalization_rejects_inconsistent_group_state(
     spectrum_sum,
-    squared_sum,
+    state_values,
     count,
     message,
 ):
     accumulator = make_accumulator()
-    accumulator.unshifted.spectrum_sum = spectrum_sum
-    accumulator.unshifted.squared_sum = squared_sum
-    accumulator.unshifted.count = count
+    group = accumulator.unshifted
+    group.spectrum_sum = spectrum_sum
+    group.count = count
+    (
+        group.global_state.mean_re,
+        group.global_state.mean_im,
+        group.global_state.m2_re,
+        group.global_state.m2_im,
+    ) = state_values
 
     with pytest.raises(RuntimeError, match=message):
         finalize_result(accumulator)
@@ -602,19 +683,19 @@ def test_global_finalization_rejects_populated_short_term_state():
         accumulator,
         torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
     )
-    accumulator.unshifted.short_term.current_count = 1
+    accumulator.unshifted.short_term_state.current_count = 1
 
     with pytest.raises(RuntimeError, match="must remain empty"):
         finalize_result(accumulator)
 
 
-def test_short_term_finalization_rejects_global_squared_sum():
+def test_short_term_finalization_rejects_global_welford_state():
     accumulator = make_accumulator(uncertainty_estimation="short_term", m_var=2)
     accumulate_spectrum(
         accumulator,
         torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
     )
-    accumulator.unshifted.squared_sum = torch.ones(2, dtype=torch.complex128)
+    accumulator.unshifted.global_state.mean_re = torch.ones(2)
 
     with pytest.raises(RuntimeError, match="must remain empty"):
         finalize_result(accumulator)
@@ -626,7 +707,7 @@ def test_short_term_finalization_rejects_inconsistent_batch_count():
         accumulator,
         torch.tensor([1 + 2j, 3 + 4j], dtype=torch.complex128),
     )
-    accumulator.unshifted.short_term.current_count = 0
+    accumulator.unshifted.short_term_state.current_count = 0
 
     with pytest.raises(RuntimeError, match="batch count is inconsistent"):
         finalize_result(accumulator)

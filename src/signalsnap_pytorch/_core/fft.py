@@ -84,7 +84,7 @@ def _old_cg_window(
 
 
 @dataclass(frozen=True, slots=True)
-class WindowBuffer:
+class SampledWindow:
     """Store the window function and its reusable normalization factors.
 
     Attributes
@@ -369,7 +369,7 @@ def compute_fft(chunk: Tensor, window: Tensor, dt: float) -> Tensor:
     return (coeffs * dt).unsqueeze(0)
 
 
-def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> WindowBuffer:
+def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> SampledWindow:
     """Build the window tensors used for each spectral estimate.
 
     Parameters
@@ -383,7 +383,7 @@ def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> Win
 
     Returns
     -------
-    WindowBuffer
+    SampledWindow
         ``window`` has shape ``(N,)``, where ``N=window_points``. ``norm_all_orders`` contains the
         scalar normalization for orders one through four.
     """
@@ -402,7 +402,7 @@ def prepare_window(runtime: RuntimeConfig, dt: float, window_points: int) -> Win
             dtype=runtime.real_dtype,
         )
 
-    return WindowBuffer(
+    return SampledWindow(
         window=window,
         norm_all_orders=(
             dt * window.sum(),

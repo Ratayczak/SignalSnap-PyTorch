@@ -124,8 +124,8 @@ def calculate_spectra(
         # preserve each source’s sequential read position across batches.
         timestamp_cursors: dict[int, _timestamps.TimestampCursor] = {}
 
-        sampled_window_buffer: _fft.WindowBuffer | None = None
-        timestamp_window_buffer: _fft.TimestampWindow | None = None
+        sampled_window: _fft.SampledWindow | None = None
+        timestamp_window: _fft.TimestampWindow | None = None
         fft_third_order_cache: _spectra.ThirdOrderIndexCache | None = None
         timestamp_third_order_caches: dict[
             type[_planning.FFTFrequencyPlan | _planning.DirectFrequencyPlan],
@@ -140,7 +140,7 @@ def calculate_spectra(
             first_channel_plan = runtime.channel_plans[first_channel]
             assert isinstance(first_channel_plan, _planning.SampledChannelPlan)
 
-            sampled_window_buffer = _fft.prepare_window(
+            sampled_window = _fft.prepare_window(
                 runtime,
                 dt=first_channel_plan.dt,
                 window_points=fft_frequency_plan.window_points,
@@ -152,7 +152,7 @@ def calculate_spectra(
             )
 
         if has_timestamped_channels:
-            timestamp_window_buffer = _fft.prepare_timestamp_window(runtime)
+            timestamp_window = _fft.prepare_timestamp_window(runtime)
             timestamp_third_order_caches = {
                 plan_type: _spectra.build_timestamp_third_order_cache(
                     runtime,
@@ -172,10 +172,10 @@ def calculate_spectra(
                 for channel in timestamped_data_channels
             }
 
-        normalization_windows = _spectra.select_normalization_windows(
+        normalizations = _spectra.prepare_spectrum_normalizations(
             runtime,
-            sampled_window=sampled_window_buffer,
-            timestamp_window=timestamp_window_buffer,
+            sampled_window=sampled_window,
+            timestamp_window=timestamp_window,
         )
 
         # Initialize storage for accumulating spectral estimates across window batches.
@@ -204,7 +204,7 @@ def calculate_spectra(
 
                 if has_sampled_channels:
                     assert isinstance(fft_frequency_plan, _planning.FFTFrequencyPlan)
-                    assert sampled_window_buffer is not None
+                    assert sampled_window is not None
 
                     sampled_coefficients_by_channel = {}
 
@@ -225,7 +225,7 @@ def calculate_spectra(
                                 channel_plan=channel_plan,
                                 batch=batch,
                                 frequency_plan=fft_frequency_plan,
-                                window_buffer=sampled_window_buffer,
+                                sampled_window=sampled_window,
                                 runtime=runtime,
                                 third_order_cache=third_order_cache,
                             )
@@ -302,7 +302,7 @@ def calculate_spectra(
                         # Compute Fourier coefficients of timestamped channels. They depend on the
                         # current realization IDs.
                         if preparation_plan.direct_transform_channels:
-                            if timestamp_window_buffer is None:
+                            if timestamp_window is None:
                                 raise RuntimeError("Timestamp window was not prepared.")
 
                             for channel in preparation_plan.direct_transform_channels:
@@ -317,7 +317,7 @@ def calculate_spectra(
                                     _timestamps.materialize_timestamp_coefficients(
                                         prepared_timestamp_channels[channel],
                                         frequency_plan,
-                                        timestamp_window_buffer,
+                                        timestamp_window,
                                         runtime,
                                         timestamp_third_order_cache,
                                         event_amplitudes_by_channel[channel],
@@ -352,12 +352,12 @@ def calculate_spectra(
                         coefficients_by_channel = coefficients_by_type[type(frequency_plan)]
 
                         try:
-                            normalization_window = normalization_windows[spectrum_channels]
+                            normalization = normalizations[spectrum_channels]
 
                             spectral_estimates = _spectra.compute_spectral_estimates(
                                 channels=spectrum_channels,
                                 coefficients_by_channel=coefficients_by_channel,
-                                window_buffer=normalization_window,
+                                normalization=normalization,
                                 runtime=runtime,
                             )
                             chunk_sum = spectral_estimates.sum(dim=0)

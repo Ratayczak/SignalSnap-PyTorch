@@ -36,6 +36,29 @@ def _normalization(order):
     return 0.5 * np.dot(weights, window**order)
 
 
+def _sampled_window(point_count):
+    sigma = 0.14
+    points = np.arange(point_count, dtype=np.float64)
+    center = (point_count - 1) / 2.0
+    denominator = 2.0 * point_count * sigma
+
+    def gaussian(values):
+        return np.exp(-((values - center) / denominator) ** 2)
+
+    edge = gaussian(-0.5)
+    raw = gaussian(points) - edge * (
+        gaussian(points + point_count) + gaussian(points - point_count)
+    ) / (gaussian(-0.5 + point_count) + gaussian(-0.5 - point_count))
+    return raw / raw.max()
+
+
+def _mixed_normalization(dt, point_count, sampled_power, timestamp_power):
+    sample_times = np.arange(point_count, dtype=np.float64) * dt
+    sampled_taper = _sampled_window(point_count)
+    timestamp_taper = _default_window(sample_times / (point_count * dt))
+    return dt * np.sum(sampled_taper**sampled_power * timestamp_taper**timestamp_power)
+
+
 def _mean_outer(first, second):
     return np.einsum("bmf,bmg->bfg", first, second) / first.shape[1]
 
@@ -371,11 +394,11 @@ def test_mixed_unit_pipeline_matches_analytic_impulse_reference():
 
     frequencies = np.array([-1.0, 0.0, 1.0])
     centered_counts = counts[:4] - counts[:4].mean()
-    expected_second = (
-        np.sum(centered_counts**2) / 3.0 / _normalization(2)
+    expected_second = np.sum(centered_counts**2) / 3.0 / _mixed_normalization(
+        dt, window_points, sampled_power=1, timestamp_power=1
     )
-    expected_third = (
-        2.0 * np.sum(centered_counts**3) / 3.0 / _normalization(3)
+    expected_third = 2.0 * np.sum(centered_counts**3) / 3.0 / _mixed_normalization(
+        dt, window_points, sampled_power=1, timestamp_power=2
     )
 
     np.testing.assert_array_equal(results[(0, 1)].freq, frequencies)
@@ -444,20 +467,20 @@ def test_mixed_calculation_returns_result_specific_frequency_views():
         results[(1, 1)].freq,
         np.arange(-3.0, 4.0),
     )
-    expected_second = (
+    expected_mixed_second = (
         np.sum((counts[:4] - counts[:4].mean()) ** 2)
         / 3.0
-        / _normalization(2)
+        / _mixed_normalization(dt, window_points, sampled_power=1, timestamp_power=1)
     )
     np.testing.assert_allclose(
         results[(0, 1)].spectrum,
-        expected_second,
+        expected_mixed_second,
         rtol=2e-12,
         atol=2e-12,
     )
     np.testing.assert_allclose(
         results[(1, 1)].spectrum,
-        expected_second,
+        np.sum((counts[:4] - counts[:4].mean()) ** 2) / 3.0 / _normalization(2),
         rtol=2e-12,
         atol=2e-12,
     )

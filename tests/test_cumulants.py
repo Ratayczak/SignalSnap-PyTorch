@@ -9,7 +9,7 @@ from signalsnap_pytorch._core.cumulants import (
     c3_factorized,
     c4_factorized,
 )
-from signalsnap_pytorch._core.fft import WindowBuffer
+from signalsnap_pytorch._core.fft import SampledWindow
 from signalsnap_pytorch._core.planning import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
@@ -271,7 +271,7 @@ def test_sampled_channel_producer_matches_independent_fft_reference():
         real_dtype=torch.float64,
         window_plan=SimpleNamespace(windows_per_estimate=2),
     )
-    window_buffer = WindowBuffer(
+    sampled_window = SampledWindow(
         window=torch.ones(window_points, dtype=torch.float64),
         norm_all_orders=tuple(torch.tensor(1.0) for _ in range(4)),
     )
@@ -289,7 +289,7 @@ def test_sampled_channel_producer_matches_independent_fft_reference():
         channel_plan=SampledChannelPlan(sample_count=data.size, dt=dt),
         batch=batch,
         frequency_plan=frequency_plan,
-        window_buffer=window_buffer,
+        sampled_window=sampled_window,
         runtime=runtime,
         third_order_cache=third_order_cache,
     )
@@ -419,7 +419,7 @@ def test_average_is_applied_to_spectra_instead_of_coefficients():
         ],
         dtype=torch.float64,
     )
-    window_buffer = WindowBuffer(
+    sampled_window = SampledWindow(
         window=torch.ones(1, dtype=torch.float64),
         norm_all_orders=tuple(torch.tensor(1.0) for _ in range(4)),
     )
@@ -436,7 +436,7 @@ def test_average_is_applied_to_spectra_instead_of_coefficients():
     estimates = compute_spectral_estimates(
         channels=(0, 0),
         coefficients_by_channel=coefficients_by_channel,
-        window_buffer=window_buffer,
+        normalization=sampled_window.norm(2),
         runtime=runtime,
     )
     spectrum_average = estimates.mean(dim=0)
@@ -450,7 +450,7 @@ def test_average_is_applied_to_spectra_instead_of_coefficients():
     coefficient_average = compute_spectral_estimates(
         channels=(0, 0),
         coefficients_by_channel=averaged_coefficients_by_channel,
-        window_buffer=window_buffer,
+        normalization=sampled_window.norm(2),
         runtime=runtime,
     ).squeeze(0)
 

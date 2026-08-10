@@ -58,6 +58,16 @@ class ShortTermUncertaintyState:
 
 
 @dataclass(slots=True)
+class GlobalUncertaintyState:
+    """Component-wise Welford state for global uncertainty estimation."""
+
+    mean_re: Tensor | None = None
+    mean_im: Tensor | None = None
+    m2_re: Tensor | None = None
+    m2_im: Tensor | None = None
+
+
+@dataclass(slots=True)
 class GroupAccumulator:
     """Accumulator for the group of either unshifted or shifted spectral estimates.
 
@@ -67,19 +77,17 @@ class GroupAccumulator:
         Running total sum of the calculated spectra on the active torch device.
     count : int = 0
         Number of accumulated spectral estimates.
-    squared_sum : Tensor | None = None
-        Running total squared sum of the real and imaginary parts of the calculated spectra on the
-        active torch device. Real and imaginary parts are squared separately.
-    short_term : :class:`ShortTermUncertaintyState`
+    global_state : :class:`GlobalUncertaintyState`
+        State used to construct global uncertainty estimates. It remains empty in short-term mode.
+    short_term_state : :class:`ShortTermUncertaintyState`
         State used to construct short-term uncertainty estimates. It remains empty in global mode.
     """
 
     spectrum_sum: Tensor | None = None
     count: int = 0
 
-    squared_sum: Tensor | None = None
-
-    short_term: ShortTermUncertaintyState = field(default_factory=ShortTermUncertaintyState)
+    global_state: GlobalUncertaintyState = field(default_factory=GlobalUncertaintyState)
+    short_term_state: ShortTermUncertaintyState = field(default_factory=ShortTermUncertaintyState)
 
 
 @dataclass(slots=True)
@@ -213,19 +221,40 @@ def _accumulate_global_uncertainty(
     accumulator: GroupAccumulator,
     spectral_estimates: Tensor,
 ) -> None:
-    """Accumulate the squared sum of :class:`GroupAccumulator`. Real and imaginary squared sums are
-    encoded as one complex number, which should not be interpreted as a complex number.
+    """Merge one batch into the component-wise global Welford state.
+
+    ``accumulator.count`` must contain the number of estimates accumulated
+    before ``spectral_estimates`` is merged.
     """
 
-    squared_sum = torch.complex(
-        torch.square(spectral_estimates.real).sum(dim=0),
-        torch.square(spectral_estimates.imag).sum(dim=0),
-    )
+    state = accumulator.global_state
+    previous_count = accumulator.count
+    batch_count = spectral_estimates.shape[0]
 
-    if accumulator.squared_sum is None:
-        accumulator.squared_sum = squared_sum
-    else:
-        accumulator.squared_sum += squared_sum
+    batch_mean_re, batch_m2_re = _batch_mean_m2(spectral_estimates.real)
+    batch_mean_im, batch_m2_im = _batch_mean_m2(spectral_estimates.imag)
+
+    if previous_count == 0:
+        state.mean_re = batch_mean_re.clone()
+        state.mean_im = batch_mean_im.clone()
+        state.m2_re = batch_m2_re.clone()
+        state.m2_im = batch_m2_im.clone()
+        return
+
+    if state.mean_re is None or state.mean_im is None or state.m2_re is None or state.m2_im is None:
+        raise RuntimeError("Global Welford accumulator is inconsistent.")
+
+    combined_count = previous_count + batch_count
+    weight = batch_count / combined_count
+    correction = previous_count * batch_count / combined_count
+
+    delta_re = batch_mean_re - state.mean_re
+    state.mean_re += delta_re * weight
+    state.m2_re += batch_m2_re + torch.square(delta_re) * correction
+
+    delta_im = batch_mean_im - state.mean_im
+    state.mean_im += delta_im * weight
+    state.m2_im += batch_m2_im + torch.square(delta_im) * correction
 
 
 def _batch_mean_m2(values: Tensor, *, dim: int = 0) -> tuple[Tensor, Tensor]:
@@ -467,13 +496,11 @@ def accumulate_spectral_estimates(
     else:
         group.spectrum_sum += batch_sum
 
-    group.count += estimate_count
-
     if accumulator.uncertainty_estimation == "global":
         _accumulate_global_uncertainty(group, spectral_estimates)
     elif accumulator.uncertainty_estimation == "short_term":
         _accumulate_short_term_uncertainty_batch(
-            group.short_term,
+            group.short_term_state,
             spectral_estimates,
             accumulator.m_var,
         )
@@ -481,6 +508,8 @@ def accumulate_spectral_estimates(
         raise RuntimeError(
             f"Unknown uncertainty-estimation method {accumulator.uncertainty_estimation!r}."
         )
+
+    group.count += estimate_count
 
 
 def _check_accumulator_group(
@@ -501,22 +530,30 @@ def _check_accumulator_group(
     if uncertainty_estimation == "short_term" and m_var < 2:
         raise RuntimeError("Short-term uncertainty estimation requires m_var >= 2.")
 
-    st_state = group.short_term
+    st_state = group.short_term_state
+    global_state = group.global_state
 
-    welford_tensors = (
+    welford_global_tensors = (
+        global_state.mean_re,
+        global_state.mean_im,
+        global_state.m2_re,
+        global_state.m2_im,
+    )
+
+    welford_short_term_tensors = (
         st_state.current_mean_re,
         st_state.current_mean_im,
         st_state.current_m2_re,
         st_state.current_m2_im,
     )
     variance_tensors = (st_state.variance_sum_re, st_state.variance_sum_im)
-    short_term_tensors = welford_tensors + variance_tensors
+    short_term_tensors = welford_short_term_tensors + variance_tensors
 
     # Validate an empty group.
     if group.spectrum_sum is None:
         if (
             group.count != 0
-            or group.squared_sum is not None
+            or any(tensor is not None for tensor in welford_global_tensors)
             or st_state.current_count != 0
             or st_state.completed_batches != 0
             or any(tensor is not None for tensor in short_term_tensors)
@@ -532,11 +569,15 @@ def _check_accumulator_group(
     expected_shape = group.spectrum_sum.shape
 
     if uncertainty_estimation == "global":
-        if group.squared_sum is None:
-            raise RuntimeError("Global uncertainty accumulator has no squared-sum state.")
+        if any(tensor is None for tensor in welford_global_tensors):
+            raise RuntimeError("Global Welford accumulator is missing required state.")
 
-        if group.squared_sum.shape != expected_shape:
-            raise RuntimeError("Global squared-sum shape does not match the spectrum-sum shape.")
+        for tensor in welford_global_tensors:
+            assert tensor is not None
+            if tensor.shape != expected_shape:
+                raise RuntimeError(
+                    "Global Welford-buffer shape does not match the spectrum-sum shape."
+                )
 
         if (
             st_state.current_count != 0
@@ -547,9 +588,8 @@ def _check_accumulator_group(
 
         return group
 
-    # Short-term mode must not populate the global squared-sum state.
-    if group.squared_sum is not None:
-        raise RuntimeError("Global squared-sum state must remain empty in short-term mode.")
+    if any(tensor is not None for tensor in welford_global_tensors):
+        raise RuntimeError("Global Welford state must remain empty in short-term mode.")
 
     expected_batches = group.count // m_var
     expected_remainder = group.count % m_var
@@ -567,10 +607,10 @@ def _check_accumulator_group(
 
     # A populated short-term group always retains its Welford buffers,
     # including after a batch has just been completed.
-    if any(tensor is None for tensor in welford_tensors):
+    if any(tensor is None for tensor in welford_short_term_tensors):
         raise RuntimeError("Populated short-term state is missing Welford buffers.")
 
-    for tensor in welford_tensors:
+    for tensor in welford_short_term_tensors:
         assert tensor is not None
         if tensor.shape != expected_shape:
             raise RuntimeError(
@@ -597,24 +637,24 @@ def _check_accumulator_group(
 def _finalize_global_uncertainty(
     group: GroupAccumulator,
 ) -> Tensor | None:
-    """Calculate the component-wise global standard error for one group."""
+    """Calculate the component-wise global standard error."""
+
     if group.count < 2:
         return None
 
-    if group.spectrum_sum is None or group.squared_sum is None:
-        raise RuntimeError("Global uncertainty accumulator is inconsistent.")
+    state = group.global_state
 
-    mean = group.spectrum_sum / group.count
-    mean_squared = group.squared_sum / group.count
+    if state.m2_re is None or state.m2_im is None:
+        raise RuntimeError("Global Welford accumulator is inconsistent.")
 
-    variance = (group.count / (group.count - 1)) * (
-        mean_squared - torch.complex(torch.square(mean.real), torch.square(mean.imag))
-    )
+    # sample variance = M2 / (n - 1)
+    # variance of the mean = sample variance / n
+    denominator = group.count * (group.count - 1)
 
-    var_re = torch.clamp_min(variance.real, 0.0)
-    var_im = torch.clamp_min(variance.imag, 0.0)
+    uncertainty_re = torch.sqrt(state.m2_re / denominator)
+    uncertainty_im = torch.sqrt(state.m2_im / denominator)
 
-    return torch.complex(torch.sqrt(var_re / group.count), torch.sqrt(var_im / group.count))
+    return torch.complex(uncertainty_re, uncertainty_im)
 
 
 def _finalize_short_term_uncertainty(
@@ -645,7 +685,7 @@ def _finalize_group_uncertainty(
         return _finalize_global_uncertainty(group)
 
     if uncertainty_estimation == "short_term":
-        return _finalize_short_term_uncertainty(group.short_term)
+        return _finalize_short_term_uncertainty(group.short_term_state)
 
     raise RuntimeError(f"Unknown uncertainty-estimation method {uncertainty_estimation!r}.")
 

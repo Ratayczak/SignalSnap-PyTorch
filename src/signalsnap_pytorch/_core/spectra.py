@@ -16,7 +16,7 @@ from torch import Tensor
 
 from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
 from .data_access import RuntimeSource, read_source
-from .fft import TimestampWindow, WindowBuffer, compute_fft, reshape_window_chunk, to_device
+from .fft import SampledWindow, TimestampWindow, compute_fft, reshape_window_chunk, to_device
 from .planning import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
@@ -26,6 +26,13 @@ from .planning import (
     TimestampedChannelPlan,
     WindowBatch,
 )
+
+_COEFFICIENT_ROLE_CONJUGATIONS = {
+    1: (False,),
+    2: (False, True),
+    3: (False, False, False),
+    4: (False, True, False, True),
+}
 
 
 @dataclass(slots=True)
@@ -175,56 +182,125 @@ class ChannelCoefficients:
         return self._centered_output
 
 
-def select_normalization_windows(
+def prepare_spectrum_normalizations(
     runtime: RuntimeConfig,
-    sampled_window: WindowBuffer | None,
+    sampled_window: SampledWindow | None,
     timestamp_window: TimestampWindow | None,
-) -> dict[tuple[int, ...], WindowBuffer | TimestampWindow]:
-    """Select the normalization windows for every requested spectrum.
+) -> dict[tuple[int, ...], Tensor]:
+    """Prepare the scalar normalization for every requested spectrum.
 
-    An all-sampled spectrum uses the sampled window. A spectrum containing at least one timestamped
-    channel uses the timestamp window, including a mixed sampled and timestamped spectrum.
+    Homogeneous sampled and timestamp tuples use their order-specific window norms. Mixed
+    polyspectra use the discrete overlap of the sampled and timestamped windows evaluated on the
+    sampled-data time grid.
 
     Parameters
     ----------
     runtime : RuntimeConfig
         Resolved requested spectra and active channel types.
-    sampled_window : WindowBuffer | None
+    sampled_window : SampledWindow | None
         Prepared sampled-data window, or ``None`` if no sampled channel is active.
     timestamp_window : TimestampWindow | None
         Prepared timestamp window, or ``None`` if no timestamped channel is active.
 
     Returns
     -------
-    dict[tuple[int, ...], WindowBuffer | TimestampWindow]
-        Normalization window keyed by requested spectrum tuple.
+    dict[tuple[int, ...], Tensor]
+        Scalar normalization keyed by requested spectrum tuple.
 
     Raises
     ------
     RuntimeError
         If a requested spectrum requires a window that was not prepared.
+    TypeError
+        If a requested spectrum references an unsupported channel plan.
+    ValueError
+        If the spectrum order is unsupported or a mixed overlap is exactly zero or numerically
+        negligible.
     """
 
-    normalization_windows: dict[tuple[int, ...], WindowBuffer | TimestampWindow] = {}
+    sampled_plans = (
+        plan for plan in runtime.channel_plans.values() if isinstance(plan, SampledChannelPlan)
+    )
+    first_sampled_plan = next(sampled_plans, None)
+    sampled_dt = first_sampled_plan.dt if first_sampled_plan is not None else None
+
+    sample_times = None
+    timestamp_window_on_sample_grid = None
+    if sampled_dt is not None:
+        if sampled_window is None:
+            raise RuntimeError("Sampled window was not prepared.")
+
+        sample_times = (
+            torch.arange(
+                sampled_window.window.numel(),
+                dtype=runtime.real_dtype,
+                device=runtime.device,
+            )
+            * sampled_dt
+        )
+        if timestamp_window is not None:
+            timestamp_window_on_sample_grid = timestamp_window.evaluate(sample_times)
+
+    normalizations: dict[tuple[int, ...], Tensor] = {}
 
     for spectrum_channels in runtime.requested_spectra:
-        contains_timestamped_channel = any(
-            isinstance(runtime.channel_plans[channel], TimestampedChannelPlan)
-            for channel in spectrum_channels
-        )
+        order = len(spectrum_channels)
+        try:
+            conjugated_roles = _COEFFICIENT_ROLE_CONJUGATIONS[order]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported spectrum order: {order}.") from exc
 
-        if contains_timestamped_channel:
+        channel_plans = tuple(runtime.channel_plans[channel] for channel in spectrum_channels)
+        all_sampled = all(isinstance(plan, SampledChannelPlan) for plan in channel_plans)
+        all_timestamped = all(isinstance(plan, TimestampedChannelPlan) for plan in channel_plans)
+
+        if all_sampled:
+            if sampled_window is None:
+                raise RuntimeError("Sampled window was not prepared.")
+            normalization_value = sampled_window.norm(order)
+        elif all_timestamped:
             if timestamp_window is None:
                 raise RuntimeError("Timestamp normalization was not prepared.")
-
-            normalization_windows[spectrum_channels] = timestamp_window
+            normalization_value = timestamp_window.norm(order)
         else:
-            if sampled_window is None:
-                raise RuntimeError("Sampled normalization was not prepared.")
+            if sampled_window is None or sampled_dt is None or sample_times is None:
+                raise RuntimeError("Sampled window was not prepared.")
+            if timestamp_window is None or timestamp_window_on_sample_grid is None:
+                raise RuntimeError("Timestamp window was not prepared.")
 
-            normalization_windows[spectrum_channels] = sampled_window
+            factors: list[Tensor] = []
+            for channel, channel_plan, conjugated in zip(
+                spectrum_channels, channel_plans, conjugated_roles
+            ):
+                if isinstance(channel_plan, SampledChannelPlan):
+                    factor = sampled_window.window
+                elif isinstance(channel_plan, TimestampedChannelPlan):
+                    factor = timestamp_window_on_sample_grid
+                else:
+                    raise TypeError(
+                        f"Channel {channel} has unsupported plan {type(channel_plan).__name__}."
+                    )
 
-    return normalization_windows
+                if conjugated:
+                    factor = torch.conj(factor)
+
+                factors.append(factor)
+
+            factor_product = torch.prod(torch.stack(factors), dim=0)
+            factor_sum = factor_product.sum()
+            magnitude_scale = torch.abs(factor_product).sum()
+            threshold = torch.finfo(runtime.real_dtype).eps * magnitude_scale
+            if bool(torch.abs(factor_sum) <= threshold):
+                raise ValueError(
+                    f"Mixed window overlap for spectrum {spectrum_channels} is zero or "
+                    "numerically negligible."
+                )
+
+            normalization_value = sampled_dt * factor_sum
+
+        normalizations[spectrum_channels] = normalization_value
+
+    return normalizations
 
 
 def build_third_order_cache(
@@ -368,7 +444,7 @@ def prepare_sampled_channel_coefficients(
     channel_plan: SampledChannelPlan,
     batch: WindowBatch,
     frequency_plan: FFTFrequencyPlan,
-    window_buffer: WindowBuffer,
+    sampled_window: SampledWindow,
     runtime: RuntimeConfig,
     third_order_cache: ThirdOrderIndexCache | None,
 ) -> ChannelCoefficients:
@@ -391,7 +467,7 @@ def prepare_sampled_channel_coefficients(
         Physical windows to read and transform.
     frequency_plan : FFTFrequencyPlan
         Shifted FFT grid and selected output band.
-    window_buffer : WindowBuffer
+    sampled_window : SampledWindow
         Sampled window tensor and order-normalization factors.
     runtime : RuntimeConfig
         Resolved window layout, device, and numeric dtypes.
@@ -417,7 +493,7 @@ def prepare_sampled_channel_coefficients(
         window_points=window_points,
     )
     chunk = to_device(chunk, runtime)
-    coefficients = compute_fft(chunk=chunk, window=window_buffer.window, dt=channel_plan.dt)
+    coefficients = compute_fft(chunk=chunk, window=sampled_window.window, dt=channel_plan.dt)
     coefficients_by_channel = _build_coefficient_batch(
         frequency_plan=frequency_plan,
         coeffs_by_channel={channel_index: coefficients},
@@ -493,7 +569,7 @@ def expand_deterministic_coefficients(
 def compute_spectral_estimates(
     channels: tuple[int, ...],
     coefficients_by_channel: dict[int, ChannelCoefficients],
-    window_buffer: WindowBuffer | TimestampWindow,
+    normalization: Tensor,
     runtime: RuntimeConfig,
 ) -> Tensor:
     """Compute normalized spectral estimates from prepared Fourier coefficients.
@@ -506,8 +582,7 @@ def compute_spectral_estimates(
     - ``(a, b, c, d)`` combines ``X_a(f1)``, ``conj(X_b(f1))``, ``X_c(f2)``, and ``conj(X_d(f2))``.
 
     The appropriate unbiased multivariate cumulant estimator is evaluated over the ``m`` physical
-    windows in each spectral estimate and divided by the selected order-dependent window
-    normalization.
+    windows in each spectral estimate and divided by the prepared normalization.
 
     Parameters
     ----------
@@ -515,8 +590,8 @@ def compute_spectral_estimates(
         One through four channel indices defining the spectrum and coefficient roles.
     coefficients_by_channel : dict[int, ChannelCoefficients]
         Prepared coefficients for every channel referenced by ``channels``.
-    window_buffer : WindowBuffer | TimestampWindow
-        Sampled or timestamp window providing the normalization for the spectrum.
+    normalization : Tensor
+        Scalar window normalization.
     runtime : RuntimeConfig
         Resolved number of physical windows per estimate.
 
@@ -580,4 +655,4 @@ def compute_spectral_estimates(
     else:
         raise ValueError(f"Unsupported spectrum order: {order}.")
 
-    return cumulants / window_buffer.norm(order)
+    return cumulants / normalization
