@@ -792,6 +792,37 @@ def test_runtime_config_rejects_sampled_observation_interval_with_wrong_duration
         _build_runtime(data_config, spectrum_config, [(0,)])
 
 
+def test_runtime_config_rejects_wrong_duration_at_large_integral_origin():
+    origin = 2**60
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(10), dt=1.0),),
+        observation_start=origin,
+        observation_stop=origin + 100,
+    )
+    spectrum_config = SpectrumConfig(
+        df=0.5,
+        f_min=0.0,
+        f_max=0.5,
+        m=1,
+        interlacing=False,
+    )
+
+    with pytest.raises(ValueError, match="configured observation interval has duration"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
+def test_runtime_config_rejects_nonfinite_derived_observation_duration():
+    data_config = DataConfig(
+        channels=(SampledChannel(data=np.ones(1), dt=1.0),),
+        observation_start=-1e308,
+        observation_stop=1e308,
+    )
+    spectrum_config = SpectrumConfig(df=1.0, f_min=0.0, f_max=0.5, m=1)
+
+    with pytest.raises(ValueError, match="resolved observation or sampled duration is not finite"):
+        _build_runtime(data_config, spectrum_config, [(0,)])
+
+
 def test_runtime_config_rejects_duration_error_hidden_by_relative_tolerance():
     data_config = DataConfig(
         channels=(SampledChannel(data=np.ones(1), dt=1e9),),

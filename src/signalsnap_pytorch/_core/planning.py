@@ -744,14 +744,20 @@ def _resolve_observation_interval(
         sampled_duration = sampled_plan.sample_count * sampled_plan.dt
         observation_duration = observation_stop - observation_start
 
+        if not math.isfinite(observation_duration) or not math.isfinite(sampled_duration):
+            raise ValueError("The resolved observation or sampled duration is not finite.")
+
         duration_tolerance = 4.0 * max(
-            math.ulp(observation_start),
-            math.ulp(observation_stop),
-            math.ulp(observation_duration),
-            math.ulp(sampled_duration),
+            math.ulp(float(observation_duration)),
+            math.ulp(float(sampled_duration)),
         )
 
-        if abs(observation_duration - sampled_duration) > duration_tolerance:
+        if not math.isclose(
+            observation_duration,
+            sampled_duration,
+            rel_tol=0.0,
+            abs_tol=duration_tolerance,
+        ):
             raise ValueError(
                 f"The configured observation interval has duration {observation_duration}, but "
                 f"{sampled_plan.sample_count} samples with dt={sampled_plan.dt} span "

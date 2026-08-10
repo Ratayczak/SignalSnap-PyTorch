@@ -170,7 +170,10 @@ def test_timestamp_closing_cache_accepts_sampled_view_beyond_fft_support():
         band_start=2,
         band_stop=6,
     )
-    runtime = SimpleNamespace(device=torch.device("cpu"))
+    runtime = SimpleNamespace(
+        device=torch.device("cpu"),
+        window_plan=SimpleNamespace(duration=1.0),
+    )
 
     cache = build_timestamp_third_order_cache(runtime, frequency_plan)
 
@@ -192,6 +195,24 @@ def test_timestamp_closing_cache_accepts_sampled_view_beyond_fft_support():
     )
     assert cache.closing_frequencies[0] < full_frequencies[0]
     assert cache.closing_frequencies.size == 2 * len(output_grid_indices) - 1
+    assert torch.all(cache.valid_mask)
+
+
+def test_timestamp_closing_cache_supports_one_point_fft_grid():
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=np.array([0.0]),
+        band_start=0,
+        band_stop=1,
+    )
+    runtime = SimpleNamespace(
+        device=torch.device("cpu"),
+        window_plan=SimpleNamespace(duration=2.0),
+    )
+
+    cache = build_timestamp_third_order_cache(runtime, frequency_plan)
+
+    np.testing.assert_array_equal(cache.closing_frequencies, np.array([0.0]))
+    torch.testing.assert_close(cache.gather_indices, torch.zeros((1, 1), dtype=torch.long))
     assert torch.all(cache.valid_mask)
 
 

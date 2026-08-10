@@ -425,6 +425,39 @@ def test_mixed_unit_pipeline_matches_analytic_impulse_reference():
     )
 
 
+def test_mixed_third_order_pipeline_supports_one_point_fft_grid():
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=np.arange(6.0), dt=1.0),
+            TimestampedChannel(
+                timestamps=np.arange(6.0) + 0.25,
+            ),
+        ),
+        observation_start=0.0,
+        observation_stop=6.0,
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=0.0,
+        f_max=0.5,
+        m=3,
+        old_window=True,
+        photon_options=PhotonOptions(weighting="unit"),
+    )
+
+    results = calculate_spectra(
+        data_config,
+        spectrum_config,
+        requested_spectra=[(0, 0, 1)],
+        show_progress=False,
+    )
+
+    result = results[(0, 0, 1)]
+    np.testing.assert_array_equal(result.freq, np.array([0.0]))
+    assert result.spectrum.shape == (1, 1)
+    assert np.all(np.isfinite(result.spectrum))
+
+
 def test_mixed_calculation_returns_result_specific_frequency_views():
     dt = 0.25
     window_points = 4

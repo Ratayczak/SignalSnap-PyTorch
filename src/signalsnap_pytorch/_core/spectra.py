@@ -385,12 +385,7 @@ def build_timestamp_third_order_cache(
             np.arange(frequency_plan.band_start, frequency_plan.band_stop, dtype=np.int64)
             - frequency_plan.window_points // 2
         )
-        actual_df = float(
-            abs(
-                frequency_plan.shifted_full_fft_frequencies[1]
-                - frequency_plan.shifted_full_fft_frequencies[0]
-            )
-        )
+        actual_df = 1.0 / runtime.window_plan.duration
     else:
         raise TypeError(f"Unsupported frequency plan {type(frequency_plan).__name__}.")
 
