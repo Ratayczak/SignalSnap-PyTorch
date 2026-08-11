@@ -21,6 +21,11 @@ result.spectrum_uncertainty   # complex NumPy array, or None
 `result.freq` is the authoritative frequency axis. `f_min`, `f_max`, and `df` from `SpectrumConfig`
 should not be used to reconstruct the frequency axis.
 
+In a mixed calculation, results containing a sampled channel use the sampled FFT frequency view,
+while results containing only timestamped channels use the direct-transform view and may extend
+beyond the sampled Nyquist range. Consequently, different results in one store can have different
+frequency axes.
+
 For `N = len(result.freq)`, the returned shapes are:
 
 | Order | `spectrum` shape | Interpretation |
@@ -34,7 +39,9 @@ For order one, `result.freq` is just `[0]`.
 
 A third-order value `S^(3)(frequency[i], frequency[j])` is stored in
 `result.spectrum[i, j]`. It is `NaN` when the required third frequency,
-`-(frequency[i] + frequency[j])`, lies outside the FFT support.
+`-(frequency[i] + frequency[j])`, is unavailable. In particular, a sampled closing channel is
+limited by its FFT support, while a timestamped closing channel is transformed directly at the
+required frequency.
 
 An order-four value at `[i, j]` belongs to the diagonal slice
 `(frequency[i], -frequency[i], frequency[j], -frequency[j])`. SignalSnap does not currently return
@@ -76,6 +83,10 @@ $$
 $$
 
 `freq_unit` is the inverse-time unit corresponding to the `t_unit` supplied in `DataConfig`.
+
+For a unit-weighted `TimestampedChannel`, the signal is a counting measure and the order-one result
+is a window-normalized average event rate rather than a raw event count. Exponential weighting
+retains the configured amplitude scale and moments in the result.
 
 ## Using the result store
 

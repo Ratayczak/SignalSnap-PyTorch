@@ -42,6 +42,10 @@ data_config = DataConfig(
 )
 ```
 
+The API also accepts `TimestampedChannel` objects for event-arrival measurements. These can be
+combined with sampled channels in the same `DataConfig` and requested channel tuple; see
+[Calculation configuration](configuration.md#timestamped-event-weighting).
+
 Express auto- and cross-spectra directly as tuples:
 
 ```python

@@ -25,7 +25,8 @@ $$
 = C_n\bigl(z_1(\omega_1), \ldots, z_n(\omega_n)\bigr).
 $$
 
-SignalSnap estimates these spectra from finite, real measurement traces as described below.
+SignalSnap estimates these spectra from finite, real sampled traces or timestamped event streams as
+described below.
 
 ## Why use higher-order spectra?
 
@@ -54,10 +55,23 @@ SignalSnap uses the approximate confined Gaussian window
 derived by [Starosielec and Hägele](https://doi.org/10.1016/j.sigpro.2014.03.033) as its window
 function.
 
-SignalSnap takes the input channels provided by the user and splits each channel into windows of
-`window_points` samples, denoted here by $N$. For each channel and window, the Fourier coefficients
-are computed and used to estimate polyspectra based on the following formulas (here, $z_i$ no longer
-denotes the different samples of one channel, but different channels):
+For a timestamped channel, SignalSnap preserves the event times rather than first binning them onto
+an equidistant sample grid. It evaluates the windowed Fourier coefficients directly at the required
+frequencies:
+
+$$
+a_k = \sum_j g(t_j) b_j e^{i \omega_k t_j},
+$$
+
+where g(t) is the continuous window function and b_j the weight of an event.
+
+Sampled and timestamped coefficients then enter the same cumulant estimators, which
+also permits mixed cross-polyspectra.
+SignalSnap splits the common observation interval into physical windows. For sampled channels each
+window contains `window_points` samples, denoted here by $N$; timestamped channels use the same
+physical boundaries. For each channel and window, the Fourier coefficients are computed and used to
+estimate polyspectra based on the following formulas (here, $z_i$ no longer denotes the different
+samples of one channel, but different channels):
 
 <p align="center">
   <img
@@ -73,6 +87,11 @@ trispectrum:
 $$
 S_{z_1,z_2,z_3,z_4}^{(4)}(\omega_k, \omega_l, \omega_p) \approx \frac{N C_4(a_k, b_l, c_p, d_{k+l+p}^\ast)}{T \sum_{i=0}^{N-1}g_i^3 g_i^\ast}.
 $$
+
+The displayed spectral normalizations are the sampled-data form. Timestamp-only tuples use the
+corresponding continuous window normalization. For mixed tuples, SignalSnap evaluates the
+timestamp window on the sampled-data grid and uses the discrete overlap sum of all participating
+window factors, multiplied by the sampling interval. The cumulant algebra remains the same.
 
 $a_k$ denotes the Fourier coefficients of the first channel, $b_k$ the coefficients of the second
 channel, and so on. The cumulants $C_1(\ldots), \ldots, C_4(\ldots)$ must be estimated from finite
@@ -98,7 +117,8 @@ error.
 and identically distributed. In practice, a polyspectral interpretation requires:
 
 - real input channels;
-- equal sampling intervals and equal trace lengths;
+- equal sampling intervals and equal trace lengths among active sampled channels, with one common
+  observation interval for mixed data;
 - stationarity;
 - a window duration long enough to resolve narrow spectral features; and
 - successive windows that are approximately independent.

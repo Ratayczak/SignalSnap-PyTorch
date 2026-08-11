@@ -1,12 +1,14 @@
 # SignalSnap (PyTorch)
 
-Higher-order spectral analysis for real, multi-channel time series.
+Higher-order spectral analysis for real, multi-channel sampled signals and timestamped event
+streams.
 
 SignalSnap estimates first- through fourth-order auto- and cross-spectra (also called polyspectra)
-from real, finite measurement traces using unbiased estimators for multivariate cumulants. Its
+from real, finite measurement records using unbiased estimators for multivariate cumulants. Its
 PyTorch backend supports calculations on CPUs, NVIDIA GPUs via CUDA, and Apple Silicon through MPS,
-with additional experimental support for AMD GPUs through ROCm and Intel GPUs through XPU. Input
-channels can be in-memory arrays, lazily read HDF5 selections, or a mixture of both.
+with additional experimental support for AMD GPUs through ROCm and Intel GPUs through XPU. Sampled
+values and timestamped events can be combined in one calculation and stored in memory, in lazily
+read HDF5 selections, or a mixture of both.
 
 This repository contains the PyTorch rewrite of the original
 [SignalSnap](https://github.com/MarkusSifft/SignalSnap). The current 2.0 API intentionally differs
@@ -19,6 +21,8 @@ from the original object-oriented API.
 - Unbiased multivariate cumulant estimators
 - Global standard errors and short-term uncertainty estimates from repeated spectral estimates
 - Optional interlaced estimates to reduce window-edge effects
+- Sampled, timestamped, and mixed sampled/timestamped channel tuples
+- Unit or exponentially distributed amplitudes for timestamped photon events
 - Accelerated computing on a variety of GPUs via PyTorch
 - Lazy reading from HDF5 datasets larger than system memory
 - Plotting of spectra, uncertainties, and statistical significance
@@ -125,6 +129,34 @@ If `requested_spectra` is omitted, SignalSnap calculates order-one through order
 auto-spectra for each input channel. Explicit requests avoid unnecessary work when only a subset is
 needed, particularly for large datasets and higher orders.
 
+### Timestamped measurements
+
+Represent discrete events by their occurrence times. Timestamped calculations require an explicit
+half-open observation interval and `PhotonOptions`:
+
+```python
+from signalsnap_pytorch import DataConfig, PhotonOptions, SpectrumConfig, TimestampedChannel
+
+data_config = DataConfig(
+    channels=(TimestampedChannel(timestamps=event_times),),
+    observation_start=0.0,
+    observation_stop=20.0,
+    t_unit="s",
+)
+
+spectrum_config = SpectrumConfig(
+    df=1,
+    f_min=0,
+    f_max=100,
+    photon_options=PhotonOptions(weighting="unit"),
+)
+```
+
+`SampledChannel` and `TimestampedChannel` objects may appear together in `DataConfig.channels`,
+including within the same requested cross-spectrum. See
+[Calculation configuration](docs/configuration.md#timestamped-event-weighting) for event weighting,
+frequency grids, observation bounds, and mixed calculations.
+
 ### TODO: Expand Quick Start example to include pictures.
 
 See [Calculation configuration](docs/configuration.md) to learn how to use `DataConfig` and
@@ -212,8 +244,9 @@ data_config = DataConfig(
 )
 ```
 
-Only requested channels and required chunks are read. Selection rules and mixed in-memory/HDF5
-workflows are described in [HDF5 input](docs/hdf5.md).
+Both sampled data and timestamp arrays can use `HDF5Source`. Only requested channels and required
+chunks are read. Selection rules and mixed in-memory/HDF5 workflows are described in
+[HDF5 input](docs/hdf5.md).
 
 ## Scientific background
 
@@ -240,14 +273,7 @@ single `DataConfig`, channel tuples, and the `calculate_spectra` pipeline. See t
 [migration guide](docs/migration.md) for a concept mapping and examples.
 
 The original [SignalSnap](https://github.com/MarkusSifft/SignalSnap) remains available for
-established ArrayFire workflows and currently provides features that are not part of the PyTorch
-rewrite:
-
-- downsampling;
-- single-photon-regime measurements;
-- stationarity testing;
-- adding random phase to data; and
-- potential support for GPUs not available in PyTorch.
+established ArrayFire workflows and potentially provides support for GPUs not available in PyTorch.
 
 ## Development
 

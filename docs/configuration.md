@@ -28,13 +28,36 @@ Sampled in-memory data must be a one-dimensional, nonempty NumPy array or CPU Py
 containing real numeric or Boolean values. HDF5-backed channels are described in the
 [HDF5 guide](hdf5.md).
 
+A `TimestampedChannel` instead stores the occurrence time of each discrete event:
+
+```python
+from signalsnap_pytorch import TimestampedChannel
+
+data_config = DataConfig(
+    channels=(TimestampedChannel(timestamps=event_times),),
+    observation_start=0.0,
+    observation_stop=10.0,
+    t_unit="s",
+)
+```
+
+In-memory timestamps must be a one-dimensional NumPy array or CPU PyTorch tensor of finite,
+nondecreasing real numbers. Duplicate timestamps represent distinct events, and an empty event
+stream is valid. Use timestamps relative to a nearby origin when large absolute times would lose
+the required floating-point resolution.
+
 Configuration objects retain their potentially large arrays and tensors without copying them.
 Although the configuration models are frozen, the referenced data remains mutable and must not be
 changed during a calculation.
 
 `DataConfig.observation_start` and `observation_stop` describe a common half-open physical
 interval. Sampled-only planning may default the start to zero and infer the stop from the active
-channel length and dt.
+channel length and `dt`. Both bounds are required when an active channel is timestamped. Events at
+`observation_start` are included; events at `observation_stop` are outside the interval. In a mixed
+calculation, the interval duration must equal the active sampled channels' length times `dt`.
+
+Only channels used by `requested_spectra` are active. An unused timestamped channel therefore does
+not require observation bounds or timestamp-specific spectrum options.
 
 ## Spectrum settings
 
@@ -56,9 +79,10 @@ spectrum_config = SpectrumConfig(
 
 | Setting | Description |
 | --- | --- |
-| `df` | Requested frequency spacing. If omitted, each FFT window uses 1000 samples. |
-| `f_min`, `f_max` | Requested frequency interval. `f_max=None` uses the Nyquist frequency as an upper bound. `f_min` may be negative. |
-| `m` | Number of FFT windows contributing to each cumulant estimate. |
+| `df` | Requested frequency spacing. If omitted in a calculation with sampled channels, each FFT window uses 1000 samples. Timestamp-only calculations require it. |
+| `f_min`, `f_max` | Inclusive requested frequency interval. `f_min` and `f_max` may be negative. `f_max=None` uses the sampled Nyquist frequency; timestamp-only calculations require an explicit `f_max`. |
+| `photon_options` | Required event-amplitude treatment for active timestamped channels; rejected for sampled-only calculations. |
+| `m` | Number of physical windows contributing to each cumulant estimate. |
 | `uncertainty_estimation` | `"global"` for the global standard error, or `"short_term"` for a typical local uncertainty. |
 | `m_var` | Number of consecutive estimates in each short-term uncertainty batch. |
 | `device` | `"cpu"`, `"cuda"`, `"cuda:N"`, `"mps"`, `"xpu"`, or `"xpu:N"`. |
@@ -66,11 +90,47 @@ spectrum_config = SpectrumConfig(
 | `spectral_estimates_max` | Maximum unshifted estimates, or `None` to use all available data. |
 | `spectral_estimates_per_batch` | Number of independent spectral estimates calculated in parallel. |
 | `interlacing` | Also calculate estimates shifted by half a window. |
-| `old_window` | Compatibility option: uses the approximate confined Gaussian window from the original API. Intended only for reproducing results from the original API. |
+| `old_window` | Compatibility option: uses the original API's sampled or timestamped window convention. Intended only for reproducing results from the original API. |
 
 Configuration objects are immutable and reject unknown fields.
 
-### Frequency resolution and FFT windows
+### Timestamped event weighting
+
+`PhotonOptions` applies to every active timestamped channel. Unit weighting assigns amplitude one
+to each event and performs one deterministic calculation:
+
+```python
+from signalsnap_pytorch import PhotonOptions
+
+photon_options = PhotonOptions(weighting="unit")
+```
+
+Exponential weighting draws independent positive event amplitudes for each realization and
+averages the resulting spectra:
+
+```python
+photon_options = PhotonOptions(
+    weighting="exponential",
+    scale=1.0,
+    repetitions=100,
+    repetitions_per_batch=10,
+    seed=1234,
+)
+```
+
+A positive `scale` and a positive integer `repetitions` are required for exponential weighting.
+The positive integer `repetitions_per_batch` limits how many realizations are processed together
+and defaults to at most 10. An explicit nonnegative `seed` makes the generated amplitudes
+reproducible independently of batching; omitting it chooses a new seed for each calculation. These
+exponential-only fields are invalid with unit weighting.
+
+Unit weighting treats the timestamps as a counting measure. To reproduce the exponentially
+distributed detector-pulse amplitudes described by Sifft et al. in
+[*Physical Review A* 109, 062210 (2024)](https://doi.org/10.1103/PhysRevA.109.062210), use
+exponential weighting with `scale=1.0` and typically 100 repetitions. Add `old_window=True` when
+reproducing the historical SignalSnap window convention.
+
+### Frequency resolution and physical windows
 
 `df` specifies the requested frequency spacing. Together with the active sampled channels' common
 sampling interval `dt`, it determines the FFT window length:
@@ -90,20 +150,30 @@ $$
 If `df` is omitted, `window_points` defaults to 1000 samples. Use `result.freq` as the authoritative
 frequency axis.
 
-The requested interval must remain within the Nyquist bounds `[-1/(2*dt), 1/(2*dt)]`. When `f_max`
-is omitted, the positive Nyquist frequency is used as an upper bound.
+Timestamp-only calculations require `df` and `f_max`. Their window duration is exactly `1 / df`,
+and timestamps are transformed directly at the zero-anchored frequency grid within the inclusive
+`f_min` and `f_max` bounds. Empty physical windows and a complete event-free tail still contribute
+to the available estimate count.
 
-Each channel is divided into FFT windows of `window_points` samples. One spectral estimate consumes
-`m * window_points` samples: the `m` Fourier-coefficient vectors form the sample used by the
-multivariate k-statistic. Consecutive groups produce repeated spectral estimates, which are averaged
-to obtain the final result and its uncertainty estimate. See the
+In mixed calculations, sampled data determines the physical window duration and therefore the
+actual frequency spacing. A result containing any sampled channel uses the frequencies supported
+by the sampled FFT. A timestamp-only result may extend beyond the sampled Nyquist range, so results
+in the same `SpectrumResultStore` can have different frequency axes. Always use `result.freq` as
+the authoritative axis.
+
+Each channel is divided into the same physical windows. Sampled values are transformed by FFT;
+timestamped events retain their arrival times and are transformed directly. One spectral estimate
+uses `m` Fourier-coefficient vectors as the sample for the multivariate k-statistic. Consecutive
+groups produce repeated spectral estimates, which are averaged to obtain the final result and its
+uncertainty estimate. See the
 [Scientific background](scientific-background.md) for a detailed description of the calculation.
 
 ### Choosing `m`
 
-For a spectrum of order `n`, the effective `m` must be at least `n`. If the trace is too short for
-the configured `m`, SignalSnap warns and reduces it to the largest usable value. The calculation
-fails if the reduced value is smaller than the highest requested order. `m=10` is the default value.
+For a spectrum of order `n`, the effective `m` must be at least `n`. If the observation is too short
+for the configured `m`, SignalSnap warns and reduces it to the largest usable value. The
+calculation fails if the reduced value is smaller than the highest requested order. `m=10` is the
+default value.
 
 Lowering `m` below the default results in noisier cumulant estimates and is generally not
 recommended if the data trace is long enough. Larger values of `m` provide more Fourier-coefficient
@@ -141,9 +211,9 @@ parallel. Increasing it can reduce calculation time, especially on accelerators,
 device-memory use. The final calculation batch may contain fewer estimates when the available
 estimate count is not divisible by the configured batch size.
 
-This setting changes only computational batching. Each spectral estimate still contains `m` FFT
-windows, and short-term uncertainty batches are still defined independently by `m_var`. The default
-value is `1`.
+This setting changes only computational batching. Each spectral estimate still contains `m`
+physical windows, and short-term uncertainty batches are still defined independently by `m_var`.
+The default value is `1`.
 
 ### Uncertainty estimation
 
@@ -158,10 +228,11 @@ not its uncertainty.
 
 ### Interlacing
 
-With `interlacing=True`, SignalSnap also calculates estimates shifted by half an FFT window. This
-reduces the low weight assigned to samples near the edges of the original window placement. The
-trace must be long enough to contain at least one shifted estimate. `spectral_estimates_max` applies
-only to unshifted estimates.
+With `interlacing=True`, SignalSnap also calculates estimates shifted by half a physical window (or
+the corresponding whole-sample offset for sampled input). This reduces the low weight assigned to
+measurements near the edges of the original window placement. The observation must be long enough
+to contain at least one shifted estimate. `spectral_estimates_max` applies only to unshifted
+estimates.
 
 The final spectrum is averaged over the available unshifted and shifted estimates. Uncertainties are
 calculated separately for the two groups. If both provide an uncertainty, their component-wise
