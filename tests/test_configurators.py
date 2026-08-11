@@ -1,9 +1,9 @@
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-from pydantic import ValidationError
 
 from signalsnap_pytorch import (
     DataConfig,
@@ -33,7 +33,7 @@ def test_photon_options_accept_unit_weighting_without_mark_fields():
     ],
 )
 def test_unit_photon_weighting_rejects_exponential_fields(field, value):
-    with pytest.raises(ValidationError, match="does not accept"):
+    with pytest.raises(ValueError, match="does not accept"):
         PhotonOptions(weighting="unit", **{field: value})
 
 
@@ -50,6 +50,23 @@ def test_photon_options_accept_exponential_weighting():
     assert options.seed == 1234
 
 
+def test_photon_options_normalizes_numpy_integer_fields():
+    options = PhotonOptions(
+        weighting="exponential",
+        scale=1.0,
+        repetitions=np.int64(100),
+        repetitions_per_batch=np.uint8(5),
+        seed=np.int32(1234),
+    )
+
+    assert options.repetitions == 100
+    assert type(options.repetitions) is int
+    assert options.repetitions_per_batch == 5
+    assert type(options.repetitions_per_batch) is int
+    assert options.seed == 1234
+    assert type(options.seed) is int
+
+
 @pytest.mark.parametrize(
     "missing_field",
     ["scale", "repetitions"],
@@ -58,7 +75,7 @@ def test_exponential_photon_weighting_requires_scale_and_repetitions(missing_fie
     values = {"scale": 1.0, "repetitions": 2}
     del values[missing_field]
 
-    with pytest.raises(ValidationError, match="requires scale and repetitions"):
+    with pytest.raises(ValueError, match="requires scale and repetitions"):
         PhotonOptions(weighting="exponential", **values)
 
 
@@ -67,7 +84,7 @@ def test_exponential_photon_weighting_requires_scale_and_repetitions(missing_fie
     [0.0, -1.0, np.inf, np.nan, True],
 )
 def test_exponential_photon_weighting_rejects_invalid_scale(scale):
-    with pytest.raises((ValidationError, TypeError), match="scale|finite"):
+    with pytest.raises((TypeError, ValueError), match="scale|finite"):
         PhotonOptions(
             weighting="exponential",
             scale=scale,
@@ -80,7 +97,7 @@ def test_exponential_photon_weighting_rejects_invalid_scale(scale):
     [0, -1, 1.5, "2", True],
 )
 def test_exponential_photon_weighting_requires_strict_positive_repetitions(repetitions):
-    with pytest.raises(ValidationError, match="repetitions"):
+    with pytest.raises((TypeError, ValueError), match="repetitions"):
         PhotonOptions(
             weighting="exponential",
             scale=1.0,
@@ -93,7 +110,7 @@ def test_exponential_photon_weighting_requires_strict_positive_repetitions(repet
     [-1, 1.5, "2", True],
 )
 def test_exponential_photon_weighting_requires_strict_nonnegative_seed(seed):
-    with pytest.raises(ValidationError, match="seed"):
+    with pytest.raises((TypeError, ValueError), match="seed"):
         PhotonOptions(
             weighting="exponential",
             scale=1.0,
@@ -105,7 +122,7 @@ def test_exponential_photon_weighting_requires_strict_nonnegative_seed(seed):
 def test_photon_options_are_frozen():
     options = PhotonOptions(weighting="unit")
 
-    with pytest.raises(ValidationError, match="frozen"):
+    with pytest.raises(FrozenInstanceError):
         options.weighting = "exponential"
 
 
@@ -136,6 +153,49 @@ def test_spectrum_config_accepts_multiple_spectral_estimates_per_batch():
     assert SpectrumConfig(spectral_estimates_per_batch=4).spectral_estimates_per_batch == 4
 
 
+def test_spectrum_config_normalizes_numpy_integer_fields():
+    config = SpectrumConfig(
+        m=np.int64(4),
+        m_var=np.uint8(3),
+        spectral_estimates_max=np.int32(20),
+        spectral_estimates_per_batch=np.uint16(2),
+    )
+
+    for field, expected in (
+        ("m", 4),
+        ("m_var", 3),
+        ("spectral_estimates_max", 20),
+        ("spectral_estimates_per_batch", 2),
+    ):
+        value = getattr(config, field)
+        assert value == expected
+        assert type(value) is int
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "df",
+        "f_min",
+        "f_max",
+        "m",
+        "m_var",
+        "spectral_estimates_max",
+        "spectral_estimates_per_batch",
+    ],
+)
+def test_spectrum_config_rejects_numeric_strings(field):
+    with pytest.raises(TypeError, match=field):
+        SpectrumConfig(**{field: "2"})
+
+
+@pytest.mark.parametrize("field", ["interlacing", "old_window"])
+@pytest.mark.parametrize("value", [0, 1, "false", np.bool_(False)])
+def test_spectrum_config_requires_python_boolean_flags(field, value):
+    with pytest.raises(TypeError, match=field):
+        SpectrumConfig(**{field: value})
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -158,7 +218,10 @@ def test_spectrum_config_accepts_multiple_spectral_estimates_per_batch():
     ],
 )
 def test_spectrum_config_rejects_boolean_numeric_fields(field, value):
-    with pytest.raises(TypeError, match=rf"^{field} cannot be Boolean\.$"):
+    with pytest.raises(
+        TypeError,
+        match=rf"^{field} must be (?:an integer|a finite real number)\.$",
+    ):
         SpectrumConfig(**{field: value})
 
 
@@ -171,7 +234,7 @@ def test_spectrum_config_rejects_boolean_numeric_fields(field, value):
     ],
 )
 def test_spectrum_config_rejects_invalid_spectral_estimates_per_batch(batch_size):
-    with pytest.raises(ValidationError, match="spectral_estimates_per_batch"):
+    with pytest.raises((TypeError, ValueError), match="spectral_estimates_per_batch"):
         SpectrumConfig(spectral_estimates_per_batch=batch_size)
 
 
@@ -183,13 +246,13 @@ def test_spectrum_config_accepts_short_term_uncertainty_estimation():
 
 
 def test_spectrum_config_rejects_unknown_uncertainty_estimation():
-    with pytest.raises(ValidationError, match="uncertainty_estimation"):
+    with pytest.raises(ValueError, match="uncertainty_estimation"):
         SpectrumConfig(uncertainty_estimation="local")
 
 
 @pytest.mark.parametrize("m_var", [1, 0, -1, 1.5])
 def test_spectrum_config_rejects_invalid_m_var(m_var):
-    with pytest.raises(ValidationError, match="m_var"):
+    with pytest.raises((TypeError, ValueError), match="m_var"):
         SpectrumConfig(uncertainty_estimation="short_term", m_var=m_var)
 
 
@@ -199,7 +262,7 @@ def test_spectrum_config_accepts_positive_frequency_spacing():
 
 @pytest.mark.parametrize("df", [0.0, -0.125, np.inf, np.nan])
 def test_spectrum_config_rejects_invalid_frequency_spacing(df):
-    with pytest.raises(ValidationError, match="df"):
+    with pytest.raises(ValueError, match="df"):
         SpectrumConfig(df=df)
 
 
@@ -232,7 +295,7 @@ def test_sampled_channel_accepts_hdf5_source_without_opening_it():
 
 @pytest.mark.parametrize("dt", [0.0, -0.1, np.inf, np.nan, True])
 def test_sampled_channel_rejects_invalid_dt(dt):
-    with pytest.raises((ValidationError, TypeError), match="dt"):
+    with pytest.raises((TypeError, ValueError), match="dt"):
         SampledChannel(data=np.arange(8), dt=dt)
 
 
@@ -251,12 +314,12 @@ def test_sampled_channel_rejects_invalid_dt(dt):
     ],
 )
 def test_sampled_channel_rejects_invalid_data(data, message):
-    with pytest.raises((ValidationError, TypeError), match=message):
+    with pytest.raises((TypeError, ValueError), match=message):
         SampledChannel(data=data, dt=1.0)
 
 
 def test_sampled_channel_rejects_non_cpu_tensor_storage():
-    with pytest.raises(ValidationError, match="stored on the CPU"):
+    with pytest.raises(ValueError, match="stored on the CPU"):
         SampledChannel(data=torch.empty(2, device="meta"), dt=1.0)
 
 
@@ -300,7 +363,7 @@ def test_timestamped_channel_accepts_hdf5_source_without_opening_it():
     ],
 )
 def test_timestamped_channel_rejects_invalid_timestamps(timestamps, message):
-    with pytest.raises((ValidationError, TypeError), match=message):
+    with pytest.raises((TypeError, ValueError), match=message):
         TimestampedChannel(timestamps=timestamps)
 
 
@@ -310,11 +373,11 @@ def test_explicit_data_models_are_frozen_without_freezing_referenced_arrays():
     timestamped = TimestampedChannel(timestamps=np.array([0.0, 1.0]))
     source = HDF5Source(file="data.h5", dataset="/x", selection=(slice(None),))
 
-    with pytest.raises(ValidationError, match="frozen"):
+    with pytest.raises(FrozenInstanceError):
         sampled.dt = 2.0
-    with pytest.raises(ValidationError, match="frozen"):
+    with pytest.raises(FrozenInstanceError):
         timestamped.timestamps = np.array([])
-    with pytest.raises(ValidationError, match="frozen"):
+    with pytest.raises(FrozenInstanceError):
         source.dataset = "/y"
 
     data[0] = 42
@@ -338,6 +401,15 @@ def test_data_config_accepts_explicit_heterogeneous_channels_and_bounds():
     assert config.t_unit == "ms"
 
 
+def test_data_config_normalizes_channel_lists_to_tuples():
+    channel = SampledChannel(data=np.arange(8), dt=0.25)
+
+    config = DataConfig(channels=[channel])
+
+    assert config.channels == (channel,)
+    assert type(config.channels) is tuple
+
+
 @pytest.mark.parametrize(
     "channel",
     [
@@ -356,14 +428,14 @@ def test_data_config_rejects_bare_channels(channel):
 
 
 def test_data_config_rejects_empty_channels():
-    with pytest.raises(ValidationError, match="at least 1 item"):
+    with pytest.raises(ValueError, match="at least one channel"):
         DataConfig(channels=())
 
 
 def test_data_config_rejects_old_global_dt():
     channel = SampledChannel(data=np.arange(8), dt=1.0)
 
-    with pytest.raises(ValidationError, match="dt"):
+    with pytest.raises(TypeError, match="dt"):
         DataConfig(channels=(channel,), dt=1.0)
 
 
@@ -374,7 +446,7 @@ def test_data_config_rejects_old_global_dt():
 def test_data_config_rejects_unordered_observation_interval(start, stop):
     channel = SampledChannel(data=np.arange(8), dt=1.0)
 
-    with pytest.raises(ValidationError, match="observation_start"):
+    with pytest.raises(ValueError, match="observation_start"):
         DataConfig(
             channels=(channel,),
             observation_start=start,
@@ -410,12 +482,28 @@ def test_data_config_preserves_large_numpy_integer_observation_bounds():
     ],
 )
 def test_hdf5_source_rejects_invalid_configuration(dataset, selection, message):
-    with pytest.raises((ValidationError, TypeError), match=message):
+    with pytest.raises((TypeError, ValueError), match=message):
         HDF5Source(
             file=Path("data.h5"),
             dataset=dataset,
             selection=selection,
         )
+
+
+def test_hdf5_source_normalizes_path_selection_and_numpy_indices():
+    source = HDF5Source(
+        file="data.h5",
+        dataset="/signals",
+        selection=[slice(np.int64(1), np.int64(4)), np.int64(2)],
+    )
+
+    assert source.file == Path("data.h5")
+    assert isinstance(source.file, Path)
+    assert source.selection == (slice(1, 4), 2)
+    assert type(source.selection) is tuple
+    assert type(source.selection[0].start) is int
+    assert type(source.selection[0].stop) is int
+    assert type(source.selection[1]) is int
 
 
 @pytest.mark.parametrize(
@@ -459,5 +547,5 @@ def test_spectrum_config_accepts_supported_devices(device, expected):
     ],
 )
 def test_spectrum_config_rejects_unsupported_devices(device):
-    with pytest.raises(ValidationError, match="device|device type|numbered"):
+    with pytest.raises(ValueError, match="device|device type|numbered"):
         SpectrumConfig(device=device)

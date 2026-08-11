@@ -9,17 +9,15 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated
 
 import numpy as np
-from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ._core import data_access as _data_access
 from ._core import planning as _planning
 from ._core.utils import PlotComponent as _PlotComponent
-from .configurators import _SHARED_CONFIG, DataConfig, SampledChannel, SpectrumConfig
+from .configurators import DataConfig, SampledChannel, SpectrumConfig, normalize_real
 from .results import SpectrumResult, SpectrumResultStore
 
 try:
@@ -47,7 +45,8 @@ __all__ = [
 ]
 
 
-class PlotStyle(BaseModel):
+@dataclass(frozen=True, slots=True)
+class PlotStyle:
     """Configuration for plotting calculated polyspectra.
 
     Attributes
@@ -72,36 +71,75 @@ class PlotStyle(BaseModel):
         Must be between zero and one.
     """
 
-    model_config = _SHARED_CONFIG
-
     f_min: float
     f_max: float
+    sigma: float = 1.0
+    uncertainty_levels: list[float] | None = None
+    arcsinh_ratio: float | None = None
+    plot_format: list[_PlotComponent] = field(default_factory=lambda: ["re", "im"])
+    insignificance_alpha: float = 0.8
 
-    sigma: Annotated[float, Field(gt=0)] = 1.0
-    uncertainty_levels: (
-        Annotated[list[Annotated[float, Field(gt=0)]], Field(min_length=1)] | None
-    ) = None
-    arcsinh_ratio: Annotated[float, Field(gt=0)] | None = None
-    plot_format: Annotated[list[_PlotComponent], Field(min_length=1)] = ["re", "im"]
-    insignificance_alpha: Annotated[float, Field(ge=0.0, le=1.0)] = 0.8
+    def __post_init__(self) -> None:
+        f_min = normalize_real(self.f_min, name="f_min")
+        f_max = normalize_real(self.f_max, name="f_max")
+        sigma = normalize_real(self.sigma, name="sigma", positive=True)
+        insignificance_alpha = normalize_real(
+            self.insignificance_alpha,
+            name="insignificance_alpha",
+        )
 
-    @field_validator("plot_format")
-    @classmethod
-    def _ensure_unique_formats(cls, v: list[_PlotComponent]) -> list[_PlotComponent]:
-        """Ensure plot_format does not contain duplicate components."""
-        if len(v) != len(set(v)):
+        if f_min >= f_max:
+            raise ValueError(f"f_min ({f_min}) must be less than f_max ({f_max}).")
+
+        if not 0.0 <= insignificance_alpha <= 1.0:
+            raise ValueError("insignificance_alpha must be between zero and one.")
+
+        if self.arcsinh_ratio is None:
+            arcsinh_ratio = None
+        else:
+            arcsinh_ratio = normalize_real(self.arcsinh_ratio, name="arcsinh_ratio", positive=True)
+
+        if self.uncertainty_levels is None:
+            uncertainty_levels = None
+        else:
+            if not isinstance(self.uncertainty_levels, (list, tuple)):
+                raise TypeError("uncertainty_levels must be a list or tuple.")
+
+            if not self.uncertainty_levels:
+                raise ValueError("uncertainty_levels must contain at least one value.")
+
+            uncertainty_levels = [
+                normalize_real(value, name=f"uncertainty_levels[{index}]", positive=True)
+                for index, value in enumerate(self.uncertainty_levels)
+            ]
+
+        if not isinstance(self.plot_format, (list, tuple)):
+            raise TypeError("plot_format must be a list or tuple.")
+
+        if not self.plot_format:
+            raise ValueError("plot_format must contain at least one component.")
+
+        plot_format: list[_PlotComponent] = []
+
+        for component in self.plot_format:
+            if component not in ("re", "im"):
+                raise ValueError("plot_format entries must be 're' or 'im'.")
+
+            plot_format.append(component)
+
+        if len(plot_format) != len(set(plot_format)):
             raise ValueError("plot_format cannot contain duplicate elements.")
-        return v
 
-    @model_validator(mode="after")
-    def _validate_limits(self) -> PlotStyle:
-        """Require the displayed lower frequency bound to precede the upper bound."""
-        if self.f_min >= self.f_max:
-            raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
-        return self
+        object.__setattr__(self, "f_min", f_min)
+        object.__setattr__(self, "f_max", f_max)
+        object.__setattr__(self, "sigma", sigma)
+        object.__setattr__(self, "uncertainty_levels", uncertainty_levels)
+        object.__setattr__(self, "arcsinh_ratio", arcsinh_ratio)
+        object.__setattr__(self, "plot_format", plot_format)
+        object.__setattr__(self, "insignificance_alpha", insignificance_alpha)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SpectrumFigure:
     """Matplotlib figure and metadata for one plotted spectrum.
 

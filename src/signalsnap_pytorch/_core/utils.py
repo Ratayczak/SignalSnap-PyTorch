@@ -7,13 +7,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
-
-from pydantic import Field
+from typing import Literal
 
 type TimeUnits = Literal["s", "ms", "us", "ns", "ps"]
 type FrequencyUnits = Literal["Hz", "kHz", "MHz", "GHz", "THz"]
-type ChannelIndex = Annotated[int, Field(ge=0)]
 type PlotComponent = Literal["re", "im"]
 
 

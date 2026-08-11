@@ -7,21 +7,13 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 import torch
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictFloat,
-    StrictInt,
-    ValidationInfo,
-    field_validator,
-    model_validator,
-)
 
 from ._core.utils import TimeUnits as _TimeUnits
 
@@ -34,10 +26,179 @@ __all__ = [
     "TimestampedChannel",
 ]
 
-_SHARED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+def _normalize_integer(value: Any, *, name: str, minimum: int | None = None) -> int:
+    """Accept Python and NumPy integers without accepting booleans or coercing other types."""
+
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name} must be an integer.")
+
+    if isinstance(value, np.integer):
+        value = int(value)
+    elif not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+
+    return value
 
 
-class HDF5Source(BaseModel):
+def normalize_real(value: Any, *, name: str, positive: bool = False) -> float:
+    """Accept finite Python and NumPy real numbers without accepting strings or booleans."""
+
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name} must be a finite real number.")
+
+    if not isinstance(value, (int, float, np.integer, np.floating)):
+        raise TypeError(f"{name} must be a finite real number.")
+
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite real number.") from exc
+
+    if not math.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+
+    if positive and normalized <= 0:
+        raise ValueError(f"{name} must be positive.")
+
+    return normalized
+
+
+def _normalize_observation_bound(value: Any, *, name: str) -> int | float | None:
+    """Normalize NumPy scalars while preserving large integral origins exactly."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name} must be a finite real number.")
+
+    if isinstance(value, np.integer):
+        return int(value)
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, (float, np.floating)):
+        normalized = float(value)
+
+        if not math.isfinite(normalized):
+            raise ValueError(f"{name} must be finite.")
+
+        return normalized
+
+    raise TypeError(f"{name} must be a finite real number.")
+
+
+def _require_bool(value: Any, *, name: str) -> bool:
+    """Accept only actual Python booleans."""
+
+    if type(value) is not bool:
+        raise TypeError(f"{name} must be a Boolean.")
+
+    return value
+
+
+def _require_choice(value: Any, *, name: str, choices: tuple[str, ...]) -> str:
+    """Require an exact string from a fixed set."""
+
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+
+    if value not in choices:
+        allowed = ", ".join(repr(choice) for choice in choices)
+        raise ValueError(f"{name} must be one of {allowed}.")
+
+    return value
+
+
+def _normalize_selector_integer(value: Any, *, name: str) -> int | None:
+    """Normalize one optional HDF5 slice component."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name} must be an integer or None.")
+
+    if isinstance(value, np.integer):
+        return int(value)
+
+    if isinstance(value, int):
+        return value
+
+    raise TypeError(f"{name} must be an integer or None.")
+
+
+def _normalize_hdf5_selection(value: Any) -> tuple[int | slice, ...]:
+    """Validate HDF5 selection syntax and normalize NumPy integers."""
+
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("selection must be a list or tuple.")
+
+    if not value:
+        raise ValueError("selection cannot be empty.")
+
+    normalized: list[int | slice] = []
+
+    for item in value:
+        if isinstance(item, (bool, np.bool_)):
+            raise TypeError("HDF5 selection entries must be integers or slices.")
+
+        if isinstance(item, np.integer):
+            normalized.append(int(item))
+            continue
+
+        if isinstance(item, int):
+            normalized.append(item)
+            continue
+
+        if not isinstance(item, slice):
+            raise TypeError("HDF5 selection entries must be integers or slices.")
+
+        start = _normalize_selector_integer(item.start, name="HDF5 slice start")
+        stop = _normalize_selector_integer(item.stop, name="HDF5 slice stop")
+        step = _normalize_selector_integer(item.step, name="HDF5 slice step")
+
+        if step not in (None, 1):
+            raise ValueError("HDF5 slice steps other than 1 are not supported.")
+
+        normalized.append(slice(start, stop, step))
+
+    return tuple(normalized)
+
+
+def _normalize_device(value: Any) -> str:
+    """Validate device syntax without requiring that the device is available."""
+
+    if not isinstance(value, str):
+        raise TypeError("device must be a string.")
+
+    try:
+        device = torch.device(value)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "device must be 'cpu', 'mps', 'cuda', 'cuda:N', 'xpu', or 'xpu:N', where N is a "
+            "nonnegative integer."
+        ) from exc
+
+    if device.type not in {"cpu", "cuda", "mps", "xpu"}:
+        raise ValueError(
+            f"Unsupported device type {device.type!r}; use 'cpu', 'mps', 'cuda', 'cuda:N', 'xpu', "
+            "or 'xpu:N'."
+        )
+
+    if device.type in {"cpu", "mps"} and device.index is not None:
+        raise ValueError(f"{device.type!r} does not support a numbered device index.")
+
+    return str(device)
+
+
+@dataclass(frozen=True, slots=True)
+class HDF5Source:
     """HDF5-backed storage configuration for one measurement channel.
 
     An :class:`HDF5Source` can be used as :attr:`SampledChannel.data` or
@@ -60,75 +221,22 @@ class HDF5Source(BaseModel):
         ``(slice(None), slice(None), 0)`` selects one channel from the final dataset axis.
     """
 
-    model_config = _SHARED_CONFIG
-
     file: Path
     dataset: str
-    selection: tuple[Any, ...]
+    selection: tuple[int | slice, ...]
 
-    @field_validator("dataset")
-    @classmethod
-    def _validate_dataset(cls, value: str) -> str:
-        """Reject an empty HDF5 dataset path."""
-        if not value:
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, (str, Path)):
+            raise TypeError("file must be a string or pathlib.Path.")
+
+        if not isinstance(self.dataset, str):
+            raise TypeError("dataset must be a string.")
+
+        if not self.dataset:
             raise ValueError("dataset cannot be empty.")
-        return value
 
-    @field_validator("selection")
-    @classmethod
-    def _validate_selection(cls, value: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Validate selector syntax and normalize NumPy integer components."""
-        if not value:
-            raise ValueError("selection cannot be empty.")
-
-        normalized = []
-
-        for item in value:
-            if isinstance(item, (bool, np.bool_)):
-                raise TypeError("HDF5 selection entries must be integers or slices.")
-
-            if isinstance(item, np.integer):
-                item = int(item)
-
-            if not isinstance(item, (int, slice)):
-                raise TypeError("HDF5 selection entries must be integers or slices.")
-
-            if isinstance(item, slice):
-                if item.start is None:
-                    start = None
-                else:
-                    if isinstance(item.start, (bool, np.bool_)):
-                        raise TypeError("HDF5 slice start must be an integer or None.")
-                    if not isinstance(item.start, (int, np.integer)):
-                        raise TypeError("HDF5 slice start must be an integer or None.")
-                    start = int(item.start)
-
-                if item.stop is None:
-                    stop = None
-                else:
-                    if isinstance(item.stop, (bool, np.bool_)):
-                        raise TypeError("HDF5 slice stop must be an integer or None.")
-                    if not isinstance(item.stop, (int, np.integer)):
-                        raise TypeError("HDF5 slice stop must be an integer or None.")
-                    stop = int(item.stop)
-
-                if item.step is None:
-                    step = None
-                else:
-                    if isinstance(item.step, (bool, np.bool_)):
-                        raise TypeError("HDF5 slice step must be an integer or None.")
-                    if not isinstance(item.step, (int, np.integer)):
-                        raise TypeError("HDF5 slice step must be an integer or None.")
-                    step = int(item.step)
-
-                if step not in (None, 1):
-                    raise ValueError("HDF5 slice steps other than 1 are not supported.")
-
-                normalized.append(slice(start, stop, step))
-            else:
-                normalized.append(item)
-
-        return tuple(normalized)
+        object.__setattr__(self, "file", Path(self.file))
+        object.__setattr__(self, "selection", _normalize_hdf5_selection(self.selection))
 
 
 def _validate_stored_data(
@@ -195,7 +303,8 @@ def _validate_stored_data(
     return value
 
 
-class SampledChannel(BaseModel):
+@dataclass(frozen=True, slots=True, eq=False)
+class SampledChannel:
     """Configuration for one sampled measurement channel.
 
     A :class:`SampledChannel` represents values recorded at a constant sampling interval. During a
@@ -214,35 +323,24 @@ class SampledChannel(BaseModel):
         Positive time interval between consecutive samples, in units of :attr:`DataConfig.t_unit`.
     """
 
-    model_config = _SHARED_CONFIG
+    data: np.ndarray | torch.Tensor | HDF5Source
+    dt: float
 
-    data: Any
-    dt: Annotated[float, Field(gt=0)]
-
-    @field_validator("data")
-    @classmethod
-    def _validate_data(cls, data: Any) -> Any:
-        """Validate sampled storage, shape, device, and dtype."""
-
-        return _validate_stored_data(
-            data,
+    def __post_init__(self) -> None:
+        validated_data = _validate_stored_data(
+            self.data,
             label="SampledChannel data",
             allow_empty=False,
             allow_boolean=True,
         )
+        normalized_dt = normalize_real(self.dt, name="SampledChannel dt", positive=True)
 
-    @field_validator("dt", mode="before")
-    @classmethod
-    def _reject_boolean_dt(cls, value: Any) -> Any:
-        """Reject Boolean sampling intervals before numeric coercion."""
-
-        if isinstance(value, (bool, np.bool_)):
-            raise TypeError("SampledChannel dt must be a positive finite number.")
-
-        return value
+        object.__setattr__(self, "data", validated_data)
+        object.__setattr__(self, "dt", normalized_dt)
 
 
-class TimestampedChannel(BaseModel):
+@dataclass(frozen=True, slots=True, eq=False)
+class TimestampedChannel:
     """Configuration for one timestamped measurement channel.
 
     A :class:`TimestampedChannel` represents discrete events by their occurrence times. Active
@@ -261,24 +359,15 @@ class TimestampedChannel(BaseModel):
         flattened in C order; the flattened timestamps must satisfy the same ordering constraints.
     """
 
-    model_config = _SHARED_CONFIG
+    timestamps: np.ndarray | torch.Tensor | HDF5Source
 
-    timestamps: Any
-
-    @field_validator("timestamps")
-    @classmethod
-    def _validate_timestamps(cls, timestamps: Any) -> Any:
-        """Validate timestamp storage, shape, device, dtype, and ordering."""
-
+    def __post_init__(self) -> None:
         timestamps = _validate_stored_data(
-            timestamps,
+            self.timestamps,
             label="TimestampedChannel timestamps",
             allow_empty=True,
             allow_boolean=False,
         )
-
-        if isinstance(timestamps, HDF5Source):
-            return timestamps
 
         if isinstance(timestamps, torch.Tensor):
             if not bool(torch.isfinite(timestamps).all().item()):
@@ -287,18 +376,18 @@ class TimestampedChannel(BaseModel):
             if timestamps.numel() > 1 and bool(torch.any(timestamps[1:] < timestamps[:-1]).item()):
                 raise ValueError("TimestampedChannel timestamps must be nondecreasing.")
 
-            return timestamps
+        elif isinstance(timestamps, np.ndarray):
+            if not np.all(np.isfinite(timestamps)):
+                raise ValueError("TimestampedChannel timestamps must contain only finite values.")
 
-        if not np.all(np.isfinite(timestamps)):
-            raise ValueError("TimestampedChannel timestamps must contain only finite values.")
+            if timestamps.size > 1 and np.any(timestamps[1:] < timestamps[:-1]):
+                raise ValueError("TimestampedChannel timestamps must be nondecreasing.")
 
-        if timestamps.size > 1 and np.any(timestamps[1:] < timestamps[:-1]):
-            raise ValueError("TimestampedChannel timestamps must be nondecreasing.")
-
-        return timestamps
+        object.__setattr__(self, "timestamps", timestamps)
 
 
-class DataConfig(BaseModel):
+@dataclass(frozen=True, slots=True, eq=False)
+class DataConfig:
     """Configuration for sampled and timestamped measurement channels.
 
     :class:`DataConfig` groups the input channels and defines their shared time coordinate. Channel
@@ -327,64 +416,52 @@ class DataConfig(BaseModel):
         ``"THz"``.
     """
 
-    model_config = _SHARED_CONFIG
-
-    channels: Annotated[tuple[SampledChannel | TimestampedChannel, ...], Field(min_length=1)]
-    observation_start: StrictInt | StrictFloat | None = None
-    observation_stop: StrictInt | StrictFloat | None = None
+    channels: tuple[SampledChannel | TimestampedChannel, ...]
+    observation_start: int | float | None = None
+    observation_stop: int | float | None = None
     t_unit: _TimeUnits = "s"
 
-    @field_validator("channels", mode="before")
-    @classmethod
-    def _require_explicit_channels(cls, channels: Any) -> Any:
-        """Reject bare arrays, tensors, HDF5 sources, and other implicit channels."""
-
-        if not isinstance(channels, (list, tuple)):
+    def __post_init__(self) -> None:
+        if not isinstance(self.channels, (list, tuple)):
             raise TypeError("channels must be a list or tuple of explicit channel objects.")
 
-        for index, channel in enumerate(channels):
+        if not self.channels:
+            raise ValueError("channels must contain at least one channel.")
+
+        normalized_channels = tuple(self.channels)
+
+        for index, channel in enumerate(normalized_channels):
             if not isinstance(channel, (SampledChannel, TimestampedChannel)):
                 raise TypeError(
                     f"Channel {index} must be a SampledChannel or TimestampedChannel; "
                     f"received {type(channel).__name__}."
                 )
 
-        return channels
-
-    @field_validator("observation_start", "observation_stop", mode="before")
-    @classmethod
-    def _normalize_observation_bound(cls, value: Any) -> Any:
-        """Preserve integral origins while normalizing NumPy scalar bounds."""
-
-        if value is None:
-            return None
-
-        if isinstance(value, (bool, np.bool_)):
-            raise TypeError("Observation bounds must be finite real numbers.")
-
-        if isinstance(value, np.integer):
-            return int(value)
-
-        if isinstance(value, np.floating):
-            return float(value)
-
-        return value
-
-    @model_validator(mode="after")
-    def _validate_observation_interval(self) -> DataConfig:
-        """Require ordered bounds when both observation limits are explicit."""
+        observation_start = _normalize_observation_bound(
+            self.observation_start,
+            name="observation_start",
+        )
+        observation_stop = _normalize_observation_bound(
+            self.observation_stop,
+            name="observation_stop",
+        )
+        t_unit = _require_choice(self.t_unit, name="t_unit", choices=("s", "ms", "us", "ns", "ps"))
 
         if (
-            self.observation_start is not None
-            and self.observation_stop is not None
-            and self.observation_start >= self.observation_stop
+            observation_start is not None
+            and observation_stop is not None
+            and observation_start >= observation_stop
         ):
             raise ValueError("observation_start must be less than observation_stop.")
 
-        return self
+        object.__setattr__(self, "channels", normalized_channels)
+        object.__setattr__(self, "observation_start", observation_start)
+        object.__setattr__(self, "observation_stop", observation_stop)
+        object.__setattr__(self, "t_unit", t_unit)
 
 
-class PhotonOptions(BaseModel):
+@dataclass(frozen=True, slots=True)
+class PhotonOptions:
     """Statistical weighting options for active timestamped channels.
 
     :class:`PhotonOptions` controls the amplitudes assigned to timestamped events before their
@@ -415,49 +492,58 @@ class PhotonOptions(BaseModel):
         configured repetition batch size. Used only with exponential weighting.
     """
 
-    model_config = _SHARED_CONFIG
-
     weighting: Literal["unit", "exponential"]
-    scale: Annotated[float, Field(gt=0)] | None = None
-    repetitions: Annotated[int, Field(gt=0)] | None = None
-    repetitions_per_batch: Annotated[int, Field(gt=0)] | None = None
-    seed: Annotated[StrictInt, Field(ge=0)] | None = None
+    scale: float | None = None
+    repetitions: int | None = None
+    repetitions_per_batch: int | None = None
+    seed: int | None = None
 
-    @field_validator("scale", "repititions", "repititions_per_batch", mode="before")
-    @classmethod
-    def _reject_boolean_numeric_fields(
-        cls,
-        value: Any,
-        info: ValidationInfo,
-    ) -> Any:
-        """Reject Booleans before numeric coercion."""
-        if isinstance(value, (bool, np.bool_)):
-            raise TypeError(f"{info.field_name} cannot be Boolean.")
-        return value
-    
+    def __post_init__(self) -> None:
+        weighting = _require_choice(
+            self.weighting,
+            name="weighting",
+            choices=("unit", "exponential"),
+        )
 
-    @model_validator(mode="after")
-    def _validate_weighting_fields(self) -> PhotonOptions:
-        """Require only the fields belonging to the selected weighting."""
+        scale = (
+            None if self.scale is None else normalize_real(self.scale, name="scale", positive=True)
+        )
+        repetitions = (
+            None
+            if self.repetitions is None
+            else _normalize_integer(self.repetitions, name="repetitions", minimum=1)
+        )
+        repetitions_per_batch = (
+            None
+            if self.repetitions_per_batch is None
+            else _normalize_integer(
+                self.repetitions_per_batch,
+                name="repetitions_per_batch",
+                minimum=1,
+            )
+        )
+        seed = None if self.seed is None else _normalize_integer(self.seed, name="seed", minimum=0)
 
-        exponential_fields = (self.scale, self.repetitions, self.repetitions_per_batch, self.seed)
-
-        if self.weighting == "unit":
-            if any(value is not None for value in exponential_fields):
+        if weighting == "unit":
+            if any(
+                value is not None for value in (scale, repetitions, repetitions_per_batch, seed)
+            ):
                 raise ValueError(
                     "Unit photon weighting does not accept scale, repetitions, "
                     "repetitions_per_batch, or seed."
                 )
-
-            return self
-
-        if self.scale is None or self.repetitions is None:
+        elif scale is None or repetitions is None:
             raise ValueError("Exponential photon weighting requires scale and repetitions.")
 
-        return self
+        object.__setattr__(self, "weighting", weighting)
+        object.__setattr__(self, "scale", scale)
+        object.__setattr__(self, "repetitions", repetitions)
+        object.__setattr__(self, "repetitions_per_batch", repetitions_per_batch)
+        object.__setattr__(self, "seed", seed)
 
 
-class SpectrumConfig(BaseModel):
+@dataclass(frozen=True, slots=True)
+class SpectrumConfig:
     """Spectrum configuration for polyspectra calculations.
 
     :class:`SpectrumConfig` describes what the user asks the calculation to use: frequency spacing
@@ -538,70 +624,70 @@ class SpectrumConfig(BaseModel):
         function from the old API is used as a window function.
     """
 
-    model_config = _SHARED_CONFIG
-
-    df: Annotated[float, Field(gt=0)] | None = None
+    df: float | None = None
     f_min: float = 0.0
     f_max: float | None = None
     photon_options: PhotonOptions | None = None
-    m: Annotated[int, Field(gt=0)] = 10
+    m: int = 10
     uncertainty_estimation: Literal["global", "short_term"] = "global"
-    m_var: Annotated[int, Field(ge=2)] = 10
+    m_var: int = 10
     device: str = "cpu"
     precision: Literal["auto", "single", "double"] = "auto"
-    spectral_estimates_max: Annotated[int, Field(gt=0)] | None = int(1e6)
-    spectral_estimates_per_batch: Annotated[int, Field(ge=1)] = 1
+    spectral_estimates_max: int | None = int(1e6)
+    spectral_estimates_per_batch: int = 1
     interlacing: bool = False
     old_window: bool = False
 
-    @model_validator(mode="after")
-    def _validate_limits(self) -> SpectrumConfig:
-        """Require the lower frequency bound to precede an explicit upper bound."""
-        if self.f_max is not None and self.f_min >= self.f_max:
-            raise ValueError(f"f_min ({self.f_min}) must be less than f_max ({self.f_max}).")
+    def __post_init__(self) -> None:
+        df = None if self.df is None else normalize_real(self.df, name="df", positive=True)
+        f_min = normalize_real(self.f_min, name="f_min")
+        f_max = None if self.f_max is None else normalize_real(self.f_max, name="f_max")
 
-        return self
+        if self.photon_options is not None and not isinstance(self.photon_options, PhotonOptions):
+            raise TypeError("photon_options must be a PhotonOptions object or None.")
 
-    @field_validator(
-        "df",
-        "f_min",
-        "f_max",
-        "m",
-        "m_var",
-        "spectral_estimates_max",
-        "spectral_estimates_per_batch",
-        mode="before",
-    )
-    @classmethod
-    def _reject_boolean_numeric_fields(
-        cls,
-        value: Any,
-        info: ValidationInfo,
-    ) -> Any:
-        """Reject Booleans before numeric coercion."""
-        if isinstance(value, (bool, np.bool_)):
-            raise TypeError(f"{info.field_name} cannot be Boolean.")
-        return value
-
-    @field_validator("device")
-    @classmethod
-    def _validate_device(cls, value: str) -> str:
-        """Validate device syntax without checking hardware availability."""
-        try:
-            device = torch.device(value)
-        except (RuntimeError, ValueError) as exc:
-            raise ValueError(
-                "device must be 'cpu', 'mps', 'cuda', 'cuda:N', 'xpu', or 'xpu:N', where N "
-                "is a nonnegative integer."
-            ) from exc
-
-        if device.type not in {"cpu", "cuda", "mps", "xpu"}:
-            raise ValueError(
-                f"Unsupported device type {device.type!r}; use 'cpu', 'mps', 'cuda', 'cuda:N', "
-                "'xpu', or 'xpu:N'."
+        m = _normalize_integer(self.m, name="m", minimum=1)
+        uncertainty_estimation = _require_choice(
+            self.uncertainty_estimation,
+            name="uncertainty_estimation",
+            choices=("global", "short_term"),
+        )
+        m_var = _normalize_integer(self.m_var, name="m_var", minimum=2)
+        device = _normalize_device(self.device)
+        precision = _require_choice(
+            self.precision,
+            name="precision",
+            choices=("auto", "single", "double"),
+        )
+        spectral_estimates_max = (
+            None
+            if self.spectral_estimates_max is None
+            else _normalize_integer(
+                self.spectral_estimates_max,
+                name="spectral_estimates_max",
+                minimum=1,
             )
+        )
+        spectral_estimates_per_batch = _normalize_integer(
+            self.spectral_estimates_per_batch,
+            name="spectral_estimates_per_batch",
+            minimum=1,
+        )
+        interlacing = _require_bool(self.interlacing, name="interlacing")
+        old_window = _require_bool(self.old_window, name="old_window")
 
-        if device.type in {"cpu", "mps"} and device.index is not None:
-            raise ValueError(f"{device.type!r} does not support a numbered device index.")
+        if f_max is not None and f_min >= f_max:
+            raise ValueError(f"f_min ({f_min}) must be less than f_max ({f_max}).")
 
-        return str(device)
+        object.__setattr__(self, "df", df)
+        object.__setattr__(self, "f_min", f_min)
+        object.__setattr__(self, "f_max", f_max)
+        object.__setattr__(self, "m", m)
+        object.__setattr__(self, "uncertainty_estimation", uncertainty_estimation)
+        object.__setattr__(self, "m_var", m_var)
+        object.__setattr__(self, "device", device)
+        object.__setattr__(self, "precision", precision)
+        object.__setattr__(self, "spectral_estimates_max", spectral_estimates_max)
+        object.__setattr__(self, "spectral_estimates_per_batch", spectral_estimates_per_batch)
+        object.__setattr__(self, "interlacing", interlacing)
+        object.__setattr__(self, "old_window", old_window)

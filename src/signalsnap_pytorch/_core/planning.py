@@ -26,7 +26,7 @@ from ..configurators import (
     TimestampedChannel,
 )
 from .data_access import RuntimeSource, get_source_length, validate_timestamp_source
-from .utils import ChannelIndex, FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
+from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
 _MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 10
 
@@ -241,7 +241,7 @@ class RuntimeConfig:
     ----------
     active_data_channels : tuple[int, ...]
         Unique data-channel indices referenced by ``requested_spectra``, in first-use order.
-    requested_spectra : tuple[tuple[ChannelIndex, ...], ...]
+    requested_spectra : tuple[tuple[int, ...], ...]
         Validated channel tuples identifying the requested spectra, in request order.
     fft_frequency_plan : FFTFrequencyPlan | None
         Shared shifted-FFT frequency plan used by every spectrum containing at least one sampled
@@ -276,7 +276,7 @@ class RuntimeConfig:
     """
 
     active_data_channels: tuple[int, ...]
-    requested_spectra: tuple[tuple[ChannelIndex, ...], ...]
+    requested_spectra: tuple[tuple[int, ...], ...]
     fft_frequency_plan: FFTFrequencyPlan | None
     direct_frequency_plan: DirectFrequencyPlan | None
     channel_plans: dict[int, ChannelPlan]
@@ -290,7 +290,7 @@ class RuntimeConfig:
     device: torch.device
     old_window: bool
 
-    def frequency_plan_for(self, channels: tuple[ChannelIndex, ...]) -> FrequencyPlan:
+    def frequency_plan_for(self, channels: tuple[int, ...]) -> FrequencyPlan:
         """Return the frequency plan used for a spectrum channel tuple.
 
         Spectra containing at least one sampled channel use ``fft_frequency_plan``.
@@ -298,7 +298,7 @@ class RuntimeConfig:
 
         Parameters
         ----------
-        channels : tuple[ChannelIndex, ...]
+        channels : tuple[int, ...]
             Data-channel indices identifying the spectrum.
 
         Returns
