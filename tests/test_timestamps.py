@@ -15,7 +15,11 @@ from signalsnap_pytorch._core.planning import (
     TimestampedChannelPlan,
     WindowBatch,
 )
-from signalsnap_pytorch._core.spectra import build_timestamp_third_order_cache
+from signalsnap_pytorch._core.spectra import (
+    _build_coefficient_batch,
+    build_third_order_cache,
+    build_timestamp_third_order_cache,
+)
 from signalsnap_pytorch._core.timestamps import (
     PreparedTimestampBatch,
     TimestampCursor,
@@ -250,6 +254,47 @@ def test_timestamp_cursor_resets_for_interlaced_traversal(monkeypatch):
     np.testing.assert_allclose(shifted.relative_event_times, [0.25, 0.75, 0.25, 0.75])
     np.testing.assert_array_equal(shifted.window_indices, [0, 0, 2, 2])
     np.testing.assert_array_equal(shifted.global_event_indices, [0, 1, 2, 3])
+
+
+def test_keyed_amplitudes_follow_event_identity_across_interlaced_placements():
+    timestamps = np.array([0.75, 1.25, 1.25, 2.75, 3.25])
+    cursor = TimestampCursor(timestamps, observation_start=0.0)
+    ordinary = prepare_timestamp_batch(
+        cursor,
+        _batch([[0.0, 1.0], [2.0, 3.0]]),
+    )
+    shifted = prepare_timestamp_batch(
+        cursor,
+        _batch([[0.5, 1.5], [2.5, 3.5]], shifted=True),
+    )
+    runtime = _runtime()
+    runtime.repetition_plan = SimpleNamespace(resolved_seed=2718)
+    channel_plan = TimestampedChannelPlan(
+        event_count=timestamps.size,
+        weighting="exponential",
+        scale=1.25,
+    )
+
+    ordinary_amplitudes = materialize_timestamp_event_amplitudes(
+        ordinary,
+        channel_index=2,
+        channel_plan=channel_plan,
+        realization_ids=range(3),
+        runtime=runtime,
+    )
+    shifted_amplitudes = materialize_timestamp_event_amplitudes(
+        shifted,
+        channel_index=2,
+        channel_plan=channel_plan,
+        realization_ids=range(3),
+        runtime=runtime,
+    )
+
+    np.testing.assert_array_equal(ordinary.global_event_indices, np.arange(timestamps.size))
+    np.testing.assert_array_equal(shifted.global_event_indices, np.arange(timestamps.size))
+    np.testing.assert_array_equal(shifted_amplitudes, ordinary_amplitudes)
+    assert timestamps[1] == timestamps[2]
+    assert not np.array_equal(ordinary_amplitudes[:, 1], ordinary_amplitudes[:, 2])
 
 
 def test_timestamp_batch_preserves_large_integer_origin_offsets():
@@ -725,3 +770,52 @@ def test_unit_timestamp_coefficients_keep_empty_windows_and_omit_third_order_sto
     assert torch.count_nonzero(coefficients.dc) == 0
     assert torch.count_nonzero(coefficients.output) == 0
     assert coefficients.third_order is None
+
+
+def test_sampled_and_timestamp_closing_coefficients_use_compact_storage():
+    frequency_plan = FFTFrequencyPlan(
+        shifted_full_fft_frequencies=np.fft.fftshift(np.fft.fftfreq(8)),
+        band_start=2,
+        band_stop=7,
+    )
+    runtime = _runtime(duration=8.0)
+    sampled_cache = build_third_order_cache(runtime, frequency_plan)
+    sampled_coefficients = _build_coefficient_batch(
+        frequency_plan,
+        {0: torch.ones((1, 2, 4, 8), dtype=torch.complex128)},
+        sampled_cache,
+    )[0]
+    prepared = PreparedTimestampBatch(
+        relative_event_times=np.empty(0, dtype=np.float64),
+        window_indices=np.empty(0, dtype=np.int64),
+        global_event_indices=np.empty(0, dtype=np.int64),
+        estimate_count=2,
+        windows_per_estimate=4,
+    )
+    timestamp_cache = build_timestamp_third_order_cache(runtime, frequency_plan)
+    timestamp_coefficients = materialize_timestamp_coefficients(
+        prepared,
+        frequency_plan,
+        _prepare_default_timestamp_window(runtime),
+        runtime,
+        timestamp_cache,
+        event_amplitudes=np.ones((1, 0)),
+    )
+    frequency_count = frequency_plan.band_frequencies.size
+
+    for coefficients in (sampled_coefficients, timestamp_coefficients):
+        assert coefficients.third_order is not None
+        third_order = coefficients.third_order
+        assert third_order.values.shape[-1] <= 2 * frequency_count - 1
+        assert third_order.values.shape[-2:] != (frequency_count, frequency_count)
+        assert third_order.gather_indices.shape == (frequency_count, frequency_count)
+        assert third_order.valid_mask.shape == (frequency_count, frequency_count)
+
+        retained_complex_tensors = (
+            coefficients.dc,
+            coefficients.output,
+            third_order.values,
+        )
+        for values in retained_complex_tensors:
+            assert values is not None
+            assert values.shape[-2:] != (frequency_count, frequency_count)

@@ -173,6 +173,96 @@ def _timestamp_reference():
     )
 
 
+def _window_event_coefficients(patterns, frequencies):
+    dc_coefficients = []
+    frequency_coefficients = []
+
+    for relative_event_times in patterns:
+        relative_event_times = np.asarray(relative_event_times, dtype=np.float64)
+        weights = _default_window(relative_event_times)
+        phase_shape = (-1,) + (1,) * frequencies.ndim
+        phases = np.exp(
+            1j
+            * 2.0
+            * np.pi
+            * relative_event_times.reshape(phase_shape)
+            * frequencies[None, ...]
+        )
+        dc_coefficients.append(weights.sum())
+        frequency_coefficients.append(
+            np.sum(weights.reshape(phase_shape) * phases, axis=0)
+        )
+
+    dc = np.asarray(dc_coefficients).reshape(2, 4)
+    coefficients = np.asarray(frequency_coefficients).reshape((2, 4) + frequencies.shape)
+    return dc, coefficients
+
+
+def _multichannel_timestamp_reference(channel_patterns, frequencies, channels):
+    coefficient_data = {
+        channel: _window_event_coefficients(patterns, frequencies)
+        for channel, patterns in channel_patterns.items()
+    }
+    order = len(channels)
+    normalization = _normalization(order)
+    m = 4
+
+    if order == 1:
+        dc = coefficient_data[channels[0]][0]
+        return np.asarray([dc.mean(axis=1).mean() / normalization])
+
+    centered = {
+        channel: coefficients - coefficients.mean(axis=1, keepdims=True)
+        for channel, (_, coefficients) in coefficient_data.items()
+    }
+
+    if order == 2:
+        estimates = (
+            m
+            / (m - 1)
+            * np.mean(centered[channels[0]] * np.conj(centered[channels[1]]), axis=1)
+        )
+    elif order == 3:
+        closing_frequencies = -(frequencies[:, None] + frequencies[None, :])
+        _, closing = _window_event_coefficients(
+            channel_patterns[channels[2]],
+            closing_frequencies,
+        )
+        closing -= closing.mean(axis=1, keepdims=True)
+        estimates = (
+            m**2
+            / ((m - 1) * (m - 2))
+            * np.mean(
+                centered[channels[0]][:, :, :, None]
+                * centered[channels[1]][:, :, None, :]
+                * closing,
+                axis=1,
+            )
+        )
+    else:
+        first = centered[channels[0]]
+        second = np.conj(centered[channels[1]])
+        third = centered[channels[2]]
+        fourth = np.conj(centered[channels[3]])
+        first_pair = first * second
+        second_pair = third * fourth
+        estimates = m**2 / ((m - 1) * (m - 2) * (m - 3)) * (
+            (m + 1) * _mean_outer(first_pair, second_pair)
+            - (m - 1)
+            * (
+                np.einsum(
+                    "bf,bg->bfg",
+                    first_pair.mean(axis=1),
+                    second_pair.mean(axis=1),
+                )
+                + _mean_outer(first, third) * _mean_outer(second, fourth)
+                + _mean_outer(first, fourth) * _mean_outer(second, third)
+            )
+        )
+
+    return estimates.mean(axis=0) / normalization
+
+
 def test_unit_timestamp_pipeline_orders_one_through_four_match_numpy_reference():
     timestamps, frequencies, expected_spectra = _timestamp_reference()
     data_config = DataConfig(
@@ -207,6 +297,86 @@ def test_unit_timestamp_pipeline_orders_one_through_four_match_numpy_reference()
         np.testing.assert_allclose(
             result.spectrum,
             expected,
+            rtol=2e-12,
+            atol=2e-12,
+        )
+
+
+def test_two_timestamp_channels_arbitrary_tuples_match_numpy_reference():
+    channel_patterns = {
+        0: (
+            (),
+            (0.2,),
+            (0.5, 0.5),
+            (0.15, 0.7),
+            (0.1, 0.4),
+            (),
+            (0.25, 0.75),
+            (0.35,),
+        ),
+        1: (
+            (0.1,),
+            (),
+            (0.3, 0.3),
+            (0.8,),
+            (0.2, 0.6),
+            (0.5,),
+            (),
+            (0.1, 0.9),
+        ),
+    }
+    timestamp_channels = tuple(
+        TimestampedChannel(
+            timestamps=np.asarray(
+                [
+                    window_index + relative_time
+                    for window_index, pattern in enumerate(patterns)
+                    for relative_time in pattern
+                ]
+            )
+        )
+        for patterns in channel_patterns.values()
+    )
+    frequencies = np.array([-1.0, 0.0, 1.0])
+    requested_spectra = [
+        (0,),
+        (1,),
+        (0, 1),
+        (1, 0),
+        (1, 0, 1),
+        (0, 1, 0, 1),
+    ]
+    results = calculate_spectra(
+        DataConfig(
+            channels=timestamp_channels,
+            observation_start=0.0,
+            observation_stop=8.0,
+        ),
+        SpectrumConfig(
+            df=1.0,
+            f_min=-1.0,
+            f_max=1.0,
+            m=4,
+            spectral_estimates_per_batch=1,
+            photon_options=PhotonOptions(weighting="unit"),
+        ),
+        requested_spectra=requested_spectra,
+        show_progress=False,
+    )
+
+    for channels in requested_spectra:
+        result = results[channels]
+        expected_frequencies = np.array([0.0]) if len(channels) == 1 else frequencies
+        expected_spectrum = _multichannel_timestamp_reference(
+            channel_patterns,
+            frequencies,
+            channels,
+        )
+
+        np.testing.assert_array_equal(result.freq, expected_frequencies)
+        np.testing.assert_allclose(
+            result.spectrum,
+            expected_spectrum,
             rtol=2e-12,
             atol=2e-12,
         )
@@ -575,3 +745,86 @@ def test_fixed_seed_timestamp_result_ignores_unrelated_mixed_request():
         rtol=2e-13,
         atol=2e-13,
     )
+
+
+def test_fixed_seed_targets_are_request_order_and_unrelated_request_invariant():
+    dt = 0.25
+    physical_window_count = 12
+    sampled = np.sin(2.0 * np.pi * np.arange(physical_window_count * 4) / 8.0)
+    patterns = (
+        (),
+        (0.2,),
+        (0.3, 0.3),
+        (0.1, 0.7),
+        (0.5,),
+        (0.25, 0.75),
+    )
+    timestamp_channels = []
+
+    for channel_offset in (0.0, 0.05):
+        timestamp_channels.append(
+            np.asarray(
+                [
+                    window_index + relative_time + channel_offset
+                    for window_index in range(physical_window_count)
+                    for relative_time in patterns[window_index % len(patterns)]
+                ]
+            )
+        )
+
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(data=sampled, dt=dt),
+            TimestampedChannel(timestamps=timestamp_channels[0]),
+            TimestampedChannel(timestamps=timestamp_channels[1]),
+        ),
+        observation_start=0.0,
+        observation_stop=float(physical_window_count),
+    )
+    spectrum_config = SpectrumConfig(
+        df=1.0,
+        f_min=-1.0,
+        f_max=1.0,
+        m=4,
+        photon_options=PhotonOptions(
+            weighting="exponential",
+            scale=0.75,
+            repetitions=4,
+            seed=13579,
+        ),
+    )
+    targets = [(1, 2), (2, 1, 2)]
+
+    def calculate(requested_spectra):
+        return calculate_spectra(
+            data_config,
+            spectrum_config,
+            requested_spectra=requested_spectra,
+            show_progress=False,
+        )
+
+    reference = calculate(targets)
+    variants = (
+        calculate(list(reversed(targets))),
+        calculate([(1, 2, 1, 2), *targets]),
+        calculate([(0, 0), (0, 1, 0), *targets]),
+    )
+
+    for channels in targets:
+        expected = reference[channels]
+
+        for results in variants:
+            actual = results[channels]
+            np.testing.assert_array_equal(actual.freq, expected.freq)
+            np.testing.assert_allclose(
+                actual.spectrum,
+                expected.spectrum,
+                rtol=2e-13,
+                atol=2e-13,
+            )
+            np.testing.assert_allclose(
+                actual.spectrum_uncertainty,
+                expected.spectrum_uncertainty,
+                rtol=2e-13,
+                atol=2e-13,
+            )
