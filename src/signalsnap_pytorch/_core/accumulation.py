@@ -20,6 +20,7 @@ from ..results import SpectrumResult
 from .utils import FrequencyUnits
 
 if TYPE_CHECKING:
+    from ..metadata import CalculationMetadata, SpectrumMetadata
     from .planning import RuntimeConfig
 
 
@@ -708,7 +709,12 @@ def _combine_group_uncertainties(uncertainties: list[Tensor]) -> Tensor | None:
     return torch.complex(uncertainty_re, uncertainty_im)
 
 
-def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
+def finalize_result(
+    accumulator: SpectrumAccumulator,
+    *,
+    calculation_metadata: CalculationMetadata | None = None,
+    spectrum_metadata: SpectrumMetadata | None = None,
+) -> SpectrumResult:
     """Create a CPU-backed result from accumulated spectral estimates.
 
     Shifted and unshifted estimates are combined into one count-weighted
@@ -811,4 +817,6 @@ def finalize_result(accumulator: SpectrumAccumulator) -> SpectrumResult:
         freq_unit=accumulator.freq_unit,
         spectrum=spectrum,
         spectrum_uncertainty=spectrum_uncertainty,
+        calculation_metadata=calculation_metadata,
+        spectrum_metadata=spectrum_metadata,
     )

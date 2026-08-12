@@ -169,7 +169,7 @@ The documentation can be found in [`docs/`](docs/README.md):
 | Guide | Contents |
 | --- | --- |
 | [Calculation configuration](docs/configuration.md) | How to use `DataConfig` and `SpectrumConfig` |
-| [Working with results](docs/results.md) | Understand result shapes, uncertainties, units, selection, and partial failures |
+| [Working with results](docs/results.md) | Understand result and attached metadata |
 | [Plotting](docs/plotting.md) | Line plots, color maps, significance, saving, and window inspection |
 | [HDF5 input](docs/hdf5.md) | Working with HDF5 files that may exceed memory limits |
 | [Scientific background](docs/scientific-background.md) | Definitions, estimators, assumptions, and current scope |

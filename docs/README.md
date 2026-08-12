@@ -7,8 +7,7 @@ multi-channel sampled signals and timestamped event streams.
 
 - [Calculation configuration](configuration.md): how to configure sampled, timestamped, and mixed
   calculations with `DataConfig` and `SpectrumConfig`.
-- [Working with results](results.md): understand result shapes, uncertainties, units, selection, and
-  partial failures.
+- [Working with results](results.md): understand result and attached metadata.
 - [Plotting your results](plotting.md): display spectra and uncertainties and inspect the first FFT
   window.
 - [HDF5 input](hdf5.md): sampled and timestamped input from HDF5 files that may exceed memory

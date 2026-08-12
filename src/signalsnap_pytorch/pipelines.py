@@ -12,6 +12,7 @@ import warnings
 import torch
 from tqdm.auto import tqdm
 
+from . import metadata as _metadata
 from ._core import accumulation as _accumulation
 from ._core import data_access as _data_access
 from ._core import fft as _fft
@@ -85,6 +86,13 @@ def calculate_spectra(
             opened_channels=channels,
             spectrum_config=spectrum_config,
             spectra_channels=resolved_requested_spectra,
+        )
+
+        # Build corresponding metadata
+        calculation_metadata, spectra_metadata = _metadata.build_result_metadata(
+            data_config,
+            spectrum_config,
+            runtime,
         )
 
         # Group the channels into sampled and timestamped channels, since they need to undergo
@@ -196,7 +204,6 @@ def calculate_spectra(
             # per physical-window batch, while timestamp-channel coefficients are generated for each
             # amplitude realization batch. Both are reused across all applicable spectra.
             for batch in _planning.iter_window_batches(plan):
-
                 # Compute Fourier coefficients for sampled data channels.
                 sampled_coefficients_by_channel: dict[int, _spectra.ChannelCoefficients] | None = (
                     None
@@ -403,14 +410,21 @@ def calculate_spectra(
                 progress.update(batch.estimate_count)
 
         # Finalize accumulated spectra and their uncertainty estimates.
-        result_store = SpectrumResultStore()
+        result_store = SpectrumResultStore(
+            calculation_metadata=calculation_metadata,
+            spectra_metadata=spectra_metadata,
+        )
         for accumulator in accumulator_store:
             if accumulator.channels in failed_spectra:
                 continue
 
             # Isolate finalization failures so other completed spectra can still be returned.
             try:
-                result = _accumulation.finalize_result(accumulator)
+                result = _accumulation.finalize_result(
+                    accumulator,
+                    calculation_metadata=calculation_metadata,
+                    spectrum_metadata=spectra_metadata[accumulator.channels],
+                )
             except Exception as exc:  # noqa: BLE001 -- intentional per-spectrum fault boundary
                 warnings.warn(
                     f"Could not finalize spectrum for channels {accumulator.channels}: "

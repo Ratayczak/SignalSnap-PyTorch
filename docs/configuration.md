@@ -121,7 +121,8 @@ photon_options = PhotonOptions(
 A positive `scale` and a positive integer `repetitions` are required for exponential weighting.
 The positive integer `repetitions_per_batch` limits how many realizations are processed together
 and defaults to at most 10. An explicit nonnegative `seed` makes the generated amplitudes
-reproducible independently of batching; omitting it chooses a new seed for each calculation. These
+reproducible independently of batching; omitting it chooses a new seed for each calculation, which
+can be recovered through the results metadata (see [Calculation metadata](results.md)). These
 exponential-only fields are invalid with unit weighting.
 
 Unit weighting treats the timestamps as a counting measure. To reproduce the exponentially
@@ -201,7 +202,7 @@ may still be smaller when the trace contains insufficient data. Set it to `None`
 many estimates as possible.
 
 At least two estimates are needed for a global standard-error result. Short-term estimation needs
-at least one complete batch of `m_var` estimates. Longer traces usually provide more useful
+at least one complete batch of effective `m_var` estimates. Longer traces usually provide more useful
 uncertainty estimates.
 
 ### Batching spectral estimates

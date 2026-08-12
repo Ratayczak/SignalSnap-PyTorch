@@ -14,8 +14,8 @@ python -m pip install ".[hdf5]"
 
 ## Defining channels
 
-An `HDF5Source` identifies a file, dataset, and selection. The selected values per spectral
-estimate are flattened into one signal channel:
+An `HDF5Source` identifies a file, dataset, and selection. The selected values are flattened in C
+order into one logical signal channel:
 
 ```python
 from pathlib import Path

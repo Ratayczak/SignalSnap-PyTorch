@@ -7,58 +7,75 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 import numpy as np
 
 from ._core.utils import FrequencyUnits as _FrequencyUnits
+from .metadata import CalculationMetadata, SpectrumMetadata
 
 __all__ = ["SpectrumResult", "SpectrumResultStore"]
 
 
 @dataclass(frozen=True, slots=True)
 class SpectrumResult:
-    """Data container for the results of a single spectral calculation.
+    """Result of one requested spectral calculation.
 
-    Stores the configuration metadata, and final computed results for a specific higher-order auto-
-    or cross-spectrum calculation.
+    A result contains the calculated spectrum, its frequency axis, optional uncertainty information,
+    and the metadata specific to this result. Results produced by a calculation pipeline share their
+    :class:`CalculationMetadata` object with the containing :class:`SpectrumResultStore`.
 
-    For an order-three result, ``spectrum[i, j]`` represents the frequency tuple
-    ``(freq[i], freq[j], -(freq[i] + freq[j]))``. Entries for which the implied third frequency is
-    outside the FFT support are ``NaN``. An order-four result contains the diagonal slice
-    ``(freq[i], -freq[i], freq[j], -freq[j])`` rather than the full trispectrum.
+    For a third-order result, ``spectrum[i, j]`` represents the frequency tuple
+    ``(freq[i], freq[j], -(freq[i] + freq[j]))``. If the closing channel is sampled, entries whose
+    implied closing frequency lies outside its FFT support are ``NaN``. A timestamped closing
+    channel is evaluated by direct transform and is not restricted to sampled FFT support.
+
+    A fourth-order result contains the diagonal slice
+    ``(freq[i], -freq[i], freq[j], -freq[j])`` rather than the complete trispectrum.
 
     Attributes
     ----------
     channels : tuple[int, ...]
-        The indices identifying which channels are part of this calculation. For example,
-        ``(0, 0, 0)`` indicates a third-order auto-spectrum on channel 0, while ``(0, 1)``
-        indicates a cross-spectrum between channels 0 and 1.
+        Channel indices defining the spectrum. For example, ``(0, 0, 0)`` identifies a third-order
+        auto-spectrum of channel 0, while ``(0, 1)`` identifies a second-order cross-spectrum
+        between channels 0 and 1.
     freq : np.ndarray
-        Frequency axis associated with the spectrum. For first-order spectra, ``freq = [0]``.
+        One-dimensional frequency axis associated with the spectrum. For a first-order spectrum,
+        this is ``[0]``.
     freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
-        Unit of the frequency axis.
+        Unit of ``freq``.
     spectrum : np.ndarray
-        The final normalized spectral values transferred back to the CPU. For ``F = len(freq)``, the
-        result shapes are ``(1,)`` for first-order, ``(F,)`` for second-order, and ``(F, F)`` for
-        third- and fourth-order results.
+        Final normalized spectral values transferred to the CPU. For ``F = len(freq)``, the shape is
+        ``(1,)`` for first-order, ``(F,)`` for second-order, and ``(F, F)`` for third- and
+        fourth-order results.
     spectrum_uncertainty : np.ndarray | None
-        The calculated component-wise spectrum uncertainty transferred back to the CPU.
-        ``spectrum_uncertainty`` has the same shape as ``spectrum``. Its real and imaginary
-        components independently store uncertainties for the corresponding spectrum components;
-        the complex value itself has no statistical interpretation.
+        Component-wise uncertainty of ``spectrum``, or ``None`` when insufficient estimates are
+        available. When present, it has the same shape as ``spectrum``.
 
-        With global uncertainty estimation, each placement-group (i.e., unshifted or shifted)
-        uncertainty is the standard error of the mean calculated from all estimates in that group.
+        Its real and imaginary components independently contain the uncertainties of the
+        corresponding spectrum components. The combined complex value has no statistical
+        interpretation.
+
         With short-term uncertainty estimation, consecutive estimates are divided into complete
-        batches of ``m_var`` estimates. Batch variance-of-mean estimates are averaged and their
-        component-wise square root is reported. Incomplete trailing batches do not contribute to
-        the uncertainty.
+        groups of ``effective_m_var`` estimates. Incomplete trailing groups do not contribute.
 
-        Shifted and unshifted placement groups are evaluated separately. If both provide an
-        uncertainty, their component-wise maximum is reported. If only one group qualifies, its
-        uncertainty is used. If neither qualifies, this value is ``None``.
+        Shifted and unshifted estimates are evaluated separately. If both provide an uncertainty,
+        their component-wise maximum is returned. If only the unshifted qualifies, that group's
+        uncertainty is returned.
+    calculation_metadata : CalculationMetadata | None
+        Calculation-wide metadata shared with the containing result store and its other results.
+        This is ``None`` only for manually constructed results that omit metadata.
+    spectrum_metadata : SpectrumMetadata | None
+        Metadata describing this specific requested spectrum. For pipeline-created results, this is
+        the same object as ``store.spectra_metadata[channels]``. It is ``None`` only for manually
+        constructed results that omit metadata.
+
+    Notes
+    -----
+    ``calculation_metadata`` and ``spectrum_metadata`` must either both be provided or both be
+    ``None``.
     """
 
     channels: tuple[int, ...]
@@ -67,6 +84,9 @@ class SpectrumResult:
     freq_unit: _FrequencyUnits
     spectrum: np.ndarray
     spectrum_uncertainty: np.ndarray | None = None
+
+    calculation_metadata: CalculationMetadata | None = None
+    spectrum_metadata: SpectrumMetadata | None = None
 
     @property
     def order(self) -> int:
@@ -102,41 +122,128 @@ class SpectrumResult:
         ):
             raise ValueError("Spectrum uncertainty must have the same shape as the spectrum.")
 
+        if self.calculation_metadata is not None and not isinstance(
+            self.calculation_metadata,
+            CalculationMetadata,
+        ):
+            raise TypeError("calculation_metadata must be a CalculationMetadata object or None.")
+
+        if self.spectrum_metadata is not None and not isinstance(
+            self.spectrum_metadata,
+            SpectrumMetadata,
+        ):
+            raise TypeError("spectrum_metadata must be a SpectrumMetadata object or None.")
+
+        if (self.calculation_metadata is None) != (self.spectrum_metadata is None):
+            raise ValueError(
+                "calculation_metadata and spectrum_metadata must either both be "
+                "provided or both be None."
+            )
+
+        if self.calculation_metadata is not None:
+            assert self.spectrum_metadata is not None
+
+            if self.channels not in self.calculation_metadata.requested_spectra:
+                raise ValueError(
+                    f"Spectrum {self.channels} is not described by its calculation metadata."
+                )
+
+            if self.spectrum_metadata.channels != self.channels:
+                raise ValueError(
+                    f"SpectrumMetadata.channels {self.spectrum_metadata.channels} "
+                    f"does not match SpectrumResult.channels {self.channels}."
+                )
+
 
 @dataclass(slots=True)
 class SpectrumResultStore:
-    """Container for all spectrum results produced by a calculation pipeline.
+    """Container for the results and metadata of one calculation pipeline.
 
-    Stores one :class:`SpectrumResult` per channel tuple. Results are indexed by ``channels``, where
-    ``channels`` is a tuple of data-channel indices.
+    The ``results`` mapping contains one :class:`SpectrumResult` per successfully returned channel
+    tuple. It can contain fewer entries than ``spectra_metadata`` because metadata is created for
+    every planned spectrum before individual spectra are evaluated at their isolated failure
+    boundaries.
 
-    This class owns collection-level bookkeeping only. Numerical accumulation, uncertainty
-    estimation, and finalization are handled elsewhere.
+    Selecting results creates another store that shares the original result and metadata objects.
+    The complete planned metadata is retained by the selected store, including metadata for results
+    that were not selected.
+
+    This class handles collection-level storage and validation only. Numerical accumulation,
+    uncertainty estimation, and result finalization are performed elsewhere.
 
     Attributes
     ----------
     results : dict[tuple[int, ...], SpectrumResult]
-        Mapping from ``channels`` to the corresponding spectrum result. For example, ``(0, 0)``
-        identifies the second-order auto-spectrum of channel 0, while ``(0, 1)`` identifies a
-        second-order cross-spectrum between channels 0 and 1.
+        Mapping from channel tuples to successfully returned spectrum results. For example,
+        ``(0, 0)`` identifies the second-order auto-spectrum of channel 0, while ``(0, 1)``
+        identifies a second-order cross-spectrum between channels 0 and 1.
+    calculation_metadata : CalculationMetadata | None
+        Calculation-wide metadata shared by every stored result. This is ``None`` only for manually
+        constructed stores that omit metadata.
+    spectra_metadata : Mapping[tuple[int, ...], SpectrumMetadata]
+        Immutable mapping containing metadata for every spectrum planned by the calculation, keyed
+        by the same channel tuples used by ``results``. Its iteration order is the resolved request
+        order.
+
+        This mapping may contain keys absent from ``results`` when an individual spectrum failed or
+        when the store was created through result selection. It is empty when
+        ``calculation_metadata`` is ``None``.
+
+    Notes
+    -----
+    For pipeline-created stores, every result shares ``calculation_metadata`` by identity with the
+    store and shares ``spectrum_metadata`` by identity with the corresponding value in
+    ``spectra_metadata``.
     """
 
     results: dict[tuple[int, ...], SpectrumResult] = field(default_factory=dict)
 
+    calculation_metadata: CalculationMetadata | None = None
+    spectra_metadata: Mapping[tuple[int, ...], SpectrumMetadata] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
     def __post_init__(self) -> None:
-        """Validate result value types and agreement between keys and channel metadata."""
-        for channels, result in self.results.items():
-            if not isinstance(result, SpectrumResult):
-                raise TypeError(
-                    "SpectrumResultStore values must be SpectrumResult objects; "
-                    f"received {type(result).__name__} for key {channels}."
+        """Validate metadata and all initially supplied results."""
+        if self.calculation_metadata is not None and not isinstance(
+            self.calculation_metadata,
+            CalculationMetadata,
+        ):
+            raise TypeError("calculation_metadata must be a CalculationMetadata object or None.")
+
+        if not isinstance(self.spectra_metadata, Mapping):
+            raise TypeError(
+                "spectra_metadata must be a mapping from channel tuples "
+                "to SpectrumMetadata objects."
+            )
+
+        if not isinstance(self.spectra_metadata, MappingProxyType):
+            self.spectra_metadata = MappingProxyType(dict(self.spectra_metadata))
+
+        for channels, metadata in self.spectra_metadata.items():
+            if not isinstance(metadata, SpectrumMetadata):
+                raise TypeError("spectra_metadata values must be SpectrumMetadata objects.")
+
+            if channels != metadata.channels:
+                raise ValueError(
+                    f"Metadata key {channels} does not match "
+                    f"SpectrumMetadata.channels {metadata.channels}."
+                )
+        if self.calculation_metadata is None:
+            if self.spectra_metadata:
+                raise ValueError(
+                    "spectra_metadata must be empty when calculation_metadata is None."
+                )
+        else:
+            described_spectra = tuple(self.spectra_metadata)
+            if described_spectra != self.calculation_metadata.requested_spectra:
+                raise ValueError(
+                    "spectra_metadata must describe every requested spectrum "
+                    "in resolved request order."
                 )
 
-            if channels != result.channels:
-                raise ValueError(
-                    f"Result key {channels} does not match "
-                    f"SpectrumResult.channels {result.channels}."
-                )
+        for channels, result in self.results.items():
+            self._validate_result(result, channels)
 
     def __contains__(self, channels: object) -> bool:
         """Return whether a result exists for a channel tuple."""
@@ -160,6 +267,42 @@ class SpectrumResultStore:
         """
         return self.results[channels]
 
+    def _validate_result(
+        self,
+        result: SpectrumResult,
+        channels: tuple[int, ...] | None = None,
+    ) -> None:
+        """Validate one result against the store and its shared metadata."""
+        if not isinstance(result, SpectrumResult):
+            raise TypeError(
+                "SpectrumResultStore values must be SpectrumResult objects; "
+                f"received {type(result).__name__}."
+            )
+
+        if channels is not None and channels != result.channels:
+            raise ValueError(
+                f"Result key {channels} does not match SpectrumResult.channels {result.channels}."
+            )
+
+        if result.calculation_metadata is not self.calculation_metadata:
+            raise ValueError(
+                f"Result {result.channels} does not share the store's calculation metadata."
+            )
+
+        if self.calculation_metadata is not None:
+            try:
+                expected_metadata = self.spectra_metadata[result.channels]
+            except KeyError as exc:
+                raise ValueError(
+                    f"No SpectrumMetadata exists for result {result.channels}."
+                ) from exc
+
+            if result.spectrum_metadata is not expected_metadata:
+                raise ValueError(
+                    f"Result {result.channels} does not share its "
+                    "SpectrumMetadata with the result store."
+                )
+
     def add(self, result: SpectrumResult) -> None:
         """Add a result, replacing an existing result with the same channels.
 
@@ -167,18 +310,9 @@ class SpectrumResultStore:
         ----------
         result : SpectrumResult
             Result stored under its ``result.channels`` tuple.
-
-        Raises
-        ------
-        TypeError
-            If ``result`` is not a :class:`SpectrumResult`.
         """
-        if not isinstance(result, SpectrumResult):
-            raise TypeError(
-                "SpectrumResultStore only accepts SpectrumResult objects; "
-                f"received {type(result).__name__}."
-            )
 
+        self._validate_result(result)
         self.results[result.channels] = result
 
     def select(self, channels: Iterable[tuple[int, ...]]) -> SpectrumResultStore:
@@ -211,7 +345,11 @@ class SpectrumResultStore:
                     f"No spectrum result exists for channels {channel_tuple}."
                 ) from exc
 
-        return SpectrumResultStore(results=selected)
+        return SpectrumResultStore(
+            results=selected,
+            calculation_metadata=self.calculation_metadata,
+            spectra_metadata=self.spectra_metadata,
+        )
 
     def select_by_order(self, order: int) -> SpectrumResultStore:
         """Return all results with the specified spectrum order.

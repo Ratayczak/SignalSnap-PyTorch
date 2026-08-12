@@ -88,10 +88,11 @@ $$
 S_{z_1,z_2,z_3,z_4}^{(4)}(\omega_k, \omega_l, \omega_p) \approx \frac{N C_4(a_k, b_l, c_p, d_{k+l+p}^\ast)}{T \sum_{i=0}^{N-1}g_i^3 g_i^\ast}.
 $$
 
-The displayed spectral normalizations are the sampled-data form. Timestamp-only tuples use the
-corresponding continuous window normalization. For mixed tuples, SignalSnap evaluates the
-timestamp window on the sampled-data grid and uses the discrete overlap sum of all participating
-window factors, multiplied by the sampling interval. The cumulant algebra remains the same.
+The displayed spectral normalizations are the sampled-data form. By default, timestamp-only tuples
+use continuous window normalization. With old_window=True, they use a fixed-grid legacy
+normalization. For mixed tuples, SignalSnap evaluates the timestamp window on the sampled-data grid
+and uses the discrete overlap sum of all participating window factors, multiplied by the sampling
+interval. The cumulant algebra remains the same.
 
 $a_k$ denotes the Fourier coefficients of the first channel, $b_k$ the coefficients of the second
 channel, and so on. The cumulants $C_1(\ldots), \ldots, C_4(\ldots)$ must be estimated from finite

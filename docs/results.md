@@ -6,6 +6,8 @@
 used in the request:
 
 ```python
+results.spectra_metadata  # immutable mapping for all planned spectra
+
 result = results[(0, 1)]
 
 result.channels         # (0, 1)
@@ -14,6 +16,8 @@ result.freq             # one-dimensional NumPy frequency axis
 result.freq_unit        # for example, "Hz"
 result.spectrum         # complex NumPy array
 result.spectrum_uncertainty   # complex NumPy array, or None
+result.calculation_metadata   # CalculationMetadata object
+result.spectrum_metadata      # SpectrumMetadata object
 ```
 
 ## Shapes and frequency coordinates
@@ -87,6 +91,99 @@ $$
 For a unit-weighted `TimestampedChannel`, the signal is a counting measure and the order-one result
 is a window-normalized average event rate rather than a raw event count. Exponential weighting
 retains the configured amplitude scale and moments in the result.
+
+## Calculation metadata
+
+Pipeline results contain immutable metadata without retaining input arrays, tensors, open files, or
+other runtime calculation state.
+
+Calculation-wide metadata is available from the store and every returned result:
+
+```python
+calculation = results.calculation_metadata
+result = results[(0, 1)]
+
+assert result.calculation_metadata is calculation
+```
+
+`calculation_metadata` is a frozen `CalculationMetadata` object with these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `channel_kinds` | Kind of every configured channel, including inactive channels |
+| `active_channels` | Channel indices used by the calculation, in resolved first-use order |
+| `requested_spectra` | Every planned channel tuple in resolved request order |
+| `observation_start`, `observation_stop` | Resolved half-open observation interval |
+| `time_unit`, `frequency_unit` | Physical time unit and its reciprocal frequency unit |
+| `requested_df`, `actual_df` | Requested and resolved Fourier spacing |
+| `requested_f_min`, `requested_f_max` | Requested bounds; an omitted upper bound remains `None` |
+| `window_duration` | Duration of one physical coefficient window |
+| `unshifted_offset`, `shifted_offset` | Placement offsets; the latter is `None` without interlacing |
+| `window_convention` | Default or legacy confined-Gaussian window convention |
+| `photon_weighting` | Timestamp amplitude model, or `None` for sampled-only calculations |
+| `exponential_scale` | Exponential amplitude scale when `photon_weighting = "exponential"`, is `None` for unit amplitudes |
+| `repetition_count` | Number of amplitude realizations, is `1` for unit amplitudes  |
+| `requested_repetition_batch_size` | Configured repetition batch size for exponential amplitude scaling, is `None` for unit amplitudes |
+| `resolved_repetition_batch_size` | Repetition batch size actually used, is `1` for unit amplitudes |
+| `user_seed` | Configured seed for exponential amplitude scaling, is `None` for unit amplitudes |
+| `resolved_seed` | Seed actually used for exponential amplitude scaling, is `None` for unit amplitudes |
+| `requested_m`, `effective_m` | Requested and resolved coefficient windows per estimate |
+| `requested_m_var`, `effective_m_var` | Requested and resolved short-term uncertainty group size |
+| `uncertainty_estimation` | `"global"` or `"short_term"` |
+| `unshifted_physical_estimate_count` | Number of unshifted spectral estimates |
+| `shifted_physical_estimate_count` | Number of interlaced spectral estimates |
+| `unshifted_coefficient_window_count` | Coefficient windows used by unshifted estimates |
+| `shifted_coefficient_window_count` | Coefficient windows used by shifted estimates |
+| `real_dtype`, `complex_dtype` | Resolved calculation dtypes |
+| `requested_device`, `resolved_device` | Requested and resolved PyTorch device |
+
+For exponential weighting with no configured seed, `user_seed` is `None` and `resolved_seed`
+contains the generated seed needed to reproduce the calculation:
+
+```python
+generated_seed = results.calculation_metadata.resolved_seed
+```
+
+Per-spectrum metadata is available both as the complete planned mapping on the store and as the
+specific object attached to each returned result:
+
+```python
+all_spectrum_metadata = results.spectra_metadata
+spectrum_metadata = result.spectrum_metadata
+
+assert spectrum_metadata is all_spectrum_metadata[result.channels]
+```
+
+Each frozen `SpectrumMetadata` contains:
+
+| Field | Meaning |
+| --- | --- |
+| `channels` | Requested channel tuple |
+| `order` | Spectrum order derived from `channels` |
+| `frequency_view` | `"sampled_fft"` or `"direct_transform"` |
+| `effective_f_min`, `effective_f_max` | Minimum and maximum returned frequencies |
+| `normalization_convention` | Applied sampled, timestamp, or mixed window normalization |
+| `closing_frequency_support` | Third-order closing-frequency behavior, or `"not_applicable"` |
+
+For first-order results, the effective bounds are both zero because the returned frequency axis is
+`[0]`. The calculation still records its resolved Fourier spacing and requested bounds.
+
+`requested_spectra` and `spectra_metadata` describe the complete planned calculation. The `results`
+mapping contains only successfully returned spectra and may therefore contain fewer entries.
+Filtered stores also retain the complete metadata mapping from the original calculation.
+
+Selections preserve the original metadata objects:
+
+```python
+selected = results.select_by_order(2)
+
+assert selected.calculation_metadata is results.calculation_metadata
+assert selected.spectra_metadata is results.spectra_metadata
+```
+
+Manually constructed `SpectrumResult` and `SpectrumResultStore` objects may omit metadata. In that
+case their metadata attributes are `None` and the store's `spectra_metadata` mapping is empty.
+
 
 ## Using the result store
 

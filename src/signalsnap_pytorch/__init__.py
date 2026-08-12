@@ -15,15 +15,18 @@ from .configurators import (
     SpectrumConfig,
     TimestampedChannel,
 )
+from .metadata import CalculationMetadata, SpectrumMetadata
 from .pipelines import calculate_spectra
 from .results import SpectrumResult, SpectrumResultStore
 
 __all__ = [
+    "CalculationMetadata",
     "DataConfig",
     "HDF5Source",
     "PhotonOptions",
     "SampledChannel",
     "SpectrumConfig",
+    "SpectrumMetadata",
     "SpectrumResult",
     "SpectrumResultStore",
     "TimestampedChannel",
