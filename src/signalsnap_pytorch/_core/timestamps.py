@@ -277,41 +277,30 @@ def prepare_timestamp_batch(cursor: TimestampCursor, batch: WindowBatch) -> Prep
     estimate_count, windows_per_estimate = starts.shape
     flat_starts = starts.reshape(-1)
 
-    observation_offsets, global_indices = cursor.read_interval(
-        float(flat_starts[0]),
-        float(flat_starts[-1] + batch.duration),
+    boundaries = np.empty(flat_starts.size + 1, dtype=np.float64)
+    boundaries[:-1] = flat_starts
+    boundaries[-1] = (
+        batch.relative_stop if batch.relative_stop is not None else flat_starts[-1] + batch.duration
     )
 
-    relative_pieces: list[NDArray[np.float64]] = []
-    window_pieces: list[NDArray[np.int64]] = []
-    global_pieces: list[NDArray[np.int64]] = []
+    if np.any(boundaries[1:] <= boundaries[:-1]):
+        raise RuntimeError("Timestamp window boundaries must be strictly increasing.")
 
-    for window_index, window_start in enumerate(flat_starts):
-        window_stop = window_start + batch.duration
-        local_start = int(np.searchsorted(observation_offsets, window_start, side="left"))
-        local_stop = int(np.searchsorted(observation_offsets, window_stop, side="left"))
-        event_count = local_stop - local_start
+    observation_offsets, global_indices = cursor.read_interval(
+        float(boundaries[0]),
+        float(boundaries[-1]),
+    )
 
-        if event_count == 0:
-            continue
+    window_indices = (np.searchsorted(boundaries, observation_offsets, side="right") - 1).astype(
+        np.int64, copy=False
+    )
 
-        relative_pieces.append(observation_offsets[local_start:local_stop] - window_start)
-        window_pieces.append(np.full(event_count, window_index, dtype=np.int64))
-        global_pieces.append(global_indices[local_start:local_stop])
-
-    if relative_pieces:
-        relative_times = np.concatenate(relative_pieces)
-        window_indices = np.concatenate(window_pieces)
-        selected_global_indices = np.concatenate(global_pieces)
-    else:
-        relative_times = np.empty(0, dtype=np.float64)
-        window_indices = np.empty(0, dtype=np.int64)
-        selected_global_indices = np.empty(0, dtype=np.int64)
+    relative_times = observation_offsets - flat_starts[window_indices]
 
     return PreparedTimestampBatch(
         relative_event_times=relative_times,
         window_indices=window_indices,
-        global_event_indices=selected_global_indices,
+        global_event_indices=global_indices,
         estimate_count=estimate_count,
         windows_per_estimate=windows_per_estimate,
     )

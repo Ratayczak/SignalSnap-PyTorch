@@ -14,6 +14,8 @@ from signalsnap_pytorch._core.planning import (
     FFTFrequencyPlan,
     TimestampedChannelPlan,
     WindowBatch,
+    WindowPlan,
+    iter_window_batches,
 )
 from signalsnap_pytorch._core.spectra import (
     _build_coefficient_batch,
@@ -224,6 +226,40 @@ def test_timestamp_batch_assigns_boundaries_duplicates_and_empty_windows(monkeyp
     np.testing.assert_array_equal(prepared.global_event_indices, np.arange(8))
     assert prepared.estimate_count == 2
     assert prepared.windows_per_estimate == 2
+
+
+@pytest.mark.parametrize("estimates_per_batch", [6, 13, 20])
+def test_decimal_timestamp_boundaries_are_batch_independent(estimates_per_batch):
+    duration = 0.1
+    # The literal 0.6 lies immediately below the canonical boundary 6 * 0.1.
+    timestamps = np.array([0.6, 6 * duration, 1.3])
+    plan = WindowPlan(
+        observation_start=0.0,
+        observation_stop=2.0,
+        duration=duration,
+        windows_per_estimate=1,
+        unshifted_estimate_count=20,
+        shifted_estimate_count=0,
+        estimates_per_batch=estimates_per_batch,
+        interlacing_offset=0.0,
+    )
+    batches = list(iter_window_batches(plan))
+    cursor = TimestampCursor(timestamps, observation_start=0.0)
+    event_indices = []
+    assigned_windows = []
+    first_window_index = 0
+
+    for batch in batches:
+        prepared = prepare_timestamp_batch(cursor, batch)
+        event_indices.extend(prepared.global_event_indices)
+        assigned_windows.extend(first_window_index + prepared.window_indices)
+        first_window_index += batch.relative_starts.size
+
+    for current, following in zip(batches, batches[1:]):
+        assert current.relative_stop == following.relative_starts[0, 0]
+
+    np.testing.assert_array_equal(event_indices, [0, 1, 2])
+    np.testing.assert_array_equal(assigned_windows, [5, 6, 13])
 
 
 def test_timestamp_cursor_retains_lookahead_across_consecutive_batches(monkeypatch):

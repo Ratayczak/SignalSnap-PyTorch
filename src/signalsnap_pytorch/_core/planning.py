@@ -167,12 +167,17 @@ class WindowBatch:
         Number of spectral estimates in the batch, equal to ``B``.
     shifted : bool
         Whether the batch belongs to the shifted interlacing placement.
+    relative_stop : float or None
+        Exclusive stop of the final physical window. Batches produced by
+        :func:`iter_window_batches` derive it from the same boundary grid as
+        ``relative_starts``. ``None`` supports manually constructed batches.
     """
 
     relative_starts: NDArray[np.float64]
     duration: float
     estimate_count: int
     shifted: bool
+    relative_stop: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1262,25 +1267,26 @@ def iter_window_batches(plan: WindowPlan) -> Iterator[WindowBatch]:
         relative_offset: float,
         shifted: bool,
     ) -> Iterator[WindowBatch]:
+        windows_per_estimate = plan.windows_per_estimate
+
         for first_estimate in range(0, estimate_count, plan.estimates_per_batch):
             batch_size = min(plan.estimates_per_batch, estimate_count - first_estimate)
-            first_window = (
-                relative_offset + first_estimate * plan.windows_per_estimate * plan.duration
-            )
-            relative_starts = (
-                first_window
-                + np.arange(batch_size * plan.windows_per_estimate, dtype=np.float64)
-                * plan.duration
-            ).reshape(batch_size, plan.windows_per_estimate)
+            first_window_index = first_estimate * windows_per_estimate
+            stop_window_index = (first_estimate + batch_size) * windows_per_estimate
+
+            boundary_indices = np.arange(first_window_index, stop_window_index + 1, dtype=np.int64)
+            boundaries = relative_offset + boundary_indices.astype(np.float64) * plan.duration
+            relative_starts = boundaries[:-1].reshape(batch_size, windows_per_estimate)
 
             yield WindowBatch(
                 relative_starts=relative_starts,
                 duration=plan.duration,
                 estimate_count=batch_size,
                 shifted=shifted,
+                relative_stop=float(boundaries[-1]),
             )
 
-    yield from iter_placement(plan.unshifted_estimate_count, relative_offset=0, shifted=False)
+    yield from iter_placement(plan.unshifted_estimate_count, relative_offset=0.0, shifted=False)
 
     yield from iter_placement(
         plan.shifted_estimate_count,
