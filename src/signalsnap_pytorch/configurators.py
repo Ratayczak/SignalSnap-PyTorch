@@ -282,6 +282,11 @@ def _validate_stored_data(
 
         return value
 
+    if isinstance(value, np.ma.MaskedArray):
+        raise TypeError(
+            f"{label} must be an ordinary NumPy array; masked arrays are not supported."
+        )
+
     if not isinstance(value, np.ndarray):
         raise TypeError(f"{label} must be a NumPy array, CPU PyTorch tensor, or HDF5Source.")
 
@@ -318,7 +323,8 @@ class SampledChannel:
     data : numpy.ndarray | torch.Tensor | HDF5Source
         Sample values for the channel. In-memory input must be a nonempty one-dimensional NumPy
         array or CPU PyTorch tensor containing real numeric or Boolean values. An
-        :class:`HDF5Source` is read lazily and flattened into one logical channel.
+        :class:`HDF5Source` is read lazily and flattened into one logical channel. NumPy masked
+        arrays are not supported.
     dt : float
         Positive time interval between consecutive samples, in units of :attr:`DataConfig.t_unit`.
     """
@@ -357,6 +363,7 @@ class TimestampedChannel:
         NumPy array or CPU PyTorch tensor containing finite, nondecreasing real numbers. Empty
         inputs and duplicate timestamps are valid. An :class:`HDF5Source` is read lazily and
         flattened in C order; the flattened timestamps must satisfy the same ordering constraints.
+        NumPy masked arrays are not supported.
     """
 
     timestamps: np.ndarray | torch.Tensor | HDF5Source

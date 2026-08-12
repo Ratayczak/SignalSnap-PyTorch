@@ -428,7 +428,7 @@ def _validate_source_read_range(source: RuntimeSource, start: int, stop: int) ->
     Raises
     ------
     TypeError
-        If either bound is not an integer.
+        If either bound is not an integer or the source returns a NumPy masked array.
     ValueError
         If the range is negative, reversed, or extends beyond the source.
     """
@@ -498,6 +498,9 @@ def read_source(source: RuntimeSource, start: int, stop: int) -> np.ndarray:
             result = tensor.to(torch.float64).numpy()
     else:
         result = source[start:stop]
+
+    if np.ma.isMaskedArray(result):
+        raise TypeError("Runtime sources must not return NumPy masked arrays.")
 
     result = np.asarray(result)
 

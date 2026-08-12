@@ -34,6 +34,13 @@ def test_array_read():
     assert result.flags.c_contiguous
 
 
+def test_read_source_rejects_masked_array():
+    source = np.ma.array([1.0, 999.0, 3.0], mask=[False, True, False])
+
+    with pytest.raises(TypeError, match="masked arrays"):
+        read_source(source, 0, 3)
+
+
 def test_cpu_tensor_read_matches_numpy_and_detaches_gradients():
     source = torch.arange(10, dtype=torch.float64, requires_grad=True)
 

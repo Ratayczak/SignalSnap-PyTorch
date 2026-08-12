@@ -311,10 +311,22 @@ def test_sampled_channel_rejects_invalid_dt(dt):
         pytest.param(np.array([1 + 2j]), "real numeric", id="numpy-complex"),
         pytest.param(torch.tensor([1 + 2j]), "real numeric", id="tensor-complex"),
         pytest.param(np.array(["a"]), "real numeric", id="numpy-string"),
+        pytest.param(
+            np.ma.array([1.0, 999.0, 3.0], mask=[False, True, False]),
+            "masked arrays",
+            id="numpy-masked",
+        ),
     ],
 )
 def test_sampled_channel_rejects_invalid_data(data, message):
     with pytest.raises((TypeError, ValueError), match=message):
+        SampledChannel(data=data, dt=1.0)
+
+
+def test_sampled_channel_rejects_masked_array_even_when_no_values_are_masked():
+    data = np.ma.array([1.0, 2.0, 3.0], mask=np.ma.nomask)
+
+    with pytest.raises(TypeError, match="masked arrays"):
         SampledChannel(data=data, dt=1.0)
 
 
@@ -359,6 +371,11 @@ def test_timestamped_channel_accepts_hdf5_source_without_opening_it():
         pytest.param(np.array([0.0, np.nan]), "finite", id="nan"),
         pytest.param(np.array([0.0, np.inf]), "finite", id="infinity"),
         pytest.param(np.array([0.5, 0.25]), "nondecreasing", id="unordered"),
+        pytest.param(
+            np.ma.array([0.0, 999.0, 1.0], mask=[False, True, False]),
+            "masked arrays",
+            id="numpy-masked",
+        ),
         pytest.param(torch.empty(2, device="meta"), "stored on the CPU", id="non-cpu"),
     ],
 )
