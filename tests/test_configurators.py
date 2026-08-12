@@ -8,15 +8,15 @@ import torch
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
 )
 
 
-def test_photon_options_accept_unit_weighting_without_mark_fields():
-    options = PhotonOptions(weighting="unit")
+def test_timestamp_options_accept_unit_weighting_without_mark_fields():
+    options = TimestampOptions(weighting="unit")
 
     assert options.weighting == "unit"
     assert options.scale is None
@@ -32,13 +32,13 @@ def test_photon_options_accept_unit_weighting_without_mark_fields():
         pytest.param("seed", 0, id="seed"),
     ],
 )
-def test_unit_photon_weighting_rejects_exponential_fields(field, value):
+def test_unit_timestamp_weighting_rejects_exponential_fields(field, value):
     with pytest.raises(ValueError, match="does not accept"):
-        PhotonOptions(weighting="unit", **{field: value})
+        TimestampOptions(weighting="unit", **{field: value})
 
 
-def test_photon_options_accept_exponential_weighting():
-    options = PhotonOptions(
+def test_timestamp_options_accept_exponential_weighting():
+    options = TimestampOptions(
         weighting="exponential",
         scale=1.5,
         repetitions=100,
@@ -50,8 +50,8 @@ def test_photon_options_accept_exponential_weighting():
     assert options.seed == 1234
 
 
-def test_photon_options_normalizes_numpy_integer_fields():
-    options = PhotonOptions(
+def test_timestamp_options_normalizes_numpy_integer_fields():
+    options = TimestampOptions(
         weighting="exponential",
         scale=1.0,
         repetitions=np.int64(100),
@@ -71,21 +71,21 @@ def test_photon_options_normalizes_numpy_integer_fields():
     "missing_field",
     ["scale", "repetitions"],
 )
-def test_exponential_photon_weighting_requires_scale_and_repetitions(missing_field):
+def test_exponential_timestamp_weighting_requires_scale_and_repetitions(missing_field):
     values = {"scale": 1.0, "repetitions": 2}
     del values[missing_field]
 
     with pytest.raises(ValueError, match="requires scale and repetitions"):
-        PhotonOptions(weighting="exponential", **values)
+        TimestampOptions(weighting="exponential", **values)
 
 
 @pytest.mark.parametrize(
     "scale",
     [0.0, -1.0, np.inf, np.nan, True],
 )
-def test_exponential_photon_weighting_rejects_invalid_scale(scale):
+def test_exponential_timestamp_weighting_rejects_invalid_scale(scale):
     with pytest.raises((TypeError, ValueError), match="scale|finite"):
-        PhotonOptions(
+        TimestampOptions(
             weighting="exponential",
             scale=scale,
             repetitions=2,
@@ -96,9 +96,9 @@ def test_exponential_photon_weighting_rejects_invalid_scale(scale):
     "repetitions",
     [0, -1, 1.5, "2", True],
 )
-def test_exponential_photon_weighting_requires_strict_positive_repetitions(repetitions):
+def test_exponential_timestamp_weighting_requires_strict_positive_repetitions(repetitions):
     with pytest.raises((TypeError, ValueError), match="repetitions"):
-        PhotonOptions(
+        TimestampOptions(
             weighting="exponential",
             scale=1.0,
             repetitions=repetitions,
@@ -109,9 +109,9 @@ def test_exponential_photon_weighting_requires_strict_positive_repetitions(repet
     "seed",
     [-1, 1.5, "2", True],
 )
-def test_exponential_photon_weighting_requires_strict_nonnegative_seed(seed):
+def test_exponential_timestamp_weighting_requires_strict_nonnegative_seed(seed):
     with pytest.raises((TypeError, ValueError), match="seed"):
-        PhotonOptions(
+        TimestampOptions(
             weighting="exponential",
             scale=1.0,
             repetitions=2,
@@ -119,8 +119,8 @@ def test_exponential_photon_weighting_requires_strict_nonnegative_seed(seed):
         )
 
 
-def test_photon_options_are_frozen():
-    options = PhotonOptions(weighting="unit")
+def test_timestamp_options_are_frozen():
+    options = TimestampOptions(weighting="unit")
 
     with pytest.raises(FrozenInstanceError):
         options.weighting = "exponential"

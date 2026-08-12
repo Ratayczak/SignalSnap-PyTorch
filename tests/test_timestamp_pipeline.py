@@ -4,7 +4,7 @@ from signalsnap_pytorch._core import planning as _planning
 from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch import (
     DataConfig,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -276,7 +276,7 @@ def test_unit_timestamp_pipeline_orders_one_through_four_match_numpy_reference()
         f_max=1.0,
         m=4,
         spectral_estimates_per_batch=1,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
     requested_spectra = [(0,) * order for order in range(1, 5)]
 
@@ -358,7 +358,7 @@ def test_two_timestamp_channels_arbitrary_tuples_match_numpy_reference():
             f_max=1.0,
             m=4,
             spectral_estimates_per_batch=1,
-            photon_options=PhotonOptions(weighting="unit"),
+            timestamp_options=TimestampOptions(weighting="unit"),
         ),
         requested_spectra=requested_spectra,
         show_progress=False,
@@ -393,7 +393,7 @@ def test_unit_timestamp_pipeline_counts_complete_event_free_tail_windows():
         f_min=0.0,
         f_max=1.0,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     result = calculate_spectra(
@@ -444,7 +444,7 @@ def test_exponential_pipeline_averages_spectra_instead_of_coefficients(monkeypat
         f_min=0.0,
         f_max=0.5,
         m=2,
-        photon_options=PhotonOptions(
+        timestamp_options=TimestampOptions(
             weighting="exponential",
             scale=1.0,
             repetitions=2,
@@ -491,7 +491,7 @@ def test_exponential_pipeline_is_physical_and_repetition_batch_invariant(monkeyp
                 f_max=1.0,
                 m=4,
                 spectral_estimates_per_batch=estimates_per_batch,
-                photon_options=PhotonOptions(
+                timestamp_options=TimestampOptions(
                     weighting="exponential",
                     scale=1.25,
                     repetitions=5,
@@ -551,7 +551,7 @@ def test_mixed_unit_pipeline_matches_analytic_impulse_reference():
         f_min=-1.0,
         f_max=1.0,
         m=4,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
     requested_spectra = [(0, 1), (0, 1, 1), (1, 1, 0)]
 
@@ -612,7 +612,7 @@ def test_mixed_third_order_pipeline_supports_one_point_fft_grid():
         f_max=0.5,
         m=3,
         old_window=True,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     results = calculate_spectra(
@@ -652,7 +652,7 @@ def test_mixed_calculation_returns_result_specific_frequency_views():
         f_min=-3.0,
         f_max=3.0,
         m=4,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     results = calculate_spectra(
@@ -711,7 +711,7 @@ def test_fixed_seed_timestamp_result_ignores_unrelated_mixed_request():
         f_min=-3.0,
         f_max=3.0,
         m=4,
-        photon_options=PhotonOptions(
+        timestamp_options=TimestampOptions(
             weighting="exponential",
             scale=1.0,
             repetitions=5,
@@ -786,7 +786,7 @@ def test_fixed_seed_targets_are_request_order_and_unrelated_request_invariant():
         f_min=-1.0,
         f_max=1.0,
         m=4,
-        photon_options=PhotonOptions(
+        timestamp_options=TimestampOptions(
             weighting="exponential",
             scale=0.75,
             repetitions=4,

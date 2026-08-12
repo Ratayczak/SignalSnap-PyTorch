@@ -20,7 +20,7 @@ from ._core.planning import (
 )
 from ._core.utils import FrequencyUnits as _FrequencyUnits
 from ._core.utils import TimeUnits as _TimeUnits
-from .configurators import DataConfig, PhotonOptions, SampledChannel, SpectrumConfig
+from .configurators import DataConfig, SampledChannel, SpectrumConfig, TimestampOptions
 
 __all__ = ["CalculationMetadata", "SpectrumMetadata"]
 
@@ -36,7 +36,7 @@ _NormalizationConvention = Literal[
 ]
 _ClosingFrequencySupport = Literal["sampled_fft", "direct_transform", "not_applicable"]
 _WindowConvention = Literal["confined_gaussian", "legacy_confined_gaussian"]
-_PhotonWeighting = Literal["unit", "exponential"]
+_TimestampWeighting = Literal["unit", "exponential"]
 _UncertaintyEstimation = Literal["global", "short_term"]
 
 
@@ -145,7 +145,7 @@ class CalculationMetadata:
         "legacy_confined_gaussian",
     ]
         Window convention used by the calculation.
-    photon_weighting : Literal["unit", "exponential"] | None
+    timestamp_weighting : Literal["unit", "exponential"] | None
         Timestamp amplitude model, or ``None`` for a sampled-only calculation.
     exponential_scale : float | None
         Scale of exponentially distributed timestamp amplitudes, or ``None`` when exponential
@@ -216,7 +216,7 @@ class CalculationMetadata:
     shifted_offset: float | None
     window_convention: _WindowConvention
 
-    photon_weighting: _PhotonWeighting | None
+    timestamp_weighting: _TimestampWeighting | None
     exponential_scale: float | None
     repetition_count: int
     requested_repetition_batch_size: int | None
@@ -311,15 +311,15 @@ def _build_spectrum_metadata(runtime: RuntimeConfig, channels: tuple[int, ...]) 
     )
 
 
-def _photon_values(
-    photon_options: PhotonOptions | None,
-) -> tuple[_PhotonWeighting | None, float | None, int | None, int | None]:
-    """Extract durable photon-weighting settings from the configuration.
+def _timestamp_values(
+    timestamp_options: TimestampOptions | None,
+) -> tuple[_TimestampWeighting | None, float | None, int | None, int | None]:
+    """Extract durable timestamp-weighting settings from the configuration.
 
     Parameters
     ----------
-    photon_options : PhotonOptions | None
-        Configured timestamp-weighting options, or ``None`` for a calculation without photon
+    timestamp_options : TimestampOptions | None
+        Configured timestamp-weighting options, or ``None`` for a calculation without timestamp
         weighting.
 
     Returns
@@ -330,18 +330,18 @@ def _photon_values(
         int | None,
         int | None,
     ]
-        Photon-weighting convention, exponential scale, requested repetition batch size, and
-        user-supplied seed, respectively. All values are ``None`` when ``photon_options`` is
+        Timestamp-weighting convention, exponential scale, requested repetition batch size, and
+        user-supplied seed, respectively. All values are ``None`` when ``timestamp_options`` is
         ``None``.
     """
-    if photon_options is None:
+    if timestamp_options is None:
         return None, None, None, None
 
     return (
-        photon_options.weighting,
-        photon_options.scale,
-        photon_options.repetitions_per_batch,
-        photon_options.seed,
+        timestamp_options.weighting,
+        timestamp_options.scale,
+        timestamp_options.repetitions_per_batch,
+        timestamp_options.seed,
     )
 
 
@@ -379,8 +379,8 @@ def build_result_metadata(
             for channels in runtime.requested_spectra
         }
     )
-    photon_weighting, exponential_scale, requested_batch_size, user_seed = _photon_values(
-        spectrum_config.photon_options
+    timestamp_weighting, exponential_scale, requested_batch_size, user_seed = _timestamp_values(
+        spectrum_config.timestamp_options
     )
     window_plan = runtime.window_plan
     repetition_plan = runtime.repetition_plan
@@ -408,7 +408,7 @@ def build_result_metadata(
         window_convention=(
             "legacy_confined_gaussian" if runtime.old_window else "confined_gaussian"
         ),
-        photon_weighting=photon_weighting,
+        timestamp_weighting=timestamp_weighting,
         exponential_scale=exponential_scale,
         repetition_count=repetition_plan.count,
         requested_repetition_batch_size=requested_batch_size,

@@ -10,7 +10,7 @@ from __future__ import annotations
 from .configurators import (
     DataConfig,
     HDF5Source,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -23,7 +23,7 @@ __all__ = [
     "CalculationMetadata",
     "DataConfig",
     "HDF5Source",
-    "PhotonOptions",
+    "TimestampOptions",
     "SampledChannel",
     "SpectrumConfig",
     "SpectrumMetadata",

@@ -20,9 +20,9 @@ from ._core.utils import TimeUnits as _TimeUnits
 __all__ = [
     "DataConfig",
     "HDF5Source",
-    "PhotonOptions",
     "SampledChannel",
     "SpectrumConfig",
+    "TimestampOptions",
     "TimestampedChannel",
 ]
 
@@ -345,8 +345,8 @@ class TimestampedChannel:
 
     A :class:`TimestampedChannel` represents discrete events by their occurrence times. Active
     timestamped channels are transformed directly at the required frequencies, with event
-    amplitudes determined by :class:`PhotonOptions`. Their timestamps must lie within the explicit
-    observation interval configured by :class:`DataConfig`.
+    amplitudes determined by :class:`TimestampOptions`. Their timestamps must lie within the
+    explicit observation interval configured by :class:`DataConfig`.
 
     In-memory timestamps are retained without copying and must not be mutated during a calculation.
 
@@ -461,11 +461,11 @@ class DataConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class PhotonOptions:
+class TimestampOptions:
     """Statistical weighting options for active timestamped channels.
 
-    :class:`PhotonOptions` controls the amplitudes assigned to timestamped events before their
-    Fourier coefficients are calculated. Unit weighting assigns every event an amplitude of one.
+    Controls the amplitudes assigned to timestamped events before their Fourier coefficients are
+    calculated. Unit weighting assigns every event an amplitude of one.
     Exponential weighting generates independent positive amplitudes for multiple realizations and
     averages the resulting spectral estimates. The same options apply to every active timestamped
     channel in a calculation.
@@ -529,11 +529,11 @@ class PhotonOptions:
                 value is not None for value in (scale, repetitions, repetitions_per_batch, seed)
             ):
                 raise ValueError(
-                    "Unit photon weighting does not accept scale, repetitions, "
+                    "Unit timestamp weighting does not accept scale, repetitions, "
                     "repetitions_per_batch, or seed."
                 )
         elif scale is None or repetitions is None:
-            raise ValueError("Exponential photon weighting requires scale and repetitions.")
+            raise ValueError("Exponential timestamp weighting requires scale and repetitions.")
 
         object.__setattr__(self, "weighting", weighting)
         object.__setattr__(self, "scale", scale)
@@ -576,7 +576,7 @@ class SpectrumConfig:
         Upper frequency bound. For calculations containing sampled channels, this may be omitted, in
         which case the Nyquist frequency determined by the active sampled channels' common ``dt`` is
         used. Timestamp-only calculations require an explicit ``f_max``.
-    photon_options : PhotonOptions | None = None
+    timestamp_options : TimestampOptions | None = None
         Statistical weighting applied to every active timestamped channel. Planning requires this
         for calculations containing timestamped channels and rejects it for sampled-only
         calculations.
@@ -627,7 +627,7 @@ class SpectrumConfig:
     df: float | None = None
     f_min: float = 0.0
     f_max: float | None = None
-    photon_options: PhotonOptions | None = None
+    timestamp_options: TimestampOptions | None = None
     m: int = 10
     uncertainty_estimation: Literal["global", "short_term"] = "global"
     m_var: int = 10
@@ -643,8 +643,10 @@ class SpectrumConfig:
         f_min = normalize_real(self.f_min, name="f_min")
         f_max = None if self.f_max is None else normalize_real(self.f_max, name="f_max")
 
-        if self.photon_options is not None and not isinstance(self.photon_options, PhotonOptions):
-            raise TypeError("photon_options must be a PhotonOptions object or None.")
+        if self.timestamp_options is not None and not isinstance(
+            self.timestamp_options, TimestampOptions
+        ):
+            raise TypeError("timestamp_options must be a TimestampOptions object or None.")
 
         m = _normalize_integer(self.m, name="m", minimum=1)
         uncertainty_estimation = _require_choice(

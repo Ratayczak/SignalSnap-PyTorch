@@ -4,7 +4,7 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -104,7 +104,7 @@ def test_xpu_timestamp_spectra_and_cpu_amplitudes_match(case, monkeypatch):
             observation_stop=float(physical_window_count),
         )
         requested_spectra = [(0,), (0, 1), (1, 0, 1), (0, 1, 0, 1)]
-        photon_options = PhotonOptions(weighting="unit")
+        timestamp_options = TimestampOptions(weighting="unit")
     else:
         sample_times = np.arange(physical_window_count * 4)
         data_config = DataConfig(
@@ -119,7 +119,7 @@ def test_xpu_timestamp_spectra_and_cpu_amplitudes_match(case, monkeypatch):
             observation_stop=float(physical_window_count),
         )
         requested_spectra = [(1,), (0, 1), (0, 1, 1), (0, 1, 0, 1)]
-        photon_options = PhotonOptions(
+        timestamp_options = TimestampOptions(
             weighting="exponential",
             scale=1.25,
             repetitions=3,
@@ -166,7 +166,7 @@ def test_xpu_timestamp_spectra_and_cpu_amplitudes_match(case, monkeypatch):
         "precision": "single",
         "spectral_estimates_max": 2,
         "spectral_estimates_per_batch": TEST_SPECTRAL_ESTIMATES_PER_BATCH,
-        "photon_options": photon_options,
+        "timestamp_options": timestamp_options,
     }
     cpu_results = calculate_spectra(
         data_config,

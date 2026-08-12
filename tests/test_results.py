@@ -43,7 +43,7 @@ def make_calculation_metadata(
         unshifted_offset=0.0,
         shifted_offset=0.5,
         window_convention="confined_gaussian",
-        photon_weighting="exponential",
+        timestamp_weighting="exponential",
         exponential_scale=2.0,
         repetition_count=5,
         requested_repetition_batch_size=3,

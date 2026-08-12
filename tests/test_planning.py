@@ -6,7 +6,7 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -1000,21 +1000,21 @@ def test_sampled_runtime_uses_neutral_repetition_plan():
     assert runtime.repetition_plan.resolved_seed is None
 
 
-def test_sampled_only_runtime_rejects_photon_options():
+def test_sampled_only_runtime_rejects_timestamp_options():
     data_config = sampled_data_config(channels=(np.ones(136),), dt=1.0)
     spectrum_config = SpectrumConfig(
         df=0.125,
         f_min=0.0,
         f_max=0.5,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     with pytest.raises(ValueError, match="sampled-only calculation"):
         _build_runtime(data_config, spectrum_config, [(0, 0)])
 
 
-def test_active_timestamped_channel_requires_photon_options():
+def test_active_timestamped_channel_requires_timestamp_options():
     data_config = DataConfig(
         channels=(TimestampedChannel(timestamps=np.array([0.0, 1.0])),),
         observation_start=0.0,
@@ -1048,7 +1048,7 @@ def test_active_timestamped_channel_requires_explicit_observation_bounds(
         f_min=0.0,
         f_max=0.5,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     with pytest.raises(ValueError, match="require explicit observation_start"):
@@ -1071,7 +1071,7 @@ def test_timestamp_runtime_preserves_large_integral_observation_origin():
         f_min=0.0,
         f_max=1.0,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     runtime = _build_runtime(data_config, spectrum_config, [(0,)])
@@ -1101,7 +1101,7 @@ def test_timestamp_only_runtime_requires_explicit_frequency_grid(df, f_max):
         f_min=0.0,
         f_max=f_max,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     with pytest.raises(ValueError, match="require explicit df and f_max"):
@@ -1122,7 +1122,7 @@ def test_mixed_runtime_rejects_interval_that_does_not_match_sampled_duration():
         f_min=0.0,
         f_max=2.0,
         m=2,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     with pytest.raises(ValueError, match="configured observation interval has duration"):
@@ -1157,7 +1157,7 @@ def test_timestamp_only_runtime_uses_complete_event_free_tail_windows():
         m=1,
         interlacing=True,
         spectral_estimates_max=None,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     runtime = _build_runtime(data_config, spectrum_config, [(0,)])
@@ -1201,7 +1201,7 @@ def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
         m=2,
         interlacing=True,
         spectral_estimates_max=None,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
     )
 
     runtime = _build_runtime(
@@ -1234,16 +1234,16 @@ def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
 
 
 @pytest.mark.parametrize(
-    ("photon_options", "expected_weighting", "expected_scale"),
+    ("timestamp_options", "expected_weighting", "expected_scale"),
     [
         pytest.param(
-            PhotonOptions(weighting="unit"),
+            TimestampOptions(weighting="unit"),
             "unit",
             None,
             id="unit",
         ),
         pytest.param(
-            PhotonOptions(
+            TimestampOptions(
                 weighting="exponential",
                 scale=1.5,
                 repetitions=4,
@@ -1256,7 +1256,7 @@ def test_mixed_runtime_assigns_per_spectrum_views_and_sampled_odd_offset():
     ],
 )
 def test_timestamped_channel_plan_owns_amplitude_instructions(
-    photon_options,
+    timestamp_options,
     expected_weighting,
     expected_scale,
 ):
@@ -1268,7 +1268,7 @@ def test_timestamped_channel_plan_owns_amplitude_instructions(
         channel_plans, _ = _build_channel_plans(
             data_config=data_config,
             opened_channels=opened_channels,
-            photon_options=photon_options,
+            timestamp_options=timestamp_options,
         )
 
     channel_plan = channel_plans[0]
@@ -1279,14 +1279,14 @@ def test_timestamped_channel_plan_owns_amplitude_instructions(
 
 
 @pytest.mark.parametrize(
-    "photon_options",
+    "timestamp_options",
     [
         None,
-        PhotonOptions(weighting="unit"),
+        TimestampOptions(weighting="unit"),
     ],
 )
-def test_repetition_plan_is_neutral_without_exponential_weighting(photon_options):
-    plan = _resolve_repetition_plan(photon_options)
+def test_repetition_plan_is_neutral_without_exponential_weighting(timestamp_options):
+    plan = _resolve_repetition_plan(timestamp_options)
 
     assert plan.count == 1
     assert plan.batch_size == 1
@@ -1294,7 +1294,7 @@ def test_repetition_plan_is_neutral_without_exponential_weighting(photon_options
 
 
 def test_exponential_repetition_plan_preserves_count_and_explicit_seed():
-    options = PhotonOptions(
+    options = TimestampOptions(
         weighting="exponential",
         scale=1.0,
         repetitions=4,
@@ -1310,7 +1310,7 @@ def test_exponential_repetition_plan_preserves_count_and_explicit_seed():
 
 def test_exponential_repetition_plan_bounds_internal_batch_size():
     repetition_count = _MAX_AMPLITUDE_REPETITIONS_PER_BATCH + 1
-    options = PhotonOptions(
+    options = TimestampOptions(
         weighting="exponential",
         scale=1.0,
         repetitions=repetition_count,
@@ -1334,7 +1334,7 @@ def test_exponential_repetition_plan_resolves_one_63_bit_seed(monkeypatch):
         "signalsnap_pytorch._core.planning.secrets.randbits",
         fake_randbits,
     )
-    options = PhotonOptions(
+    options = TimestampOptions(
         weighting="exponential",
         scale=1.0,
         repetitions=2,

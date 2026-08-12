@@ -8,7 +8,7 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -469,7 +469,7 @@ def test_mixed_pipeline_permutations_and_sampled_closing_support():
             f_min=-1.0,
             f_max=1.0,
             m=4,
-            photon_options=PhotonOptions(weighting="unit"),
+            timestamp_options=TimestampOptions(weighting="unit"),
         ),
         requested_spectra=requested,
         show_progress=False,
@@ -577,7 +577,7 @@ def test_grid_aligned_timestamp_and_sampled_count_rate_equivalence(monkeypatch):
             f_min=-1.0,
             f_max=1.0,
             m=4,
-            photon_options=PhotonOptions(weighting="unit"),
+            timestamp_options=TimestampOptions(weighting="unit"),
         ),
         requested_spectra=requested,
         show_progress=False,
@@ -620,10 +620,10 @@ def test_homogeneous_poisson_timestamp_spectra_match_flat_cumulant_reference(
         rng = np.random.default_rng(replicate_seed)
         event_count = rng.poisson(rate * duration)
         timestamps = np.sort(rng.uniform(0.0, duration, event_count))
-        photon_options = (
-            PhotonOptions(weighting="unit")
+        timestamp_options = (
+            TimestampOptions(weighting="unit")
             if weighting == "unit"
-            else PhotonOptions(
+            else TimestampOptions(
                 weighting="exponential",
                 scale=scale,
                 repetitions=repetitions,
@@ -642,7 +642,7 @@ def test_homogeneous_poisson_timestamp_spectra_match_flat_cumulant_reference(
                 f_max=0.1,
                 m=16,
                 spectral_estimates_per_batch=32,
-                photon_options=photon_options,
+                timestamp_options=timestamp_options,
             ),
             requested_spectra=requested,
             show_progress=False,

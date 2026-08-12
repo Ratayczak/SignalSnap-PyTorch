@@ -3,7 +3,7 @@ import pytest
 
 from signalsnap_pytorch import (
     DataConfig,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -72,7 +72,7 @@ def test_sampled_metadata_records_requested_and_resolved_values():
     assert calculation.unshifted_offset == 0.0
     assert calculation.shifted_offset == 1.0
     assert calculation.window_convention == "confined_gaussian"
-    assert calculation.photon_weighting is None
+    assert calculation.timestamp_weighting is None
     assert calculation.exponential_scale is None
     assert calculation.repetition_count == 1
     assert calculation.requested_repetition_batch_size is None
@@ -119,7 +119,7 @@ def test_mixed_metadata_distinguishes_frequency_and_closing_views():
         df=0.9,
         f_min=-2.0,
         f_max=3.0,
-        photon_options=PhotonOptions(weighting="unit"),
+        timestamp_options=TimestampOptions(weighting="unit"),
         m=3,
         interlacing=False,
     )
@@ -130,7 +130,7 @@ def test_mixed_metadata_distinguishes_frequency_and_closing_views():
     assert calculation.active_channels == (1, 0)
     assert calculation.actual_df == 1.0
     assert calculation.shifted_offset is None
-    assert calculation.photon_weighting == "unit"
+    assert calculation.timestamp_weighting == "unit"
     assert calculation.repetition_count == 1
     assert calculation.resolved_seed is None
 
@@ -157,7 +157,7 @@ def test_legacy_and_exponential_metadata_records_requested_options():
         df=1.0,
         f_min=0.0,
         f_max=1.0,
-        photon_options=PhotonOptions(
+        timestamp_options=TimestampOptions(
             weighting="exponential",
             scale=2.5,
             repetitions=7,
@@ -175,7 +175,7 @@ def test_legacy_and_exponential_metadata_records_requested_options():
     )
 
     assert calculation.window_convention == "legacy_confined_gaussian"
-    assert calculation.photon_weighting == "exponential"
+    assert calculation.timestamp_weighting == "exponential"
     assert calculation.exponential_scale == 2.5
     assert calculation.repetition_count == 7
     assert calculation.requested_repetition_batch_size == 3
@@ -221,7 +221,7 @@ def test_pipeline_metadata_retains_generated_seed(monkeypatch):
             df=1.0,
             f_min=0.0,
             f_max=1.0,
-            photon_options=PhotonOptions(
+            timestamp_options=TimestampOptions(
                 weighting="exponential",
                 scale=1.5,
                 repetitions=2,

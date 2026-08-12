@@ -4,7 +4,7 @@ import numpy as np
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
-    PhotonOptions,
+    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
@@ -221,7 +221,7 @@ def test_mixed_exponential_pipeline_has_array_hdf5_parity(tmp_path):
         f_max=3.0,
         m=4,
         interlacing=True,
-        photon_options=PhotonOptions(
+        timestamp_options=TimestampOptions(
             weighting="exponential",
             scale=1.25,
             repetitions=5,

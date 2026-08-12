@@ -20,10 +20,10 @@ from numpy.typing import NDArray
 
 from ..configurators import (
     DataConfig,
-    PhotonOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
 )
 from .data_access import RuntimeSource, get_source_length, validate_timestamp_source
 from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
@@ -90,25 +90,27 @@ class RepetitionPlan:
             yield range(start, stop)
 
 
-def _resolve_repetition_plan(photon_options: PhotonOptions | None) -> RepetitionPlan:
+def _resolve_repetition_plan(timestamp_options: TimestampOptions | None) -> RepetitionPlan:
     """Resolve shared amplitude-repetition iteration for one calculation."""
 
-    if photon_options is None or photon_options.weighting == "unit":
+    if timestamp_options is None or timestamp_options.weighting == "unit":
         return RepetitionPlan(count=1, batch_size=1, resolved_seed=None)
 
-    assert photon_options.repetitions is not None
+    assert timestamp_options.repetitions is not None
 
-    resolved_seed = photon_options.seed if photon_options.seed is not None else secrets.randbits(63)
+    resolved_seed = (
+        timestamp_options.seed if timestamp_options.seed is not None else secrets.randbits(63)
+    )
 
     requested_batch_size = (
-        photon_options.repetitions_per_batch
-        if photon_options.repetitions_per_batch is not None
+        timestamp_options.repetitions_per_batch
+        if timestamp_options.repetitions_per_batch is not None
         else _MAX_AMPLITUDE_REPETITIONS_PER_BATCH
     )
 
     return RepetitionPlan(
-        count=photon_options.repetitions,
-        batch_size=min(photon_options.repetitions, requested_batch_size),
+        count=timestamp_options.repetitions,
+        batch_size=min(timestamp_options.repetitions, requested_batch_size),
         resolved_seed=resolved_seed,
     )
 
@@ -622,7 +624,7 @@ def resolve_requested_spectra(
 def _build_channel_plans(
     data_config: DataConfig,
     opened_channels: Mapping[int, RuntimeSource],
-    photon_options: PhotonOptions | None,
+    timestamp_options: TimestampOptions | None,
 ) -> tuple[dict[int, ChannelPlan], TimeUnits]:
     """Build plans for active channels and validate shared sampled properties."""
 
@@ -655,15 +657,16 @@ def _build_channel_plans(
                     )
 
         elif isinstance(channel_config, TimestampedChannel):
-            if photon_options is None:
+            if timestamp_options is None:
                 raise RuntimeError(
-                    "Internal error: timestamped channel planning requires resolved PhotonOptions."
+                    "Internal error: timestamped channel planning requires resolved "
+                    "TimestampOptions."
                 )
 
             plan = TimestampedChannelPlan(
                 event_count=source_length,
-                weighting=photon_options.weighting,
-                scale=photon_options.scale,
+                weighting=timestamp_options.weighting,
+                scale=timestamp_options.scale,
             )
 
         else:
@@ -1105,18 +1108,18 @@ def build_runtime_config(
         isinstance(data_config.channels[channel], TimestampedChannel)
         for channel in active_data_channels
     )
-    photon_options = spectrum_config.photon_options
+    timestamp_options = spectrum_config.timestamp_options
 
-    if has_timestamped_channel and photon_options is None:
-        raise ValueError("PhotonOptions are required when an active channel is timestamped.")
+    if has_timestamped_channel and timestamp_options is None:
+        raise ValueError("TimestampOptions are required when an active channel is timestamped.")
 
-    if not has_timestamped_channel and photon_options is not None:
-        raise ValueError("PhotonOptions cannot be used in a sampled-only calculation.")
+    if not has_timestamped_channel and timestamp_options is not None:
+        raise ValueError("TimestampOptions cannot be used in a sampled-only calculation.")
 
     channel_plans, t_unit = _build_channel_plans(
         data_config=data_config,
         opened_channels=opened_channels,
-        photon_options=photon_options,
+        timestamp_options=timestamp_options,
     )
 
     observation_start, observation_stop = _resolve_observation_interval(data_config, channel_plans)
@@ -1128,7 +1131,7 @@ def build_runtime_config(
                 observation_stop,
                 label=f"Timestamped channel {channel}",
             )
-    repetition_plan = _resolve_repetition_plan(photon_options)
+    repetition_plan = _resolve_repetition_plan(timestamp_options)
     orders = tuple(sorted({len(channels) for channels in spectra_channels}))
 
     sampled_plan = next(

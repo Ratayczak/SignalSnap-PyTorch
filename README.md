@@ -22,7 +22,7 @@ from the original object-oriented API.
 - Global standard errors and short-term uncertainty estimates from repeated spectral estimates
 - Optional interlaced estimates to reduce window-edge effects
 - Sampled, timestamped, and mixed sampled/timestamped channel tuples
-- Unit or exponentially distributed amplitudes for timestamped photon events
+- Unit or exponentially distributed amplitudes for timestamped events
 - Accelerated computing on a variety of GPUs via PyTorch
 - Lazy reading from HDF5 datasets larger than system memory
 - Plotting of spectra, uncertainties, and statistical significance
@@ -132,10 +132,10 @@ needed, particularly for large datasets and higher orders.
 ### Timestamped measurements
 
 Represent discrete events by their occurrence times. Timestamped calculations require an explicit
-half-open observation interval and `PhotonOptions`:
+half-open observation interval and `TimestampOptions`:
 
 ```python
-from signalsnap_pytorch import DataConfig, PhotonOptions, SpectrumConfig, TimestampedChannel
+from signalsnap_pytorch import DataConfig, SpectrumConfig, TimestampedChannel, TimestampOptions
 
 data_config = DataConfig(
     channels=(TimestampedChannel(timestamps=event_times),),
@@ -148,7 +148,7 @@ spectrum_config = SpectrumConfig(
     df=1,
     f_min=0,
     f_max=100,
-    photon_options=PhotonOptions(weighting="unit"),
+    timestamp_options=TimestampOptions(weighting="unit"),
 )
 ```
 

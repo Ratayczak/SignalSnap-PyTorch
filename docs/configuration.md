@@ -81,7 +81,7 @@ spectrum_config = SpectrumConfig(
 | --- | --- |
 | `df` | Requested frequency spacing. If omitted in a calculation with sampled channels, each FFT window uses 1000 samples. Timestamp-only calculations require it. |
 | `f_min`, `f_max` | Inclusive requested frequency interval. `f_min` and `f_max` may be negative. `f_max=None` uses the sampled Nyquist frequency; timestamp-only calculations require an explicit `f_max`. |
-| `photon_options` | Required event-amplitude treatment for active timestamped channels; rejected for sampled-only calculations. |
+| `timestamp_options` | Required event-amplitude treatment for active timestamped channels; rejected for sampled-only calculations. |
 | `m` | Number of physical windows contributing to each cumulant estimate. |
 | `uncertainty_estimation` | `"global"` for the global standard error, or `"short_term"` for a typical local uncertainty. |
 | `m_var` | Number of consecutive estimates in each short-term uncertainty batch. |
@@ -96,20 +96,20 @@ Configuration objects are immutable and reject unknown fields.
 
 ### Timestamped event weighting
 
-`PhotonOptions` applies to every active timestamped channel. Unit weighting assigns amplitude one
+`TimestampOptions` applies to every active timestamped channel. Unit weighting assigns amplitude one
 to each event and performs one deterministic calculation:
 
 ```python
-from signalsnap_pytorch import PhotonOptions
+from signalsnap_pytorch import TimestampOptions
 
-photon_options = PhotonOptions(weighting="unit")
+timestamp_options = TimestampOptions(weighting="unit")
 ```
 
 Exponential weighting draws independent positive event amplitudes for each realization and
 averages the resulting spectra:
 
 ```python
-photon_options = PhotonOptions(
+timestamp_options = TimestampOptions(
     weighting="exponential",
     scale=1.0,
     repetitions=100,

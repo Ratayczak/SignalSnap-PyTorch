@@ -120,8 +120,8 @@ assert result.calculation_metadata is calculation
 | `window_duration` | Duration of one physical coefficient window |
 | `unshifted_offset`, `shifted_offset` | Placement offsets; the latter is `None` without interlacing |
 | `window_convention` | Default or legacy confined-Gaussian window convention |
-| `photon_weighting` | Timestamp amplitude model, or `None` for sampled-only calculations |
-| `exponential_scale` | Exponential amplitude scale when `photon_weighting = "exponential"`, is `None` for unit amplitudes |
+| `timestamp_weighting` | Timestamp amplitude model, or `None` for sampled-only calculations |
+| `exponential_scale` | Exponential amplitude scale when `timestamp_weighting = "exponential"`, is `None` for unit amplitudes |
 | `repetition_count` | Number of amplitude realizations, is `1` for unit amplitudes  |
 | `requested_repetition_batch_size` | Configured repetition batch size for exponential amplitude scaling, is `None` for unit amplitudes |
 | `resolved_repetition_batch_size` | Repetition batch size actually used, is `1` for unit amplitudes |
