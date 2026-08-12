@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import FrozenInstanceError
 
 import h5py
@@ -9,8 +10,18 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-from signalsnap_pytorch import DataConfig, HDF5Source, SpectrumConfig, TimestampedChannel
-from signalsnap_pytorch.plotting import PlotStyle, create_first_window_figure
+from signalsnap_pytorch import (
+    DataConfig,
+    HDF5Source,
+    SpectrumConfig,
+    SpectrumResult,
+    TimestampedChannel,
+)
+from signalsnap_pytorch.plotting import (
+    PlotStyle,
+    create_first_window_figure,
+    create_spectrum_figure,
+)
 from tests._helpers import sampled_data_config
 
 
@@ -383,3 +394,34 @@ def test_create_first_window_figure_does_not_open_unselected_hdf5_channel(
         )
     finally:
         plt.close(figure)
+
+
+@pytest.mark.parametrize("arcsinh_ratio", [None, 0.1])
+def test_higher_order_plot_handles_all_nan_component(arcsinh_ratio):
+    result = SpectrumResult(
+        channels=(0, 0, 0),
+        freq=np.array([-1.0, 1.0]),
+        freq_unit="Hz",
+        spectrum=np.full((2, 2), np.nan + 0j),
+    )
+    style = PlotStyle(
+        f_min=-1.0,
+        f_max=1.0,
+        arcsinh_ratio=arcsinh_ratio,
+        plot_format=["re"],
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        spectrum_figure = create_spectrum_figure(result, style)
+
+        try:
+            spectrum_figure.figure.canvas.draw()
+            mesh = spectrum_figure.figure.axes[0].collections[0]
+
+            assert type(mesh.norm) is matplotlib.colors.Normalize
+            assert mesh.norm.vmin == -1.0
+            assert mesh.norm.vmax == 1.0
+            assert np.ma.getmaskarray(mesh.get_array()).all()
+        finally:
+            plt.close(spectrum_figure.figure)

@@ -609,12 +609,17 @@ def _create_order_3_or_4_figure(result: SpectrumResult, plot_style: PlotStyle) -
         ax = axes[0][col]
         raw_z = _component_data(result.spectrum, component)
         z = np.ma.masked_invalid(raw_z)
+        finite_z = z.compressed()
 
-        limit = np.nanmax(np.abs(raw_z))
+        data_limit = float(np.max(np.abs(finite_z))) if finite_z.size else 0.0
+        limit = data_limit if data_limit > 0.0 else 1.0
+
         width = None
+        if plot_style.arcsinh_ratio is not None and data_limit > 0.0:
+            candidate_width = plot_style.arcsinh_ratio * data_limit
 
-        if plot_style.arcsinh_ratio is not None:
-            width = _arcsinh_width(raw_z, plot_style.arcsinh_ratio)
+            if np.isfinite(candidate_width) and candidate_width > 0.0:
+                width = candidate_width
 
         if width is None:
             norm = mcolors.Normalize(vmin=-limit, vmax=limit)
