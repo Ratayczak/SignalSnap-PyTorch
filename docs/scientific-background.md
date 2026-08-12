@@ -109,8 +109,8 @@ data. SignalSnap implements unbiased, finite-sample, multivariate cumulant estim
 
 They take the Fourier-coefficient vectors from `m` different windows and treat them as samples for
 a multivariate k-statistic. Each slice of `m` windows produces one spectral estimate provided by
-the formulas above. The final spectrum is their average, and their variation provides the standard
-error.
+the formulas above. The final spectrum is their average, while their variation determines the
+uncertainty of the final result.
 
 ## Statistical assumptions
 
