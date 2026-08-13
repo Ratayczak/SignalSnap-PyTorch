@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import h5py
 
 NormalizedSelector = int | slice
-_TIMESTAMP_VALIDATION_CHUNK_SIZE = 65_536
+_VALIDATION_CHUNK_SIZE = 65_536
 
 
 def _require_h5py() -> Any:
@@ -540,6 +540,19 @@ def relative_float64_offsets(
     return np.asarray(values - observation_start, dtype=np.float64)
 
 
+def validate_sampled_hdf5_source(source: RuntimeSource, *, label: str) -> None:
+    """Validate one sampled HDF5 source using bounded contiguous reads."""
+
+    source_length = get_source_length(source)
+
+    for start in range(0, source_length, _VALIDATION_CHUNK_SIZE):
+        stop = min(start + _VALIDATION_CHUNK_SIZE, source_length)
+        values = read_source(source, start, stop)
+
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{label} must contain only finite values.")
+
+
 def validate_timestamp_source(
     source: RuntimeSource,
     observation_start: float,
@@ -562,8 +575,8 @@ def validate_timestamp_source(
     previous_raw: float | None = None
     previous_offset: float | None = None
 
-    for start in range(0, get_source_length(source), _TIMESTAMP_VALIDATION_CHUNK_SIZE):
-        stop = min(start + _TIMESTAMP_VALIDATION_CHUNK_SIZE, get_source_length(source))
+    for start in range(0, get_source_length(source), _VALIDATION_CHUNK_SIZE):
+        stop = min(start + _VALIDATION_CHUNK_SIZE, get_source_length(source))
         values = read_source(source, start, stop)
 
         if not np.all(np.isfinite(values)):

@@ -10,6 +10,7 @@ from signalsnap_pytorch._core.data_access import (
     get_source_length,
     open_channels,
     read_source,
+    validate_sampled_hdf5_source,
     validate_timestamp_source,
 )
 from tests._helpers import sampled_data_config
@@ -216,7 +217,7 @@ def test_timestamped_hdf5_validation_carries_order_across_c_order_chunks(
             ),
         ),
     )
-    monkeypatch.setattr(_data_access, "_TIMESTAMP_VALIDATION_CHUNK_SIZE", 2)
+    monkeypatch.setattr(_data_access, "_VALIDATION_CHUNK_SIZE", 2)
 
     with _open_all_channels(config) as sources:
         if expect_error:
@@ -234,6 +235,69 @@ def test_timestamped_hdf5_validation_carries_order_across_c_order_chunks(
                 4,
                 label="Timestamped channel 0",
             )
+
+
+def test_sampled_hdf5_validation_rejects_nonfinite_value_in_later_chunk(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "sampled.h5"
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset(
+            "/sampled",
+            data=np.array([0.0, 1.0, 2.0, 3.0, np.nan, 5.0]),
+        )
+
+    config = DataConfig(
+        channels=(
+            SampledChannel(
+                data=HDF5Source(
+                    file=path,
+                    dataset="/sampled",
+                    selection=(slice(None),),
+                ),
+                dt=1.0,
+            ),
+        ),
+    )
+    monkeypatch.setattr(_data_access, "_VALIDATION_CHUNK_SIZE", 2)
+
+    with _open_all_channels(config) as sources:
+        with pytest.raises(ValueError, match="Sampled channel 0.*only finite values"):
+            validate_sampled_hdf5_source(
+                sources[0],
+                label="Sampled channel 0",
+            )
+
+
+def test_sampled_hdf5_validation_only_checks_selected_values(tmp_path):
+    path = tmp_path / "sampled.h5"
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset(
+            "/sampled",
+            data=np.array([0.0, 1.0, 2.0, 3.0, np.nan]),
+        )
+
+    config = DataConfig(
+        channels=(
+            SampledChannel(
+                data=HDF5Source(
+                    file=path,
+                    dataset="/sampled",
+                    selection=(slice(0, 4),),
+                ),
+                dt=1.0,
+            ),
+        ),
+    )
+
+    with _open_all_channels(config) as sources:
+        validate_sampled_hdf5_source(
+            sources[0],
+            label="Sampled channel 0",
+        )
 
 
 def test_open_channels_builds_hdf5_state(hdf5_file):

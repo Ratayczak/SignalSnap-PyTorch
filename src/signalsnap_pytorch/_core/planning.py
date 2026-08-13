@@ -25,7 +25,13 @@ from ..configurators import (
     TimestampedChannel,
     TimestampOptions,
 )
-from .data_access import RuntimeSource, get_source_length, validate_timestamp_source
+from .data_access import (
+    HDF5SourceState,
+    RuntimeSource,
+    get_source_length,
+    validate_sampled_hdf5_source,
+    validate_timestamp_source,
+)
 from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
 
 _MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 10
@@ -1129,6 +1135,12 @@ def build_runtime_config(
 
     observation_start, observation_stop = _resolve_observation_interval(data_config, channel_plans)
     for channel, channel_plan in channel_plans.items():
+        source = opened_channels[channel]
+
+        # In-memory sampled sources were already validated by SampledChannel.
+        # HDF5 sources require a bounded scan after the dataset has been opened.
+        if isinstance(channel_plan, SampledChannelPlan) and isinstance(source, HDF5SourceState):
+            validate_sampled_hdf5_source(source, label=f"Sampled channel {channel}")
         if isinstance(channel_plan, TimestampedChannelPlan):
             validate_timestamp_source(
                 opened_channels[channel],

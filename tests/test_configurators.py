@@ -293,6 +293,22 @@ def test_sampled_channel_accepts_hdf5_source_without_opening_it():
     assert channel.data is source
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(np.array([1.0, np.nan]), id="numpy-nan"),
+        pytest.param(np.array([1.0, np.inf]), id="numpy-positive-inf"),
+        pytest.param(np.array([1.0, -np.inf]), id="numpy-negative-inf"),
+        pytest.param(torch.tensor([1.0, float("nan")]), id="tensor-nan"),
+        pytest.param(torch.tensor([1.0, float("inf")]), id="tensor-positive-inf"),
+        pytest.param(torch.tensor([1.0, -float("inf")]), id="tensor-negative-inf"),
+    ],
+)
+def test_sampled_channel_rejects_nonfinite_in_memory_data(data):
+    with pytest.raises(ValueError, match="only finite values"):
+        SampledChannel(data=data, dt=1.0)
+
+
 @pytest.mark.parametrize("dt", [0.0, -0.1, np.inf, np.nan, True])
 def test_sampled_channel_rejects_invalid_dt(dt):
     with pytest.raises((TypeError, ValueError), match="dt"):

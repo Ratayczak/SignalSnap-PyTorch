@@ -1,5 +1,6 @@
 import h5py
 import numpy as np
+import pytest
 
 from signalsnap_pytorch import (
     DataConfig,
@@ -254,3 +255,34 @@ def test_mixed_exponential_pipeline_has_array_hdf5_parity(tmp_path):
         expected,
         requested_spectra=requested_spectra,
     )
+
+
+def test_calculation_rejects_nonfinite_sampled_hdf5_data(tmp_path):
+    path = tmp_path / "nonfinite-sampled.h5"
+    values = np.arange(16, dtype=np.float64)
+    values[12] = np.inf
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset("/sampled", data=values, chunks=(4,))
+
+    data_config = DataConfig(
+        channels=(
+            SampledChannel(
+                data=HDF5Source(
+                    file=path,
+                    dataset="/sampled",
+                    selection=(slice(None),),
+                ),
+                dt=1.0,
+            ),
+        ),
+    )
+    spectrum_config = SpectrumConfig(df=0.25, m=2)
+
+    with pytest.raises(ValueError, match="Sampled channel 0.*only finite values"):
+        calculate_spectra(
+            data_config,
+            spectrum_config,
+            requested_spectra=[(0, 0)],
+            show_progress=False,
+        )

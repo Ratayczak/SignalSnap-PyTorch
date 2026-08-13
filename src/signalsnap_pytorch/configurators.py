@@ -322,7 +322,7 @@ class SampledChannel:
     ----------
     data : numpy.ndarray | torch.Tensor | HDF5Source
         Sample values for the channel. In-memory input must be a nonempty one-dimensional NumPy
-        array or CPU PyTorch tensor containing real numeric or Boolean values. An
+        array or CPU PyTorch tensor containing finite real numeric or Boolean values. An
         :class:`HDF5Source` is read lazily and flattened into one logical channel. NumPy masked
         arrays are not supported.
     dt : float
@@ -339,6 +339,11 @@ class SampledChannel:
             allow_empty=False,
             allow_boolean=True,
         )
+        if isinstance(validated_data, torch.Tensor):
+            if not bool(torch.isfinite(validated_data).all().item()):
+                raise ValueError("SampledChannel data must contain only finite values.")
+        elif isinstance(validated_data, np.ndarray) and not np.all(np.isfinite(validated_data)):
+                raise ValueError("SampledChannel data must contain only finite values.")
         normalized_dt = normalize_real(self.dt, name="SampledChannel dt", positive=True)
 
         object.__setattr__(self, "data", validated_data)
