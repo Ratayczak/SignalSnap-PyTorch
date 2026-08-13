@@ -7,13 +7,13 @@
 
 from __future__ import annotations
 
-from .configurators import (
+from .config import (
     DataConfig,
     HDF5Source,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
 )
 from .metadata import CalculationMetadata, SpectrumMetadata
 from .pipelines import calculate_spectra
@@ -23,12 +23,12 @@ __all__ = [
     "CalculationMetadata",
     "DataConfig",
     "HDF5Source",
-    "TimestampOptions",
     "SampledChannel",
     "SpectrumConfig",
     "SpectrumMetadata",
     "SpectrumResult",
     "SpectrumResultStore",
+    "TimestampOptions",
     "TimestampedChannel",
     "calculate_spectra",
 ]

@@ -6,30 +6,32 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
     calculate_spectra,
 )
 from signalsnap_pytorch._core.accumulation import initialize_accumulator_store
 from signalsnap_pytorch._core.data_access import open_channels
 from signalsnap_pytorch._core.planning import (
     _MAX_AMPLITUDE_REPETITIONS_PER_BATCH,
+    _count_complete_windows,
+    _resolve_device,
+    _resolve_timestamp_frequencies,
+    build_channel_plans,
+    build_runtime_config,
+    iter_window_batches,
+    physical_estimate_count,
+    resolve_repetition_plan,
+    resolve_requested_spectra,
+    resolve_sampled_frequencies,
+)
+from signalsnap_pytorch._core.plans import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
     SampledChannelPlan,
     TimestampedChannelPlan,
-    _build_channel_plans,
-    _count_complete_windows,
-    _resolve_device,
-    _resolve_repetition_plan,
-    _resolve_timestamp_frequencies,
-    build_runtime_config,
-    iter_window_batches,
-    physical_estimate_count,
-    resolve_requested_spectra,
-    resolve_sampled_frequencies,
 )
 from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config
 
@@ -1265,7 +1267,7 @@ def test_timestamped_channel_plan_owns_amplitude_instructions(
     )
 
     with open_channels(data_config, (0,)) as opened_channels:
-        channel_plans, _ = _build_channel_plans(
+        channel_plans, _ = build_channel_plans(
             data_config=data_config,
             opened_channels=opened_channels,
             timestamp_options=timestamp_options,
@@ -1286,7 +1288,7 @@ def test_timestamped_channel_plan_owns_amplitude_instructions(
     ],
 )
 def test_repetition_plan_is_neutral_without_exponential_weighting(timestamp_options):
-    plan = _resolve_repetition_plan(timestamp_options)
+    plan = resolve_repetition_plan(timestamp_options)
 
     assert plan.count == 1
     assert plan.batch_size == 1
@@ -1301,7 +1303,7 @@ def test_exponential_repetition_plan_preserves_count_and_explicit_seed():
         seed=0,
     )
 
-    plan = _resolve_repetition_plan(options)
+    plan = resolve_repetition_plan(options)
 
     assert plan.count == 4
     assert plan.batch_size == 4
@@ -1317,7 +1319,7 @@ def test_exponential_repetition_plan_bounds_internal_batch_size():
         seed=123,
     )
 
-    plan = _resolve_repetition_plan(options)
+    plan = resolve_repetition_plan(options)
 
     assert plan.count == repetition_count
     assert plan.batch_size == _MAX_AMPLITUDE_REPETITIONS_PER_BATCH
@@ -1340,7 +1342,7 @@ def test_exponential_repetition_plan_resolves_one_63_bit_seed(monkeypatch):
         repetitions=2,
     )
 
-    plan = _resolve_repetition_plan(options)
+    plan = resolve_repetition_plan(options)
 
     assert calls == [63]
     assert plan.resolved_seed == 456

@@ -1,15 +1,15 @@
 import numpy as np
 
-from signalsnap_pytorch._core import planning as _planning
-from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch import (
     DataConfig,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
     calculate_spectra,
 )
+from signalsnap_pytorch._core import planning as _planning
+from signalsnap_pytorch._core import timestamps as _timestamps
 
 
 def _default_window(normalized_times):

@@ -17,7 +17,7 @@ import numpy as np
 from ._core import data_access as _data_access
 from ._core import planning as _planning
 from ._core.utils import PlotComponent as _PlotComponent
-from .configurators import DataConfig, SampledChannel, SpectrumConfig, normalize_real
+from .config import DataConfig, SampledChannel, SpectrumConfig, normalize_real
 from .results import SpectrumResult, SpectrumResultStore
 
 try:
@@ -338,7 +338,7 @@ def create_first_window_figure(
         one window, or the configured frequency bounds are invalid.
     TypeError
         If a channel index is not an integer, or a
-        :class:`~signalsnap_pytorch.configurators.TimestampedChannel` is chosen.
+        :class:`~signalsnap_pytorch.config.TimestampedChannel` is chosen.
     """
 
     # Validate DataConfigs and requested channels.

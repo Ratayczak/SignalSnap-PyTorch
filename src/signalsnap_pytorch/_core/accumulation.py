@@ -21,7 +21,7 @@ from .utils import FrequencyUnits
 
 if TYPE_CHECKING:
     from ..metadata import CalculationMetadata, SpectrumMetadata
-    from .planning import RuntimeConfig
+    from .plans import RuntimeConfig
 
 
 @dataclass(slots=True)

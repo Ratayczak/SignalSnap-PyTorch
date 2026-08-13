@@ -4,11 +4,13 @@ import numpy as np
 import pytest
 import torch
 
-from signalsnap_pytorch._core.fft import (
-    DefaultTimestampWindow,
+from signalsnap_pytorch._core.legacy_window import (
     LegacyTimestampWindow,
+    prepare_legacy_timestamp_window,
+)
+from signalsnap_pytorch._core.window import (
+    DefaultTimestampWindow,
     _prepare_default_timestamp_window,
-    _prepare_legacy_timestamp_window,
     prepare_timestamp_window,
 )
 
@@ -120,7 +122,7 @@ def test_legacy_timestamp_window_matches_independent_v1_formula(dtype):
         relative_times,
         duration,
     )
-    prepared = _prepare_legacy_timestamp_window(_runtime(duration, dtype))
+    prepared = prepare_legacy_timestamp_window(_runtime(duration, dtype))
 
     actual = prepared.evaluate(torch.tensor(relative_times, dtype=dtype))
 
@@ -134,7 +136,7 @@ def test_legacy_timestamp_window_matches_independent_v1_formula(dtype):
 
 
 def test_legacy_second_order_reference_normalization_is_one():
-    prepared = _prepare_legacy_timestamp_window(_runtime(3.5))
+    prepared = prepare_legacy_timestamp_window(_runtime(3.5))
 
     assert prepared.norm(2).item() == pytest.approx(1.0, rel=1e-14)
 

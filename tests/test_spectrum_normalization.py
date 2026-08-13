@@ -8,14 +8,15 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
     calculate_spectra,
 )
 from signalsnap_pytorch._core import fft as _fft
-from signalsnap_pytorch._core.planning import SampledChannelPlan, TimestampedChannelPlan
+from signalsnap_pytorch._core import window as _window
+from signalsnap_pytorch._core.plans import SampledChannelPlan, TimestampedChannelPlan
 from signalsnap_pytorch._core.spectra import (
     _COEFFICIENT_ROLE_CONJUGATIONS,
     ChannelCoefficients,
@@ -63,7 +64,7 @@ def _artificial_windows(sampled_values, timestamp_values, *, dt=0.5):
     sampled_norms = tuple(dt * torch.sum(sampled_values**order) for order in range(1, 5))
     timestamp_norms = tuple(torch.tensor(10.0 + order) for order in range(1, 5))
     return (
-        _fft.SampledWindow(sampled_values, sampled_norms),
+        _window.SampledWindow(sampled_values, sampled_norms),
         ArtificialTimestampWindow(timestamp_values, timestamp_norms),
     )
 
@@ -194,8 +195,8 @@ def test_homogeneous_paths_return_existing_norms_exactly(old_window):
         duration=1.0,
         old_window=old_window,
     )
-    sampled_window = _fft.prepare_window(runtime, dt=0.125, window_points=8)
-    timestamp_window = _fft.prepare_timestamp_window(runtime)
+    sampled_window = _window.prepare_window(runtime, dt=0.125, window_points=8)
+    timestamp_window = _window.prepare_timestamp_window(runtime)
 
     actual = prepare_spectrum_normalizations(runtime, sampled_window, timestamp_window)
 
@@ -350,8 +351,8 @@ def test_legacy_mixed_overlap_uses_sample_grid_instead_of_fixed_reference_norm(o
         duration=duration,
         old_window=True,
     )
-    sampled_window = _fft.prepare_window(runtime, dt=dt, window_points=point_count)
-    timestamp_window = _fft.prepare_timestamp_window(runtime)
+    sampled_window = _window.prepare_window(runtime, dt=dt, window_points=point_count)
+    timestamp_window = _window.prepare_timestamp_window(runtime)
 
     actual = prepare_spectrum_normalizations(
         runtime, sampled_window, timestamp_window
@@ -505,13 +506,13 @@ def test_grid_aligned_timestamp_and_sampled_count_rate_equivalence(monkeypatch):
 
     def prepare_sampled(runtime, dt, window_points):
         assert window_points == taper_values.numel()
-        return _fft.SampledWindow(taper_values.to(runtime.device), norms)
+        return _window.SampledWindow(taper_values.to(runtime.device), norms)
 
     def prepare_timestamp(runtime):
         return GridTimestampWindow()
 
-    monkeypatch.setattr(_fft, "prepare_window", prepare_sampled)
-    monkeypatch.setattr(_fft, "prepare_timestamp_window", prepare_timestamp)
+    monkeypatch.setattr(_window, "prepare_window", prepare_sampled)
+    monkeypatch.setattr(_window, "prepare_timestamp_window", prepare_timestamp)
 
     # Independently verify coefficient equivalence with repeated events, non-unit marks, and an
     # empty Fourier node.

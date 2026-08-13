@@ -8,10 +8,10 @@ import torch
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
 )
 
 

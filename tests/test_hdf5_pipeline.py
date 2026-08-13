@@ -5,10 +5,10 @@ import pytest
 from signalsnap_pytorch import (
     DataConfig,
     HDF5Source,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
     calculate_spectra,
 )
 from tests._helpers import TEST_SPECTRAL_ESTIMATES_PER_BATCH, sampled_data_config

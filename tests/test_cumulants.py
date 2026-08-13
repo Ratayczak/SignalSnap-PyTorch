@@ -9,8 +9,7 @@ from signalsnap_pytorch._core.cumulants import (
     c3_factorized,
     c4_factorized,
 )
-from signalsnap_pytorch._core.fft import SampledWindow
-from signalsnap_pytorch._core.planning import (
+from signalsnap_pytorch._core.plans import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
     RepetitionPlan,
@@ -27,6 +26,7 @@ from signalsnap_pytorch._core.spectra import (
     expand_deterministic_coefficients,
     prepare_sampled_channel_coefficients,
 )
+from signalsnap_pytorch._core.window import SampledWindow
 
 
 def _center(values: torch.Tensor) -> torch.Tensor:

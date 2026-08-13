@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-from ._core.planning import (
+from ._core.plans import (
     FFTFrequencyPlan,
     RuntimeConfig,
     SampledChannelPlan,
@@ -20,7 +20,7 @@ from ._core.planning import (
 )
 from ._core.utils import FrequencyUnits as _FrequencyUnits
 from ._core.utils import TimeUnits as _TimeUnits
-from .configurators import DataConfig, SampledChannel, SpectrumConfig, TimestampOptions
+from .config import DataConfig, SampledChannel, SpectrumConfig, TimestampOptions
 
 __all__ = ["CalculationMetadata", "SpectrumMetadata"]
 

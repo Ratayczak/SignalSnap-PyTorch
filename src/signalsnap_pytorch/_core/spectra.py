@@ -16,8 +16,8 @@ from torch import Tensor
 
 from .cumulants import build_s3_target_indices, c2_factorized, c3_factorized, c4_factorized
 from .data_access import RuntimeSource, read_source
-from .fft import SampledWindow, TimestampWindow, compute_fft, reshape_window_chunk, to_device
-from .planning import (
+from .fft import compute_fft, reshape_window_chunk, to_device
+from .plans import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
     FrequencyPlan,
@@ -26,6 +26,7 @@ from .planning import (
     TimestampedChannelPlan,
     WindowBatch,
 )
+from .window import SampledWindow, TimestampWindow
 
 _COEFFICIENT_ROLE_CONJUGATIONS = {
     1: (False,),

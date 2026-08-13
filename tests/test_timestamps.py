@@ -8,14 +8,15 @@ import torch
 from signalsnap_pytorch import DataConfig, HDF5Source, TimestampedChannel
 from signalsnap_pytorch._core import timestamps as _timestamps
 from signalsnap_pytorch._core.data_access import open_channels
-from signalsnap_pytorch._core.fft import _prepare_default_timestamp_window
 from signalsnap_pytorch._core.planning import (
+    iter_window_batches,
+)
+from signalsnap_pytorch._core.plans import (
     DirectFrequencyPlan,
     FFTFrequencyPlan,
     TimestampedChannelPlan,
     WindowBatch,
     WindowPlan,
-    iter_window_batches,
 )
 from signalsnap_pytorch._core.spectra import (
     _build_coefficient_batch,
@@ -31,6 +32,7 @@ from signalsnap_pytorch._core.timestamps import (
     materialize_timestamp_event_amplitudes,
     prepare_timestamp_batch,
 )
+from signalsnap_pytorch._core.window import _prepare_default_timestamp_window
 
 
 def _batch(starts, duration=1.0, shifted=False):

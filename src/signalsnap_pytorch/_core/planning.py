@@ -11,14 +11,11 @@ import math
 import secrets
 import warnings
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
-from typing import Any, Literal, cast
 
 import numpy as np
 import torch
-from numpy.typing import NDArray
 
-from ..configurators import (
+from ..config import (
     DataConfig,
     SampledChannel,
     SpectrumConfig,
@@ -32,71 +29,24 @@ from .data_access import (
     validate_sampled_hdf5_source,
     validate_timestamp_source,
 )
-from .utils import FrequencyUnits, TimeUnits, unit_conversion_time_to_freq
+from .plans import (
+    ChannelPlan,
+    CoefficientPreparationPlan,
+    DirectFrequencyPlan,
+    FFTFrequencyPlan,
+    RepetitionPlan,
+    RuntimeConfig,
+    SampledChannelPlan,
+    TimestampedChannelPlan,
+    WindowBatch,
+    WindowPlan,
+)
+from .utils import TimeUnits, unit_conversion_time_to_freq
 
 _MAX_AMPLITUDE_REPETITIONS_PER_BATCH = 10
 
 
-@dataclass(frozen=True, slots=True)
-class SampledChannelPlan:
-    """Resolved instructions for one active sampled channel."""
-
-    sample_count: int
-    dt: float
-
-
-@dataclass(frozen=True, slots=True)
-class TimestampedChannelPlan:
-    """Resolved access and amplitude instructions for one timestamped channel."""
-
-    event_count: int
-    weighting: Literal["unit", "exponential"]
-    scale: float | None
-
-
-ChannelPlan = SampledChannelPlan | TimestampedChannelPlan
-
-
-@dataclass(frozen=True, slots=True)
-class RepetitionPlan:
-    """Resolved calculation-wide amplitude-realization plan.
-
-    Attributes
-    ----------
-    count : int
-        Total number of amplitude realizations. Calculations without exponential timestamp
-        weighting use one realization; exponential weighting uses the configured repetition
-        count.
-    batch_size : int
-        Maximum number of realizations processed together.
-    resolved_seed : int | None
-        Seed used for keyed exponential amplitudes. This is the configured seed or a seed generated
-        during planning. It is ``None`` when exponential weighting is not active.
-    """
-
-    count: int
-    batch_size: int
-    resolved_seed: int | None
-
-    def iter_batches(self) -> Iterator[range]:
-        """Yield consecutive batches of calculation-wide realization IDs.
-
-        The IDs cover ``range(count)`` exactly once, in ascending order, with no batch larger than
-        ``batch_size``. They remain independent of repetition batching so that keyed timestamp
-        amplitudes are reproducible when the batch size changes.
-
-        Yields
-        ------
-        range
-            Consecutive realization IDs for one repetition batch.
-        """
-
-        for start in range(0, self.count, self.batch_size):
-            stop = min(start + self.batch_size, self.count)
-            yield range(start, stop)
-
-
-def _resolve_repetition_plan(timestamp_options: TimestampOptions | None) -> RepetitionPlan:
+def resolve_repetition_plan(timestamp_options: TimestampOptions | None) -> RepetitionPlan:
     """Resolve shared amplitude-repetition iteration for one calculation."""
 
     if timestamp_options is None or timestamp_options.weighting == "unit":
@@ -121,248 +71,189 @@ def _resolve_repetition_plan(timestamp_options: TimestampOptions | None) -> Repe
     )
 
 
-@dataclass(frozen=True, slots=True)
-class WindowPlan:
-    """Resolved observation interval, physical-window layout, and batching plan.
+def resolve_window_plan(
+    spectrum_config: SpectrumConfig,
+    *,
+    observation_start: float,
+    observation_stop: float,
+    window_duration: float,
+    interlacing_offset: float,
+    available_unshifted_windows: int,
+    available_shifted_windows: int,
+    orders: tuple[int, ...],
+) -> tuple[WindowPlan, int]:
+    """Resolve estimate counts, interlacing, batching, and uncertainty grouping.
 
-    Attributes
+    The effective number of physical windows per estimate is initially ``SpectrumConfig.m`` and is
+    reduced when fewer unshifted windows are available. It must still be at least the highest
+    requested spectrum order.
+
+    Complete physical windows are grouped into estimates, and the number of unshifted estimates is
+    limited by ``spectral_estimates_max``. When interlacing is enabled, the shifted count is
+    limited to the smaller of the available shifted and selected unshifted counts.
+
+    In short-term uncertainty mode, ``m_var`` may be reduced to the available unshifted estimate
+    count. A processing batch large enough to contain a complete uncertainty group is rounded down
+    to a multiple of the effective ``m_var``.
+
+    Parameters
     ----------
+    spectrum_config : SpectrumConfig
+        Requested window count, estimate limit, batching, interlacing, and
+        uncertainty settings.
     observation_start, observation_stop : float
         Bounds of the common half-open observation interval.
-    duration : float
-        Duration of one physical window, in the configured time unit.
-    windows_per_estimate : int
-        Effective number of physical windows combined into one spectral estimate. This may be lower
-        than the requested ``SpectrumConfig.m`` when insufficient data is available.
-    unshifted_estimate_count : int
-        Number of complete unshifted spectral estimates to calculate after applying
-        ``SpectrumConfig.spectral_estimates_max``.
-    shifted_estimate_count : int
-        Number of complete interlaced estimates to calculate. Zero when interlacing is disabled.
-    estimates_per_batch : int
-        Effective maximum number of spectral estimates processed together. In short-term
-        uncertainty mode, this may be reduced to a multiple of the effective ``m_var``.
+    window_duration : float
+        Duration of one physical window.
     interlacing_offset : float
-        Offset of the shifted placement relative to the unshifted placement. For sampled data, this
-        is aligned to a sample boundary.
+        Offset applied to shifted physical windows.
+    available_unshifted_windows : int
+        Number of complete physical windows in the unshifted placement.
+    available_shifted_windows : int
+        Number of complete physical windows in the shifted placement.
+    orders : tuple[int, ...]
+        Distinct requested spectrum orders.
+
+    Returns
+    -------
+    tuple[WindowPlan, int]
+        Resolved window plan and effective ``m_var``.
+
+    Warns
+    -----
+    UserWarning
+        If ``m`` is reduced because too few physical windows are available, or if
+        ``m_var`` is reduced because too few unshifted estimates are available.
+
+    Raises
+    ------
+    ValueError
+        If the effective number of windows per estimate is below the highest
+        requested order, or if interlacing is requested but no complete shifted
+        estimate fits.
     """
 
-    observation_start: float
-    observation_stop: float
-    duration: float
-    windows_per_estimate: int
-    unshifted_estimate_count: int
-    shifted_estimate_count: int
-    estimates_per_batch: int
-    interlacing_offset: float
+    if available_unshifted_windows < spectrum_config.m:
+        windows_per_estimate = available_unshifted_windows
+        warnings.warn(
+            f"Not enough data points are available for m={spectrum_config.m}; "
+            f"using m={windows_per_estimate} instead.",
+            UserWarning,
+            stacklevel=4,
+        )
+    else:
+        windows_per_estimate = spectrum_config.m
+
+    if windows_per_estimate < max(orders):
+        raise ValueError("Not enough data points")
+
+    available_unshifted_estimates = available_unshifted_windows // windows_per_estimate
+    if spectrum_config.spectral_estimates_max is None:
+        unshifted_estimate_count = available_unshifted_estimates
+    else:
+        unshifted_estimate_count = min(
+            spectrum_config.spectral_estimates_max,
+            available_unshifted_estimates,
+        )
+
+    shifted_estimate_count = 0
+    if spectrum_config.interlacing:
+        available_shifted_estimates = available_shifted_windows // windows_per_estimate
+        shifted_estimate_count = min(unshifted_estimate_count, available_shifted_estimates)
+        if shifted_estimate_count < 1:
+            raise ValueError(
+                "Interlacing was requested, but the data is too short for a shifted "
+                "spectral estimate. Disable interlacing or provide more data."
+            )
+
+    m_var = spectrum_config.m_var
+    if (
+        spectrum_config.uncertainty_estimation == "short_term"
+        and 2 <= unshifted_estimate_count < m_var
+    ):
+        m_var = unshifted_estimate_count
+        warnings.warn(
+            f"Only {unshifted_estimate_count} unshifted spectral estimates are "
+            f"available; using m_var={m_var} instead.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    estimates_per_batch = spectrum_config.spectral_estimates_per_batch
+    if spectrum_config.uncertainty_estimation == "short_term" and estimates_per_batch >= m_var:
+        estimates_per_batch -= estimates_per_batch % m_var
+
+    return (
+        WindowPlan(
+            observation_start=observation_start,
+            observation_stop=observation_stop,
+            duration=window_duration,
+            windows_per_estimate=windows_per_estimate,
+            unshifted_estimate_count=unshifted_estimate_count,
+            shifted_estimate_count=shifted_estimate_count,
+            estimates_per_batch=estimates_per_batch,
+            interlacing_offset=interlacing_offset,
+        ),
+        m_var,
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class WindowBatch:
-    """One batch of physical windows from a single placement group.
+def build_channel_plans(
+    data_config: DataConfig,
+    opened_channels: Mapping[int, RuntimeSource],
+    timestamp_options: TimestampOptions | None,
+) -> tuple[dict[int, ChannelPlan], TimeUnits]:
+    """Build plans for active channels and validate shared sampled properties."""
 
-    Attributes
-    ----------
-    relative_starts : NDArray[np.float64]
-        Physical-window start times relative to ``WindowPlan.observation_start``, with shape
-        ``(B, m)``. Rows identify spectral estimates and columns identify the physical windows
-        belonging to each estimate.
-    duration : float
-        Duration of every physical window in the batch.
-    estimate_count : int
-        Number of spectral estimates in the batch, equal to ``B``.
-    shifted : bool
-        Whether the batch belongs to the shifted interlacing placement.
-    relative_stop : float or None
-        Exclusive stop of the final physical window. Batches produced by
-        :func:`iter_window_batches` derive it from the same boundary grid as
-        ``relative_starts``. ``None`` supports manually constructed batches.
-    """
+    channel_plans: dict[int, ChannelPlan] = {}
+    first_sampled_channel: int | None = None
+    first_sampled_plan: SampledChannelPlan | None = None
 
-    relative_starts: NDArray[np.float64]
-    duration: float
-    estimate_count: int
-    shifted: bool
-    relative_stop: float | None = None
+    for channel, source in opened_channels.items():
+        channel_config = data_config.channels[channel]
+        source_length = get_source_length(source)
 
+        if isinstance(channel_config, SampledChannel):
+            plan = SampledChannelPlan(sample_count=source_length, dt=channel_config.dt)
 
-@dataclass(frozen=True, slots=True)
-class FFTFrequencyPlan:
-    """Resolved shifted FFT grid and hard-bounded sampled band view.
+            if first_sampled_plan is None:
+                first_sampled_channel = channel
+                first_sampled_plan = plan
+            else:
+                if plan.dt != first_sampled_plan.dt:
+                    raise ValueError(
+                        f"Channel {channel} has dt={plan.dt}, but channel "
+                        f"{first_sampled_channel} has dt={first_sampled_plan.dt}."
+                    )
 
-    Attributes
-    ----------
-    shifted_full_fft_frequencies : NDArray[np.floating[Any]]
-        Full frequency grid of the FFT after ``fftshift``.
-    band_start, band_stop : int
-        Half-open slice bounds such that
-        ``band_frequencies = shifted_full_fft_frequencies[band_start:band_stop]``. The slice
-        contains the FFT frequencies within the requested frequency bounds.
-    """
+                if plan.sample_count != first_sampled_plan.sample_count:
+                    raise ValueError(
+                        f"Channel {channel} contains {plan.sample_count} samples, "
+                        f"but channel {first_sampled_channel} contains "
+                        f"{first_sampled_plan.sample_count} samples."
+                    )
 
-    shifted_full_fft_frequencies: NDArray[np.floating[Any]]
-    band_start: int
-    band_stop: int
+        elif isinstance(channel_config, TimestampedChannel):
+            if timestamp_options is None:
+                raise RuntimeError(
+                    "Internal error: timestamped channel planning requires resolved "
+                    "TimestampOptions."
+                )
 
-    @property
-    def band_frequencies(self) -> NDArray[np.floating[Any]]:
-        """Return the frequencies inside the requested frequency bounds."""
-        return self.shifted_full_fft_frequencies[self.band_start : self.band_stop]
+            plan = TimestampedChannelPlan(
+                event_count=source_length,
+                weighting=timestamp_options.weighting,
+                scale=timestamp_options.scale,
+            )
 
-    @property
-    def window_points(self) -> int:
-        """Return the number of frequencies in the complete shifted FFT grid."""
-
-        return int(self.shifted_full_fft_frequencies.size)
-
-
-@dataclass(frozen=True, slots=True)
-class DirectFrequencyPlan:
-    """Resolved hard-bounded direct-transform frequency grid.
-
-    Attributes
-    ----------
-    actual_df : float
-        Resolved grid spacing, equal to ``1 / window_duration``.
-    grid_indices : NDArray[np.int64]
-        Integer Fourier-grid coordinates specifying the frequencies inside the requested frequency
-        bounds: ``band_frequencies = grid_indices * actual_df``.
-    """
-
-    actual_df: float
-    grid_indices: NDArray[np.int64]
-
-    @property
-    def band_frequencies(self) -> NDArray[np.float64]:
-        """Return the frequencies inside the requested frequency bounds."""
-        return cast(NDArray[np.float64], self.grid_indices * self.actual_df)
-
-
-FrequencyPlan = FFTFrequencyPlan | DirectFrequencyPlan
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeConfig:
-    """Resolved calculation settings derived from user configuration.
-
-    :class:`SpectrumConfig` and :class:`DataConfig` describe what the user asked for;
-    :class:`RuntimeConfig` describes what the calculation will actually use after defaults, data
-    constraints, frequency grids, batching, numerical precision, and device availability have been
-    resolved.
-
-    Attributes
-    ----------
-    active_data_channels : tuple[int, ...]
-        Unique data-channel indices referenced by ``requested_spectra``, in first-use order.
-    requested_spectra : tuple[tuple[int, ...], ...]
-        Validated channel tuples identifying the requested spectra, in request order.
-    fft_frequency_plan : FFTFrequencyPlan | None
-        Shared shifted-FFT frequency plan used by every spectrum containing at least one sampled
-        channel. ``None`` when no sampled channel is active.
-    direct_frequency_plan : DirectFrequencyPlan | None
-        Shared direct-transform frequency plan used by timestamp-only spectra. ``None`` when no
-        timestamped channel is active.
-    channel_plans : dict[int, ChannelPlan]
-        Resolved source metadata and processing options for each active data channel.
-    window_plan : WindowPlan
-        Shared observation interval, physical-window layout, interlacing, estimate counts, and
-        processing batch size.
-    repetition_plan : RepetitionPlan
-        Shared amplitude-realization count, repetition batch size, and resolved random seed.
-        Sampled data and unit-weighted timestamp data use a single deterministic realization.
-    uncertainty_estimation : Literal["global", "short_term"]
-        Uncertainty-estimation method.
-    m_var : int
-        Effective number of consecutive spectral estimates per short-term batch. This may be lower
-        than the requested value if insufficient unshifted estimates are available.
-    freq_unit : Literal["Hz", "kHz", "MHz", "GHz", "THz"]
-        Unit of the frequency axis.
-    real_dtype : torch.dtype
-        Sets the dtype of floats.
-    complex_dtype : torch.dtype
-        Sets the dtype of complex numbers.
-    device : torch.device
-        Torch device used for calculation.
-    old_window : bool
-        Compatibility option. If set to ``True``, the approximated confined Gaussian window from the
-        old API is used as a window function.
-    """
-
-    active_data_channels: tuple[int, ...]
-    requested_spectra: tuple[tuple[int, ...], ...]
-    fft_frequency_plan: FFTFrequencyPlan | None
-    direct_frequency_plan: DirectFrequencyPlan | None
-    channel_plans: dict[int, ChannelPlan]
-    window_plan: WindowPlan
-    repetition_plan: RepetitionPlan
-    uncertainty_estimation: Literal["global", "short_term"]
-    m_var: int
-    freq_unit: FrequencyUnits
-    real_dtype: torch.dtype
-    complex_dtype: torch.dtype
-    device: torch.device
-    old_window: bool
-
-    def frequency_plan_for(self, channels: tuple[int, ...]) -> FrequencyPlan:
-        """Return the frequency plan used for a spectrum channel tuple.
-
-        Spectra containing at least one sampled channel use ``fft_frequency_plan``.
-        Timestamp-only spectra use ``direct_frequency_plan``.
-
-        Parameters
-        ----------
-        channels : tuple[int, ...]
-            Data-channel indices identifying the spectrum.
-
-        Returns
-        -------
-        FrequencyPlan
-            Shared frequency plan applicable to the spectrum.
-
-        Raises
-        ------
-        RuntimeError
-            If the required frequency plan was not created.
-        """
-        if any(isinstance(self.channel_plans[channel], SampledChannelPlan) for channel in channels):
-            plan = self.fft_frequency_plan
         else:
-            plan = self.direct_frequency_plan
+            raise TypeError(
+                f"Channel {channel} has unsupported type {type(channel_config).__name__}."
+            )
 
-        if plan is None:
-            raise RuntimeError(f"No frequency plan is available for {channels}.")
+        channel_plans[channel] = plan
 
-        return plan
-
-
-@dataclass(slots=True)
-class CoefficientPreparationPlan:
-    """Coefficient requirements for spectra sharing one frequency plan.
-
-    Attributes
-    ----------
-    frequency_plan : FFTFrequencyPlan | DirectFrequencyPlan
-        Frequency grid shared by the associated requested spectra.
-    required_channels : set[int]
-        All channels referenced by those spectra. Every required channel needs a zero-frequency
-        coefficient.
-    direct_transform_channels : tuple[int, ...]
-        Required timestamped channels whose coefficients must be calculated by direct
-        transformation.
-    band_coefficient_channels : set[int]
-        Channels requiring coefficients on the output-frequency band. This includes every channel
-        in second- and fourth-order spectra and the first two channel positions in third-order
-        spectra.
-    third_order_closing_frequency_channels : set[int]
-        Channels occurring in the third position of a third-order spectrum and therefore requiring
-        coefficients at ``f3 = -(f1 + f2)``.
-    """
-
-    frequency_plan: FrequencyPlan
-    required_channels: set[int] = field(default_factory=set)
-    direct_transform_channels: tuple[int, ...] = ()
-    band_coefficient_channels: set[int] = field(default_factory=set)
-    third_order_closing_frequency_channels: set[int] = field(default_factory=set)
+    return channel_plans, data_config.t_unit
 
 
 def build_coefficient_preparation_plans(
@@ -435,6 +326,7 @@ def build_coefficient_preparation_plans(
         )
 
     return preparation_plans_by_type
+
 
 
 def _resolve_device(device_name: str) -> torch.device:
@@ -630,64 +522,6 @@ def resolve_requested_spectra(
     )
 
     return spectra_channels, active_data_channels
-
-
-def _build_channel_plans(
-    data_config: DataConfig,
-    opened_channels: Mapping[int, RuntimeSource],
-    timestamp_options: TimestampOptions | None,
-) -> tuple[dict[int, ChannelPlan], TimeUnits]:
-    """Build plans for active channels and validate shared sampled properties."""
-
-    channel_plans: dict[int, ChannelPlan] = {}
-    first_sampled_channel: int | None = None
-    first_sampled_plan: SampledChannelPlan | None = None
-
-    for channel, source in opened_channels.items():
-        channel_config = data_config.channels[channel]
-        source_length = get_source_length(source)
-
-        if isinstance(channel_config, SampledChannel):
-            plan = SampledChannelPlan(sample_count=source_length, dt=channel_config.dt)
-
-            if first_sampled_plan is None:
-                first_sampled_channel = channel
-                first_sampled_plan = plan
-            else:
-                if plan.dt != first_sampled_plan.dt:
-                    raise ValueError(
-                        f"Channel {channel} has dt={plan.dt}, but channel "
-                        f"{first_sampled_channel} has dt={first_sampled_plan.dt}."
-                    )
-
-                if plan.sample_count != first_sampled_plan.sample_count:
-                    raise ValueError(
-                        f"Channel {channel} contains {plan.sample_count} samples, "
-                        f"but channel {first_sampled_channel} contains "
-                        f"{first_sampled_plan.sample_count} samples."
-                    )
-
-        elif isinstance(channel_config, TimestampedChannel):
-            if timestamp_options is None:
-                raise RuntimeError(
-                    "Internal error: timestamped channel planning requires resolved "
-                    "TimestampOptions."
-                )
-
-            plan = TimestampedChannelPlan(
-                event_count=source_length,
-                weighting=timestamp_options.weighting,
-                scale=timestamp_options.scale,
-            )
-
-        else:
-            raise TypeError(
-                f"Channel {channel} has unsupported type {type(channel_config).__name__}."
-            )
-
-        channel_plans[channel] = plan
-
-    return channel_plans, data_config.t_unit
 
 
 def _resolve_observation_interval(
@@ -927,133 +761,6 @@ def _count_complete_windows(available_duration: float, window_duration: float) -
     return math.floor(window_ratio)
 
 
-def _resolve_window_plan(
-    spectrum_config: SpectrumConfig,
-    *,
-    observation_start: float,
-    observation_stop: float,
-    window_duration: float,
-    interlacing_offset: float,
-    available_unshifted_windows: int,
-    available_shifted_windows: int,
-    orders: tuple[int, ...],
-) -> tuple[WindowPlan, int]:
-    """Resolve estimate counts, interlacing, batching, and uncertainty grouping.
-
-    The effective number of physical windows per estimate is initially ``SpectrumConfig.m`` and is
-    reduced when fewer unshifted windows are available. It must still be at least the highest
-    requested spectrum order.
-
-    Complete physical windows are grouped into estimates, and the number of unshifted estimates is
-    limited by ``spectral_estimates_max``. When interlacing is enabled, the shifted count is
-    limited to the smaller of the available shifted and selected unshifted counts.
-
-    In short-term uncertainty mode, ``m_var`` may be reduced to the available unshifted estimate
-    count. A processing batch large enough to contain a complete uncertainty group is rounded down
-    to a multiple of the effective ``m_var``.
-
-    Parameters
-    ----------
-    spectrum_config : SpectrumConfig
-        Requested window count, estimate limit, batching, interlacing, and
-        uncertainty settings.
-    observation_start, observation_stop : float
-        Bounds of the common half-open observation interval.
-    window_duration : float
-        Duration of one physical window.
-    interlacing_offset : float
-        Offset applied to shifted physical windows.
-    available_unshifted_windows : int
-        Number of complete physical windows in the unshifted placement.
-    available_shifted_windows : int
-        Number of complete physical windows in the shifted placement.
-    orders : tuple[int, ...]
-        Distinct requested spectrum orders.
-
-    Returns
-    -------
-    tuple[WindowPlan, int]
-        Resolved window plan and effective ``m_var``.
-
-    Warns
-    -----
-    UserWarning
-        If ``m`` is reduced because too few physical windows are available, or if
-        ``m_var`` is reduced because too few unshifted estimates are available.
-
-    Raises
-    ------
-    ValueError
-        If the effective number of windows per estimate is below the highest
-        requested order, or if interlacing is requested but no complete shifted
-        estimate fits.
-    """
-
-    if available_unshifted_windows < spectrum_config.m:
-        windows_per_estimate = available_unshifted_windows
-        warnings.warn(
-            f"Not enough data points are available for m={spectrum_config.m}; "
-            f"using m={windows_per_estimate} instead.",
-            UserWarning,
-            stacklevel=4,
-        )
-    else:
-        windows_per_estimate = spectrum_config.m
-
-    if windows_per_estimate < max(orders):
-        raise ValueError("Not enough data points")
-
-    available_unshifted_estimates = available_unshifted_windows // windows_per_estimate
-    if spectrum_config.spectral_estimates_max is None:
-        unshifted_estimate_count = available_unshifted_estimates
-    else:
-        unshifted_estimate_count = min(
-            spectrum_config.spectral_estimates_max,
-            available_unshifted_estimates,
-        )
-
-    shifted_estimate_count = 0
-    if spectrum_config.interlacing:
-        available_shifted_estimates = available_shifted_windows // windows_per_estimate
-        shifted_estimate_count = min(unshifted_estimate_count, available_shifted_estimates)
-        if shifted_estimate_count < 1:
-            raise ValueError(
-                "Interlacing was requested, but the data is too short for a shifted "
-                "spectral estimate. Disable interlacing or provide more data."
-            )
-
-    m_var = spectrum_config.m_var
-    if (
-        spectrum_config.uncertainty_estimation == "short_term"
-        and 2 <= unshifted_estimate_count < m_var
-    ):
-        m_var = unshifted_estimate_count
-        warnings.warn(
-            f"Only {unshifted_estimate_count} unshifted spectral estimates are "
-            f"available; using m_var={m_var} instead.",
-            UserWarning,
-            stacklevel=4,
-        )
-
-    estimates_per_batch = spectrum_config.spectral_estimates_per_batch
-    if spectrum_config.uncertainty_estimation == "short_term" and estimates_per_batch >= m_var:
-        estimates_per_batch -= estimates_per_batch % m_var
-
-    return (
-        WindowPlan(
-            observation_start=observation_start,
-            observation_stop=observation_stop,
-            duration=window_duration,
-            windows_per_estimate=windows_per_estimate,
-            unshifted_estimate_count=unshifted_estimate_count,
-            shifted_estimate_count=shifted_estimate_count,
-            estimates_per_batch=estimates_per_batch,
-            interlacing_offset=interlacing_offset,
-        ),
-        m_var,
-    )
-
-
 def build_runtime_config(
     data_config: DataConfig,
     opened_channels: Mapping[int, RuntimeSource],
@@ -1127,7 +834,7 @@ def build_runtime_config(
     if not has_timestamped_channel and timestamp_options is not None:
         raise ValueError("TimestampOptions cannot be used in a sampled-only calculation.")
 
-    channel_plans, t_unit = _build_channel_plans(
+    channel_plans, t_unit = build_channel_plans(
         data_config=data_config,
         opened_channels=opened_channels,
         timestamp_options=timestamp_options,
@@ -1148,7 +855,7 @@ def build_runtime_config(
                 observation_stop,
                 label=f"Timestamped channel {channel}",
             )
-    repetition_plan = _resolve_repetition_plan(timestamp_options)
+    repetition_plan = resolve_repetition_plan(timestamp_options)
     orders = tuple(sorted({len(channels) for channels in spectra_channels}))
 
     sampled_plan = next(
@@ -1185,7 +892,7 @@ def build_runtime_config(
             (sampled_plan.sample_count - sampled_interlacing_offset) // window_points,
         )
 
-    window_plan, m_var = _resolve_window_plan(
+    window_plan, m_var = resolve_window_plan(
         spectrum_config,
         observation_start=observation_start,
         observation_stop=observation_stop,

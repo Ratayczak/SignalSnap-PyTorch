@@ -4,10 +4,10 @@ import torch
 
 from signalsnap_pytorch import (
     DataConfig,
-    TimestampOptions,
     SampledChannel,
     SpectrumConfig,
     TimestampedChannel,
+    TimestampOptions,
     calculate_spectra,
 )
 from signalsnap_pytorch._core import timestamps as _timestamps

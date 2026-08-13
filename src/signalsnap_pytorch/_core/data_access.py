@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import torch
 
-from ..configurators import DataConfig, HDF5Source, SampledChannel, TimestampedChannel
+from ..config import DataConfig, HDF5Source, SampledChannel, TimestampedChannel
 
 if TYPE_CHECKING:
     import h5py

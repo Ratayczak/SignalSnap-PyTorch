@@ -16,9 +16,9 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from .data_access import RuntimeSource, get_source_length, read_source, relative_float64_offsets
-from .fft import TimestampWindow
-from .planning import FrequencyPlan, RuntimeConfig, TimestampedChannelPlan, WindowBatch
+from .plans import FrequencyPlan, RuntimeConfig, TimestampedChannelPlan, WindowBatch
 from .spectra import ChannelCoefficients, ThirdOrderCoefficients, TimestampThirdOrderFrequencyCache
+from .window import TimestampWindow
 
 # Sequential reads of about 512 KiB for float64 timestamps.
 _TIMESTAMP_READ_CHUNK_SIZE = 65_536
